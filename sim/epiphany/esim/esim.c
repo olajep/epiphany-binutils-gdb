@@ -49,6 +49,8 @@
 
 #include <pthread.h>
 
+#include <sched.h>
+
 #include "esim.h"
 #include "esim-int.h"
 
@@ -347,15 +349,21 @@ es_tx_one_shm_testset(es_state *esim, es_transaction *tx)
   tx->remaining -= 4;
 
   /* Signal other CPU simulator a write from another core did occur so that
-   * it can invalidate its scache.
+   * it can invalidate its scache. Only set the flag when we actually did
+   * change the value.
    */
-  if (tx->sim_addr.coreid != esim->coreid)
+  if (!tmp && tx->sim_addr.coreid != esim->coreid)
     {
       /* Signal other CPU simulator a write from another core did occur so that
        * it can flush its scache.
        */
       MEM_BARRIER();
       tx->sim_addr.cpu->external_write = 1;
+    }
+  else if (tmp)
+    {
+      /* Voluntarily preempt if the lock was contended */
+      sched_yield();
     }
 
   return ES_OK;
