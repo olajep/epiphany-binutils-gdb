@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
+#include <sched.h>
 
 
 /* Communicator to be used. */
@@ -993,27 +994,37 @@ es_net_tx_one_mem_testset(es_state *esim, es_transaction *tx)
   tx->remaining -= 4;
 
   /*! Update current_cpu.external_write on remote in remote cpu state to
-   *  trigger cache scache flush */
-  MPI_TRY_CATCH(MPI_Win_lock(MPI_LOCK_SHARED,
-			     tx->sim_addr.net_rank,
-			     MPI_MODE_NOCHECK,
-			     esim->net.ext_write_win),
-		{},
-		{ return -EINVAL; });
-  MPI_TRY_CATCH(MPI_Accumulate((void *) &one,
-			       1,
-			       ES_NET_MPI_TYPE(one),
+   *  trigger cache scache flush. Only set the flag when we actually did
+   *  change the value.
+   */
+  if (!tmp)
+  {
+    MPI_TRY_CATCH(MPI_Win_lock(MPI_LOCK_SHARED,
 			       tx->sim_addr.net_rank,
-			       0,
-			       1,
-			       ES_NET_MPI_TYPE(one),
-			       MPI_REPLACE,
+			       MPI_MODE_NOCHECK,
 			       esim->net.ext_write_win),
-		{},
-		{ return -EINVAL; });
-  MPI_TRY_CATCH(MPI_Win_unlock(tx->sim_addr.net_rank, esim->net.ext_write_win),
-		{},
-		{ return -EINVAL; });
+		  {},
+		  { return -EINVAL; });
+    MPI_TRY_CATCH(MPI_Accumulate((void *) &one,
+				 1,
+				 ES_NET_MPI_TYPE(one),
+				 tx->sim_addr.net_rank,
+				 0,
+				 1,
+				 ES_NET_MPI_TYPE(one),
+				 MPI_REPLACE,
+				 esim->net.ext_write_win),
+		  {},
+		  { return -EINVAL; });
+    MPI_TRY_CATCH(MPI_Win_unlock(tx->sim_addr.net_rank, esim->net.ext_write_win),
+		  {},
+		  { return -EINVAL; });
+    }
+  else
+    {
+      /* Voluntarily preempt if the lock was contended */
+      sched_yield();
+    }
 
   return ES_OK;
 
