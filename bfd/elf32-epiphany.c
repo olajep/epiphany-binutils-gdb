@@ -443,6 +443,7 @@ epiphany_get_plt_address (bfd_vma relocation,
 /* Perform a single relocation.
    By default we use the standard BFD routines.  */
 
+static bfd_reloc_status_type
 epiphany_final_link_relocate (bfd *                        output_bfd,
 			      reloc_howto_type *           howto,
 			      bfd *                        input_bfd,
@@ -682,7 +683,7 @@ epiphany_elf_create_plt_section (bfd *dynobj, struct bfd_link_info *info)
    flags |= SEC_ALLOC | SEC_CODE | SEC_LOAD;
    s = bfd_make_section_anyway_with_flags (dynobj, ".plt", flags);
    if (s == NULL
-       || ! bfd_set_section_alignment (dynobj, s, bed->plt_alignment))
+       || ! bfd_set_section_alignment (s, bed->plt_alignment))
      return FALSE;
    htab->splt = s;
 

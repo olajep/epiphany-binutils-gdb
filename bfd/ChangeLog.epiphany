@@ -1,3 +1,8 @@
+2021-12-28  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* elf32-epiphany.c (epiphany_final_link_relocate): Fix return
+	type and remove extra argument to bfd_set_section_alignment.
+
 2016-10-31  Ola Jeppsson  <ola@adapteva.com>
 
 	* bfd/elf32-epiphany.c (elf_symbol_leading_char): Remove define.
