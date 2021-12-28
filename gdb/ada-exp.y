@@ -1,5 +1,5 @@
 /* YACC parser for Ada expressions, for GDB.
-   Copyright (C) 1986-2019 Free Software Foundation, Inc.
+   Copyright (C) 1986-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -48,7 +48,7 @@
 #include "frame.h"
 #include "block.h"
 
-#define parse_type(ps) builtin_type (parse_gdbarch (ps))
+#define parse_type(ps) builtin_type (ps->gdbarch ())
 
 /* Remap normal yacc parser interface names (yyparse, yylex, yyerror,
    etc).  */
@@ -208,7 +208,7 @@ primary :	primary '(' arglist ')'
 			  write_exp_elt_opcode (pstate, OP_FUNCALL);
 			  write_exp_elt_longcst (pstate, $3);
 			  write_exp_elt_opcode (pstate, OP_FUNCALL);
-		        }
+			}
 	|	var_or_type '(' arglist ')'
 			{
 			  if ($1 != NULL)
@@ -248,7 +248,7 @@ primary :
 			{ write_exp_elt_opcode (pstate, TERNOP_SLICE); }
 	|	var_or_type '(' simple_exp DOTDOT simple_exp ')'
 			{ if ($1 == NULL) 
-                            write_exp_elt_opcode (pstate, TERNOP_SLICE);
+			    write_exp_elt_opcode (pstate, TERNOP_SLICE);
 			  else
 			    error (_("Cannot slice a type"));
 			}
@@ -280,7 +280,7 @@ primary :	DOLLAR_VARIABLE /* Various GDB extensions */
 	;
 
 primary :     	aggregate
-        ;        
+	;        
 
 simple_exp : 	primary
 	;
@@ -380,7 +380,7 @@ relation :	simple_exp LEQ simple_exp
 
 relation :	simple_exp IN simple_exp DOTDOT simple_exp
 			{ write_exp_elt_opcode (pstate, TERNOP_IN_RANGE); }
-        |       simple_exp IN primary TICK_RANGE tick_arglist
+	|       simple_exp IN primary TICK_RANGE tick_arglist
 			{ write_exp_elt_opcode (pstate, BINOP_IN_BOUNDS);
 			  write_exp_elt_longcst (pstate, (LONGEST) $5);
 			  write_exp_elt_opcode (pstate, BINOP_IN_BOUNDS);
@@ -390,27 +390,27 @@ relation :	simple_exp IN simple_exp DOTDOT simple_exp
 			  if ($3 == NULL)
 			    error (_("Right operand of 'in' must be type"));
 			  write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
-		          write_exp_elt_type (pstate, $3);
-		          write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
+			  write_exp_elt_type (pstate, $3);
+			  write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
 			}
 	|	simple_exp NOT IN simple_exp DOTDOT simple_exp
 			{ write_exp_elt_opcode (pstate, TERNOP_IN_RANGE);
-		          write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
+			  write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
 			}
-        |       simple_exp NOT IN primary TICK_RANGE tick_arglist
+	|       simple_exp NOT IN primary TICK_RANGE tick_arglist
 			{ write_exp_elt_opcode (pstate, BINOP_IN_BOUNDS);
 			  write_exp_elt_longcst (pstate, (LONGEST) $6);
 			  write_exp_elt_opcode (pstate, BINOP_IN_BOUNDS);
-		          write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
+			  write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
 			}
  	|	simple_exp NOT IN var_or_type	%prec TICK_ACCESS
 			{ 
 			  if ($4 == NULL)
 			    error (_("Right operand of 'in' must be type"));
 			  write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
-		          write_exp_elt_type (pstate, $4);
-		          write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
-		          write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
+			  write_exp_elt_type (pstate, $4);
+			  write_exp_elt_opcode (pstate, UNOP_IN_RANGE);
+			  write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT);
 			}
 	;
 
@@ -446,7 +446,7 @@ and_then_exp :
 			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_AND); }
 	|	and_then_exp _AND_ THEN relation
 			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_AND); }
-        ;
+	;
 
 or_exp :
 		relation OR relation 
@@ -460,13 +460,13 @@ or_else_exp :
 			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_OR); }
 	|      or_else_exp OR ELSE relation
 			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_OR); }
-        ;
+	;
 
 xor_exp :       relation XOR relation
 			{ write_exp_elt_opcode (pstate, BINOP_BITWISE_XOR); }
 	|	xor_exp XOR relation
 			{ write_exp_elt_opcode (pstate, BINOP_BITWISE_XOR); }
-        ;
+	;
 
 /* Primaries can denote types (OP_TYPE).  In cases such as 
    primary TICK_ADDRESS, where a type would be invalid, it will be
@@ -494,13 +494,13 @@ primary :	primary TICK_ACCESS
 	| 	primary TICK_LENGTH tick_arglist
 			{ write_int (pstate, $3, type_int (pstate));
 			  write_exp_elt_opcode (pstate, OP_ATR_LENGTH); }
-        |       primary TICK_SIZE
+	|       primary TICK_SIZE
 			{ write_exp_elt_opcode (pstate, OP_ATR_SIZE); }
 	|	primary TICK_TAG
 			{ write_exp_elt_opcode (pstate, OP_ATR_TAG); }
-        |       opt_type_prefix TICK_MIN '(' exp ',' exp ')'
+	|       opt_type_prefix TICK_MIN '(' exp ',' exp ')'
 			{ write_exp_elt_opcode (pstate, OP_ATR_MIN); }
-        |       opt_type_prefix TICK_MAX '(' exp ',' exp ')'
+	|       opt_type_prefix TICK_MAX '(' exp ',' exp ')'
 			{ write_exp_elt_opcode (pstate, OP_ATR_MAX); }
 	| 	opt_type_prefix TICK_POS '(' exp ')'
 			{ write_exp_elt_opcode (pstate, OP_ATR_POS); }
@@ -517,7 +517,7 @@ tick_arglist :			%prec '('
 	;
 
 type_prefix :
-                var_or_type
+		var_or_type
 			{ 
 			  if ($1 == NULL)
 			    error (_("Prefix must be type"));
@@ -541,7 +541,7 @@ primary	:	INT
 	;
 
 primary	:	CHARLIT
-                  { write_int (pstate,
+		  { write_int (pstate,
 			       convert_char_literal (type_qualifier, $1.val),
 			       (type_qualifier == NULL) 
 			       ? $1.type : type_qualifier);
@@ -568,7 +568,7 @@ primary	:	STRING
 
 primary :	TRUEKEYWORD
 			{ write_int (pstate, 1, type_boolean (pstate)); }
-        |	FALSEKEYWORD
+	|	FALSEKEYWORD
 			{ write_int (pstate, 0, type_boolean (pstate)); }
 	;
 
@@ -579,7 +579,7 @@ primary	: 	NEW NAME
 var_or_type:	NAME   	    %prec VAR
 				{ $$ = write_var_or_type (pstate, NULL, $1); }
 	|	block NAME  %prec VAR
-                                { $$ = write_var_or_type (pstate, $1, $2); }
+				{ $$ = write_var_or_type (pstate, $1, $2); }
 	|       NAME TICK_ACCESS 
 			{ 
 			  $$ = write_var_or_type (pstate, NULL, $1);
@@ -611,7 +611,7 @@ aggregate :
 			  write_exp_elt_opcode (pstate, OP_AGGREGATE);
 			  write_exp_elt_longcst (pstate, $2);
 			  write_exp_elt_opcode (pstate, OP_AGGREGATE);
-		        }
+			}
 	;
 
 aggregate_component_list :
@@ -658,7 +658,7 @@ component_group :
 			  write_exp_elt_opcode (pstate, OP_CHOICES);
 			  write_exp_elt_longcst (pstate, $1);
 			  write_exp_elt_opcode (pstate, OP_CHOICES);
-		        }
+			}
 	;
 
 /* We use this somewhat obscure definition in order to handle NAME => and
@@ -679,10 +679,10 @@ component_associations :
 			}
 		    exp { $$ = 1; }
 	|	NAME '|' 
-		        { write_name_assoc (pstate, $1); }
+			{ write_name_assoc (pstate, $1); }
 		    component_associations  { $$ = $4 + 1; }
 	|	simple_exp '|'  
-	            component_associations  { $$ = $3 + 1; }
+		    component_associations  { $$ = $3 + 1; }
 	|	simple_exp DOTDOT simple_exp '|'
 			{ write_exp_elt_opcode (pstate, OP_DISCRETE_RANGE); }
 		    component_associations  { $$ = $6 + 1; }
@@ -717,7 +717,6 @@ primary	:	'*' primary		%prec '.'
 #define yy_switch_to_buffer ada_yy_switch_to_buffer
 #define yyrestart ada_yyrestart
 #define yytext ada_yytext
-#define yywrap ada_yywrap
 
 static struct obstack temp_parse_space;
 
@@ -745,7 +744,7 @@ ada_parse (struct parser_state *par_state)
 static void
 yyerror (const char *msg)
 {
-  error (_("Error in expression, near `%s'."), lexptr);
+  error (_("Error in expression, near `%s'."), pstate->lexptr);
 }
 
 /* Emit expression to access an instance of SYM, in block BLOCK (if
@@ -757,7 +756,7 @@ write_var_from_sym (struct parser_state *par_state,
 		    struct symbol *sym)
 {
   if (symbol_read_needs_frame (sym))
-    innermost_block.update (block, INNERMOST_BLOCK_FOR_SYMBOLS);
+    par_state->block_tracker->update (block, INNERMOST_BLOCK_FOR_SYMBOLS);
 
   write_exp_elt_opcode (par_state, OP_VAR_VALUE);
   write_exp_elt_block (par_state, block);
@@ -813,11 +812,11 @@ write_object_renaming (struct parser_state *par_state,
   if (orig_left_context == NULL)
     orig_left_context = get_selected_block (NULL);
 
-  name = (char *) obstack_copy0 (&temp_parse_space, renamed_entity,
-				 renamed_entity_len);
+  name = obstack_strndup (&temp_parse_space, renamed_entity,
+			  renamed_entity_len);
   ada_lookup_encoded_symbol (name, orig_left_context, VAR_DOMAIN, &sym_info);
   if (sym_info.symbol == NULL)
-    error (_("Could not find renamed variable: %s"), ada_decode (name));
+    error (_("Could not find renamed variable: %s"), ada_decode (name).c_str ());
   else if (SYMBOL_CLASS (sym_info.symbol) == LOC_TYPEDEF)
     /* We have a renaming of an old-style renaming symbol.  Don't
        trust the block information.  */
@@ -852,9 +851,9 @@ write_object_renaming (struct parser_state *par_state,
 
       switch (*renaming_expr) {
       case 'A':
-        renaming_expr += 1;
-        write_exp_elt_opcode (par_state, UNOP_IND);
-        break;
+	renaming_expr += 1;
+	write_exp_elt_opcode (par_state, UNOP_IND);
+	break;
       case 'L':
 	slice_state = LOWER_BOUND;
 	/* FALLTHROUGH */
@@ -882,9 +881,8 @@ write_object_renaming (struct parser_state *par_state,
 	    if (end == NULL)
 	      end = renaming_expr + strlen (renaming_expr);
 
-	    index_name
-	      = (char *) obstack_copy0 (&temp_parse_space, renaming_expr,
-					end - renaming_expr);
+	    index_name = obstack_strndup (&temp_parse_space, renaming_expr,
+					  end - renaming_expr);
 	    renaming_expr = end;
 
 	    ada_lookup_encoded_symbol (index_name, orig_left_context,
@@ -955,13 +953,17 @@ block_lookup (const struct block *context, const char *raw_name)
   struct symtab *symtab;
   const struct block *result = NULL;
 
+  std::string name_storage;
   if (raw_name[0] == '\'')
     {
       raw_name += 1;
       name = raw_name;
     }
   else
-    name = ada_encode (raw_name);
+    {
+      name_storage = ada_encode (raw_name);
+      name = name_storage.c_str ();
+    }
 
   nsyms = ada_lookup_symbol_list (name, context, VAR_DOMAIN, &syms);
 
@@ -1024,11 +1026,11 @@ select_possible_type_sym (const std::vector<struct block_symbol> &syms)
 }
 
 static struct type*
-find_primitive_type (struct parser_state *par_state, char *name)
+find_primitive_type (struct parser_state *par_state, const char *name)
 {
   struct type *type;
-  type = language_lookup_primitive_type (parse_language (par_state),
-					 parse_gdbarch (par_state),
+  type = language_lookup_primitive_type (par_state->language (),
+					 par_state->gdbarch (),
 					 name);
   if (type == NULL && strcmp ("system__address", name) == 0)
     type = type_system_address (par_state);
@@ -1042,7 +1044,7 @@ find_primitive_type (struct parser_state *par_state, char *name)
 	(char *) alloca (strlen (name) + sizeof ("standard__"));
       strcpy (expanded_name, "standard__");
       strcat (expanded_name, name);
-      sym = ada_lookup_symbol (expanded_name, NULL, VAR_DOMAIN, NULL).symbol;
+      sym = ada_lookup_symbol (expanded_name, NULL, VAR_DOMAIN).symbol;
       if (sym != NULL && SYMBOL_CLASS (sym) == LOC_TYPEDEF)
 	type = SYMBOL_TYPE (sym);
     }
@@ -1104,13 +1106,11 @@ static void
 write_ambiguous_var (struct parser_state *par_state,
 		     const struct block *block, char *name, int len)
 {
-  struct symbol *sym = XOBNEW (&temp_parse_space, struct symbol);
+  struct symbol *sym = new (&temp_parse_space) symbol ();
 
-  memset (sym, 0, sizeof (struct symbol));
   SYMBOL_DOMAIN (sym) = UNDEF_DOMAIN;
-  SYMBOL_LINKAGE_NAME (sym)
-    = (const char *) obstack_copy0 (&temp_parse_space, name, len);
-  SYMBOL_LANGUAGE (sym) = language_ada;
+  sym->set_linkage_name (obstack_strndup (&temp_parse_space, name, len));
+  sym->set_language (language_ada, nullptr);
 
   write_exp_elt_opcode (par_state, OP_VAR_VALUE);
   write_exp_elt_block (par_state, block);
@@ -1124,7 +1124,7 @@ write_ambiguous_var (struct parser_state *par_state,
 
 static int
 ada_nget_field_index (const struct type *type, const char *field_name0,
-                      int field_name_len, int maybe_missing)
+		      int field_name_len, int maybe_missing)
 {
   char *field_name = (char *) alloca ((field_name_len + 1) * sizeof (char));
 
@@ -1162,7 +1162,7 @@ get_symbol_field_type (struct symbol *sym, char *encoded_field_name)
 
       fieldno = ada_get_field_index (type, field_name, 1);
       if (fieldno >= 0)
-        return TYPE_FIELD_TYPE (type, fieldno);
+	return type->field (fieldno).type ();
 
       subfield_name = field_name;
       while (*subfield_name != '\0' && *subfield_name != '.' 
@@ -1170,14 +1170,14 @@ get_symbol_field_type (struct symbol *sym, char *encoded_field_name)
 	subfield_name += 1;
 
       if (subfield_name[0] == '\0')
-        return NULL;
+	return NULL;
 
       fieldno = ada_nget_field_index (type, field_name,
-                                      subfield_name - field_name, 1);
+				      subfield_name - field_name, 1);
       if (fieldno < 0)
-        return NULL;
+	return NULL;
 
-      type = TYPE_FIELD_TYPE (type, fieldno);
+      type = type->field (fieldno).type ();
       field_name = subfield_name;
     }
 
@@ -1203,12 +1203,12 @@ write_var_or_type (struct parser_state *par_state,
   int name_len;
 
   if (block == NULL)
-    block = expression_context_block;
+    block = par_state->expression_context_block;
 
-  encoded_name = ada_encode (name0.ptr);
-  name_len = strlen (encoded_name);
-  encoded_name
-    = (char *) obstack_copy0 (&temp_parse_space, encoded_name, name_len);
+  std::string name_storage = ada_encode (name0.ptr);
+  name_len = name_storage.size ();
+  encoded_name = obstack_strndup (&temp_parse_space, name_storage.c_str (),
+				  name_len);
   for (depth = 0; depth < MAX_RENAMING_CHAIN_LENGTH; depth += 1)
     {
       int tail_index;
@@ -1230,19 +1230,6 @@ write_var_or_type (struct parser_state *par_state,
 					  VAR_DOMAIN, &syms);
 	  encoded_name[tail_index] = terminator;
 
-	  /* A single symbol may rename a package or object. */
-
-	  /* This should go away when we move entirely to new version.
-	     FIXME pnh 7/20/2007. */
-	  if (nsyms == 1)
-	    {
-	      struct symbol *ren_sym =
-		ada_find_renaming_symbol (syms[0].symbol, syms[0].block);
-
-	      if (ren_sym != NULL)
-		syms[0].symbol = ren_sym;
-	    }
-
 	  type_sym = select_possible_type_sym (syms);
 
 	  if (type_sym != NULL)
@@ -1261,7 +1248,7 @@ write_var_or_type (struct parser_state *par_state,
 	    case ADA_EXCEPTION_RENAMING:
 	    case ADA_SUBPROGRAM_RENAMING:
 	      {
-	        int alloc_len = renaming_len + name_len - tail_index + 1;
+		int alloc_len = renaming_len + name_len - tail_index + 1;
 		char *new_name
 		  = (char *) obstack_alloc (&temp_parse_space, alloc_len);
 		strncpy (new_name, renaming, renaming_len);
@@ -1282,21 +1269,21 @@ write_var_or_type (struct parser_state *par_state,
 
 	  if (type_sym != NULL)
 	    {
-              struct type *field_type;
-              
-              if (tail_index == name_len)
+	      struct type *field_type;
+	      
+	      if (tail_index == name_len)
 		return SYMBOL_TYPE (type_sym);
 
-              /* We have some extraneous characters after the type name.
-                 If this is an expression "TYPE_NAME.FIELD0.[...].FIELDN",
-                 then try to get the type of FIELDN.  */
-              field_type
-                = get_symbol_field_type (type_sym, encoded_name + tail_index);
-              if (field_type != NULL)
+	      /* We have some extraneous characters after the type name.
+		 If this is an expression "TYPE_NAME.FIELD0.[...].FIELDN",
+		 then try to get the type of FIELDN.  */
+	      field_type
+		= get_symbol_field_type (type_sym, encoded_name + tail_index);
+	      if (field_type != NULL)
 		return field_type;
 	      else 
 		error (_("Invalid attempt to select from type: \"%s\"."),
-                       name0.ptr);
+		       name0.ptr);
 	    }
 	  else if (tail_index == name_len && nsyms == 0)
 	    {
@@ -1343,7 +1330,7 @@ write_var_or_type (struct parser_state *par_state,
 
       if (!have_full_symbols () && !have_partial_symbols () && block == NULL)
 	error (_("No symbol table is loaded.  Use the \"file\" command."));
-      if (block == expression_context_block)
+      if (block == par_state->expression_context_block)
 	error (_("No definition of \"%s\" in current context."), name0.ptr);
       else
 	error (_("No definition of \"%s\" in specified context."), name0.ptr);
@@ -1376,7 +1363,8 @@ write_name_assoc (struct parser_state *par_state, struct stoken name)
   if (strchr (name.ptr, '.') == NULL)
     {
       std::vector<struct block_symbol> syms;
-      int nsyms = ada_lookup_symbol_list (name.ptr, expression_context_block,
+      int nsyms = ada_lookup_symbol_list (name.ptr,
+					  par_state->expression_context_block,
 					  VAR_DOMAIN, &syms);
 
       if (nsyms != 1 || SYMBOL_CLASS (syms[0].symbol) == LOC_TYPEDEF)
@@ -1403,13 +1391,24 @@ convert_char_literal (struct type *type, LONGEST val)
   if (type == NULL)
     return val;
   type = check_typedef (type);
-  if (TYPE_CODE (type) != TYPE_CODE_ENUM)
+  if (type->code () != TYPE_CODE_ENUM)
     return val;
 
-  xsnprintf (name, sizeof (name), "QU%02x", (int) val);
-  for (f = 0; f < TYPE_NFIELDS (type); f += 1)
+  if ((val >= 'a' && val <= 'z') || (val >= '0' && val <= '9'))
+    xsnprintf (name, sizeof (name), "Q%c", (int) val);
+  else
+    xsnprintf (name, sizeof (name), "QU%02x", (int) val);
+  size_t len = strlen (name);
+  for (f = 0; f < type->num_fields (); f += 1)
     {
-      if (strcmp (name, TYPE_FIELD_NAME (type, f)) == 0)
+      /* Check the suffix because an enum constant in a package will
+	 have a name like "pkg__QUxx".  This is safe enough because we
+	 already have the correct type, and because mangling means
+	 there can't be clashes.  */
+      const char *ename = TYPE_FIELD_NAME (type, f);
+      size_t elen = strlen (ename);
+
+      if (elen >= len && strcmp (name, ename + elen - len) == 0)
 	return TYPE_FIELD_ENUMVAL (type, f);
     }
   return val;
@@ -1442,8 +1441,8 @@ type_long_double (struct parser_state *par_state)
 static struct type *
 type_char (struct parser_state *par_state)
 {
-  return language_string_char_type (parse_language (par_state),
-				    parse_gdbarch (par_state));
+  return language_string_char_type (par_state->language (),
+				    par_state->gdbarch ());
 }
 
 static struct type *
@@ -1456,14 +1455,15 @@ static struct type *
 type_system_address (struct parser_state *par_state)
 {
   struct type *type 
-    = language_lookup_primitive_type (parse_language (par_state),
-				      parse_gdbarch (par_state),
+    = language_lookup_primitive_type (par_state->language (),
+				      par_state->gdbarch (),
 				      "system__address");
   return  type != NULL ? type : parse_type (par_state)->builtin_data_ptr;
 }
 
+void _initialize_ada_exp ();
 void
-_initialize_ada_exp (void)
+_initialize_ada_exp ()
 {
   obstack_init (&temp_parse_space);
 }

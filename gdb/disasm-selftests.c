@@ -1,6 +1,6 @@
 /* Self tests for disassembler for GDB, the GNU debugger.
 
-   Copyright (C) 2017-2019 Free Software Foundation, Inc.
+   Copyright (C) 2017-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,10 +19,9 @@
 
 #include "defs.h"
 #include "disasm.h"
-
-#if GDB_SELF_TEST
-#include "selftest.h"
+#include "gdbsupport/selftest.h"
 #include "selftest-arch.h"
+#include "gdbarch.h"
 
 namespace selftests {
 
@@ -70,11 +69,6 @@ print_one_insn_test (struct gdbarch *gdbarch)
       insn = xstormy16_insn;
       len = sizeof (xstormy16_insn);
       break;
-    case bfd_arch_arc:
-      /* PR 21003 */
-      if (gdbarch_bfd_arch_info (gdbarch)->mach == bfd_mach_arc_arc601)
-	return;
-      /* fall through */
     case bfd_arch_nios2:
     case bfd_arch_score:
     case bfd_arch_riscv:
@@ -87,6 +81,11 @@ print_one_insn_test (struct gdbarch *gdbarch)
 	len = bplen;
       }
       break;
+    case bfd_arch_arc:
+      /* PR 21003 */
+      if (gdbarch_bfd_arch_info (gdbarch)->mach == bfd_mach_arc_arc601)
+	return;
+      /* fall through */
     default:
       {
 	/* Test disassemble breakpoint instruction.  */
@@ -192,31 +191,28 @@ memory_error_test (struct gdbarch *gdbarch)
   gdb_disassembler_test di (gdbarch);
   bool saw_memory_error = false;
 
-  TRY
+  try
     {
       di.print_insn (0);
     }
-  CATCH (ex, RETURN_MASK_ERROR)
+  catch (const gdb_exception_error &ex)
     {
       if (ex.error == MEMORY_ERROR)
 	saw_memory_error = true;
     }
-  END_CATCH
 
   /* Expect MEMORY_ERROR.  */
   SELF_CHECK (saw_memory_error);
 }
 
 } // namespace selftests
-#endif /* GDB_SELF_TEST */
 
+void _initialize_disasm_selftests ();
 void
-_initialize_disasm_selftests (void)
+_initialize_disasm_selftests ()
 {
-#if GDB_SELF_TEST
   selftests::register_test_foreach_arch ("print_one_insn",
 					 selftests::print_one_insn_test);
   selftests::register_test_foreach_arch ("memory_error",
 					 selftests::memory_error_test);
-#endif
 }

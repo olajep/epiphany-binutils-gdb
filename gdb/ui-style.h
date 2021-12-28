@@ -1,5 +1,5 @@
 /* Styling for ui_file
-   Copyright (C) 2018-2019 Free Software Foundation, Inc.
+   Copyright (C) 2018-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -126,8 +126,14 @@ struct ui_file_style
   private:
 
     bool m_simple;
-    int m_value;
-    uint8_t m_red, m_green, m_blue;
+    union
+    {
+      int m_value;
+      struct
+      {
+	uint8_t m_red, m_green, m_blue;
+      };
+    };
   };
 
   /* Intensity settings that are available.  */
@@ -163,11 +169,27 @@ struct ui_file_style
   /* Return the ANSI escape sequence for this style.  */
   std::string to_ansi () const;
 
+  /* Return true if this style is the default style; false
+     otherwise.  */
+  bool is_default () const
+  {
+    return (m_foreground == NONE
+	    && m_background == NONE
+	    && m_intensity == NORMAL
+	    && !m_reverse);
+  }
+
   /* Return true if this style specified reverse display; false
      otherwise.  */
   bool is_reverse () const
   {
     return m_reverse;
+  }
+
+  /* Set/clear the reverse display flag.  */
+  void set_reverse (bool reverse)
+  {
+    m_reverse = reverse;
   }
 
   /* Return the foreground color of this style.  */
@@ -176,10 +198,22 @@ struct ui_file_style
     return m_foreground;
   }
 
+  /* Set the foreground color of this style.  */
+  void set_fg (color c)
+  {
+    m_foreground = c;
+  }
+
   /* Return the background color of this style.  */
   const color &get_background () const
   {
     return m_background;
+  }
+
+  /* Set the background color of this style.  */
+  void set_bg (color c)
+  {
+    m_background = c;
   }
 
   /* Return the intensity of this style.  */
@@ -195,6 +229,12 @@ struct ui_file_style
      BUF.  */
   bool parse (const char *buf, size_t *n_read);
 
+  /* We need this because we can't pass a reference via va_args.  */
+  const ui_file_style *ptr () const
+  {
+    return this;
+  }
+
 private:
 
   color m_foreground = NONE;
@@ -205,8 +245,8 @@ private:
 
 /* Skip an ANSI escape sequence in BUF.  BUF must begin with an ESC
    character.  Return true if an escape sequence was successfully
-   skipped; false otherwise.  In either case, N_READ is updated to
-   reflect the number of chars read from BUF.  */
+   skipped; false otherwise.  If an escape sequence was skipped,
+   N_READ is updated to reflect the number of chars read from BUF.  */
 
 extern bool skip_ansi_escape (const char *buf, int *n_read);
 

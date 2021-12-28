@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2019 Free Software Foundation, Inc.
+/* Copyright (C) 2009-2021 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of GDB.
@@ -16,10 +16,26 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef AARCH64_INSN_H
-#define AARCH64_INSN_H 1
+#ifndef ARCH_AARCH64_INSN_H
+#define ARCH_AARCH64_INSN_H
 
-extern int aarch64_debug;
+extern bool aarch64_debug;
+
+/* Support routines for instruction parsing.  */
+
+/* Create a mask of X bits.  */
+#define submask(x) ((1L << ((x) + 1)) - 1)
+
+/* Extract the bitfield from OBJ starting at bit ST and ending at bit FN.  */
+#define bits(obj,st,fn) (((obj) >> (st)) & submask ((fn) - (st)))
+
+/* Extract bit ST from OBJ.  */
+#define bit(obj,st) (((obj) >> (st)) & 1)
+
+/* Extract the signed bitfield from OBJ starting at bit ST and ending at
+   bit FN.  The result is sign-extended.  */
+#define sbits(obj,st,fn) \
+  ((long) (bits(obj,st,fn) | ((long) bit(obj,fn) * ~ submask (fn - st))))
 
 /* List of opcodes that we need for building the jump pad and relocating
    an instruction.  */
@@ -321,4 +337,4 @@ int aarch64_emit_load_store (uint32_t *buf, uint32_t size,
 			     struct aarch64_register rn,
 			     struct aarch64_memory_operand operand);
 
-#endif
+#endif /* ARCH_AARCH64_INSN_H */

@@ -1,5 +1,5 @@
 /* Interface GDB to the GNU Hurd.
-   Copyright (C) 1992-2019 Free Software Foundation, Inc.
+   Copyright (C) 1992-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,6 +20,9 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
+/* Include this first, to pick up the <mach.h> 'thread_info' diversion.  */
+#include "gnu-nat.h"
+
 /* Mach/Hurd headers are not yet ready for C++ compilation.  */
 extern "C"
 {
@@ -29,6 +32,7 @@ extern "C"
 #include <mach/message.h>
 #include <mach/notify.h>
 #include <mach/vm_attributes.h>
+#include <mach/vm_param.h>
 
 #include <hurd.h>
 #include <hurd/interrupt.h>
@@ -60,14 +64,15 @@ extern "C"
 #include "value.h"
 #include "language.h"
 #include "target.h"
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
+#include "gdbarch.h"
 #include "gdbcmd.h"
 #include "gdbcore.h"
 #include "gdbthread.h"
 #include "gdb_obstack.h"
 #include "tid-parse.h"
+#include "nat/fork-inferior.h"
 
-#include "gnu-nat.h"
 #include "inf-child.h"
 
 /* MIG stubs are not yet ready for C++ compilation.  */
@@ -79,7 +84,11 @@ extern "C"
 #include "msg_reply_S.h"
 #include "exc_request_U.h"
 #include "msg_U.h"
+
+#include "gnu-nat-mig.h"
 }
+
+struct gnu_nat_target *gnu_target;
 
 static process_t proc_server = MACH_PORT_NULL;
 
@@ -90,46 +99,16 @@ int proc_wait_pid = 0;
 /* The number of wait requests we've sent, and expect replies from.  */
 int proc_waits_pending = 0;
 
-int gnu_debug_flag = 0;
+bool gnu_debug_flag = false;
 
 /* Forward decls */
 
 static struct inf *make_inf ();
-void inf_clear_wait (struct inf *inf);
-void inf_cleanup (struct inf *inf);
-void inf_startup (struct inf *inf, int pid);
-int inf_update_suspends (struct inf *inf);
-void inf_set_pid (struct inf *inf, pid_t pid);
-void inf_validate_procs (struct inf *inf);
-void inf_steal_exc_ports (struct inf *inf);
-void inf_restore_exc_ports (struct inf *inf);
-void inf_set_threads_resume_sc (struct inf *inf,
-				struct proc *run_thread,
-				int run_others);
-int inf_set_threads_resume_sc_for_signal_thread (struct inf *inf);
-void inf_suspend (struct inf *inf);
-void inf_resume (struct inf *inf);
-void inf_set_step_thread (struct inf *inf, struct proc *proc);
-void inf_detach (struct inf *inf);
-void inf_attach (struct inf *inf, int pid);
-void inf_signal (struct inf *inf, enum gdb_signal sig);
-void inf_continue (struct inf *inf);
 
 #define inf_debug(_inf, msg, args...) \
   do { struct inf *__inf = (_inf); \
        debug ("{inf %d %s}: " msg, __inf->pid, \
        host_address_to_string (__inf) , ##args); } while (0)
-
-void proc_abort (struct proc *proc, int force);
-struct proc *make_proc (struct inf *inf, mach_port_t port, int tid);
-struct proc *_proc_free (struct proc *proc);
-int proc_update_sc (struct proc *proc);
-kern_return_t proc_get_exception_port (struct proc *proc, mach_port_t * port);
-kern_return_t proc_set_exception_port (struct proc *proc, mach_port_t port);
-static mach_port_t _proc_get_exc_port (struct proc *proc);
-void proc_steal_exc_port (struct proc *proc, mach_port_t exc_port);
-void proc_restore_exc_port (struct proc *proc);
-int proc_trace (struct proc *proc, int set);
 
 /* Evaluate RPC_EXPR in a scope with the variables MSGPORT and REFPORT bound
    to INF's msg port and task port respectively.  If it has no msg port,
@@ -259,7 +238,7 @@ __proc_pid (struct proc *proc)
 /* Update PROC's real suspend count to match it's desired one.  Returns true
    if we think PROC is now in a runnable state.  */
 int
-proc_update_sc (struct proc *proc)
+gnu_nat_target::proc_update_sc (struct proc *proc)
 {
   int running;
   int err = 0;
@@ -325,7 +304,7 @@ proc_update_sc (struct proc *proc)
    In particular, a thread is precious if it's running (in which case forcing
    it includes suspending it first), or if it has an exception pending.  */
 void
-proc_abort (struct proc *proc, int force)
+gnu_nat_target::proc_abort (struct proc *proc, int force)
 {
   gdb_assert (proc_is_thread (proc));
 
@@ -362,7 +341,7 @@ proc_abort (struct proc *proc, int force)
    that the thread is stopped and aborted first, and sets the state_changed
    field in PROC to true.  */
 thread_state_t
-proc_get_state (struct proc *proc, int will_modify)
+gnu_nat_target::proc_get_state (struct proc *proc, int will_modify)
 {
   int was_aborted = proc->aborted;
 
@@ -399,7 +378,7 @@ proc_get_state (struct proc *proc, int will_modify)
 
 /* Set PORT to PROC's exception port.  */
 kern_return_t
-proc_get_exception_port (struct proc * proc, mach_port_t * port)
+gnu_nat_target::proc_get_exception_port (struct proc * proc, mach_port_t * port)
 {
   if (proc_is_task (proc))
     return task_get_exception_port (proc->port, port);
@@ -409,7 +388,7 @@ proc_get_exception_port (struct proc * proc, mach_port_t * port)
 
 /* Set PROC's exception port to PORT.  */
 kern_return_t
-proc_set_exception_port (struct proc * proc, mach_port_t port)
+gnu_nat_target::proc_set_exception_port (struct proc * proc, mach_port_t port)
 {
   proc_debug (proc, "setting exception port: %lu", port);
   if (proc_is_task (proc))
@@ -419,8 +398,8 @@ proc_set_exception_port (struct proc * proc, mach_port_t port)
 }
 
 /* Get PROC's exception port, cleaning up a bit if proc has died.  */
-static mach_port_t
-_proc_get_exc_port (struct proc *proc)
+mach_port_t
+gnu_nat_target::_proc_get_exc_port (struct proc *proc)
 {
   mach_port_t exc_port;
   kern_return_t err = proc_get_exception_port (proc, &exc_port);
@@ -443,7 +422,7 @@ _proc_get_exc_port (struct proc *proc)
    been done.  Stash away any existing exception port so we can
    restore it later.  */
 void
-proc_steal_exc_port (struct proc *proc, mach_port_t exc_port)
+gnu_nat_target::proc_steal_exc_port (struct proc *proc, mach_port_t exc_port)
 {
   mach_port_t cur_exc_port = _proc_get_exc_port (proc);
 
@@ -486,7 +465,7 @@ proc_steal_exc_port (struct proc *proc, mach_port_t exc_port)
    found there at the time, unless *our* exception port has since been
    overwritten, in which case who knows what's going on.  */
 void
-proc_restore_exc_port (struct proc *proc)
+gnu_nat_target::proc_restore_exc_port (struct proc *proc)
 {
   mach_port_t cur_exc_port = _proc_get_exc_port (proc);
 
@@ -516,7 +495,7 @@ proc_restore_exc_port (struct proc *proc)
 /* Turns hardware tracing in PROC on or off when SET is true or false,
    respectively.  Returns true on success.  */
 int
-proc_trace (struct proc *proc, int set)
+gnu_nat_target::proc_trace (struct proc *proc, int set)
 {
   thread_state_t state = proc_get_state (proc, 1);
 
@@ -528,7 +507,7 @@ proc_trace (struct proc *proc, int set)
   if (set)
     {
       /* XXX We don't get the exception unless the thread has its own
-         exception port????  */
+	 exception port????  */
       if (proc->exc_port == MACH_PORT_NULL)
 	proc_steal_exc_port (proc, proc->inf->event_port);
       THREAD_STATE_SET_TRACED (state);
@@ -546,7 +525,7 @@ static int next_thread_id = 1;
 /* Returns a new proc structure with the given fields.  Also adds a
    notification for PORT becoming dead to be sent to INF's notify port.  */
 struct proc *
-make_proc (struct inf *inf, mach_port_t port, int tid)
+gnu_nat_target::make_proc (struct inf *inf, mach_port_t port, int tid)
 {
   kern_return_t err;
   mach_port_t prev_port = MACH_PORT_NULL;
@@ -600,7 +579,7 @@ make_proc (struct inf *inf, mach_port_t port, int tid)
 	proc_steal_exc_port (proc, inf->event_port);
       else
 	/* Just clear thread exception ports -- they default to the
-           task one.  */
+	   task one.  */
 	proc_steal_exc_port (proc, MACH_PORT_NULL);
     }
 
@@ -610,7 +589,7 @@ make_proc (struct inf *inf, mach_port_t port, int tid)
 /* Frees PROC and any resources it uses, and returns the value of PROC's 
    next field.  */
 struct proc *
-_proc_free (struct proc *proc)
+gnu_nat_target::_proc_free (struct proc *proc)
 {
   struct inf *inf = proc->inf;
   struct proc *next = proc->next;
@@ -679,7 +658,7 @@ make_inf (void)
 
 /* Clear INF's target wait status.  */
 void
-inf_clear_wait (struct inf *inf)
+gnu_nat_target::inf_clear_wait (struct inf *inf)
 {
   inf_debug (inf, "clearing wait");
   inf->wait.status.kind = TARGET_WAITKIND_SPURIOUS;
@@ -699,7 +678,7 @@ inf_clear_wait (struct inf *inf)
 
 
 void
-inf_cleanup (struct inf *inf)
+gnu_nat_target::inf_cleanup (struct inf *inf)
 {
   inf_debug (inf, "cleanup");
 
@@ -722,7 +701,7 @@ inf_cleanup (struct inf *inf)
 }
 
 void
-inf_startup (struct inf *inf, int pid)
+gnu_nat_target::inf_startup (struct inf *inf, int pid)
 {
   kern_return_t err;
 
@@ -745,7 +724,7 @@ inf_startup (struct inf *inf, int pid)
 
 /* Close current process, if any, and attach INF to process PORT.  */
 void
-inf_set_pid (struct inf *inf, pid_t pid)
+gnu_nat_target::inf_set_pid (struct inf *inf, pid_t pid)
 {
   task_t task_port;
   struct proc *task = inf->task;
@@ -797,8 +776,8 @@ inf_set_pid (struct inf *inf, pid_t pid)
    proc server state.  Note that the traced field is only updated from
    the proc server state if we do not have a message port.  If we do
    have a message port we'd better look at the tracemask itself.  */
-static void
-inf_validate_procinfo (struct inf *inf)
+void
+gnu_nat_target::inf_validate_procinfo (struct inf *inf)
 {
   char *noise;
   mach_msg_type_number_t noise_len = 0;
@@ -824,8 +803,8 @@ inf_validate_procinfo (struct inf *inf)
 
 /* Validates INF's task suspend count.  If it's higher than we expect,
    verify with the user before `stealing' the extra count.  */
-static void
-inf_validate_task_sc (struct inf *inf)
+void
+gnu_nat_target::inf_validate_task_sc (struct inf *inf)
 {
   char *noise;
   mach_msg_type_number_t noise_len = 0;
@@ -847,9 +826,9 @@ inf_validate_task_sc (struct inf *inf)
   if (inf->task->cur_sc < pi->taskinfo.suspend_count && suspend_count == -1)
     {
       /* The proc server might have suspended the task while stopping
-         it.  This happens when the task is handling a traced signal.
-         Refetch the suspend count.  The proc server should be
-         finished stopping the task by now.  */
+	 it.  This happens when the task is handling a traced signal.
+	 Refetch the suspend count.  The proc server should be
+	 finished stopping the task by now.  */
       suspend_count = pi->taskinfo.suspend_count;
       goto retry;
     }
@@ -876,8 +855,8 @@ inf_validate_task_sc (struct inf *inf)
    is.  If INF is running, the resume_sc count of INF's threads will
    be modified, and the signal thread will briefly be run to change
    the trace state.  */
-static void
-inf_set_traced (struct inf *inf, int on)
+void
+gnu_nat_target::inf_set_traced (struct inf *inf, int on)
 {
   if (on == inf->traced)
     return;
@@ -913,7 +892,7 @@ inf_set_traced (struct inf *inf, int on)
    counts in the safe order.  Returns true if at least one thread is
    thought to be running.  */
 int
-inf_update_suspends (struct inf *inf)
+gnu_nat_target::inf_update_suspends (struct inf *inf)
 {
   struct proc *task = inf->task;
 
@@ -951,7 +930,7 @@ inf_update_suspends (struct inf *inf)
       inf->running = thread_running && task_running;
 
       /* Once any thread has executed some code, we can't depend on the
-         threads list any more.  */
+	 threads list any more.  */
       if (inf->running)
 	inf->threads_up_to_date = 0;
 
@@ -1004,7 +983,7 @@ inf_threads (struct inf *inf, inf_threads_ftype *f, void *arg)
 
 /* Make INF's list of threads be consistent with reality of TASK.  */
 void
-inf_validate_procs (struct inf *inf)
+gnu_nat_target::inf_validate_procs (struct inf *inf)
 {
   thread_array_t threads;
   mach_msg_type_number_t num_threads, i;
@@ -1103,12 +1082,12 @@ inf_validate_procs (struct inf *inf)
 	    if (inferior_ptid == ptid_t (inf->pid))
 	      /* This is the first time we're hearing about thread
 		 ids, after a fork-child.  */
-	      thread_change_ptid (inferior_ptid, ptid);
+	      thread_change_ptid (this, inferior_ptid, ptid);
 	    else if (inf->pending_execs != 0)
 	      /* This is a shell thread.  */
-	      add_thread_silent (ptid);
+	      add_thread_silent (this, ptid);
 	    else
-	      add_thread (ptid);
+	      add_thread (this, ptid);
 	  }
       }
 
@@ -1125,7 +1104,7 @@ inf_update_procs (struct inf *inf)
   if (!inf->task)
     return 0;
   if (!inf->threads_up_to_date)
-    inf_validate_procs (inf);
+    gnu_target->inf_validate_procs (inf);
   return !!inf->task;
 }
 
@@ -1133,8 +1112,8 @@ inf_update_procs (struct inf *inf)
    and others are set to their run_sc if RUN_OTHERS is true, and otherwise
    their pause_sc.  */
 void
-inf_set_threads_resume_sc (struct inf *inf,
-			   struct proc *run_thread, int run_others)
+gnu_nat_target::inf_set_threads_resume_sc (struct inf *inf,
+					   struct proc *run_thread, int run_others)
 {
   struct proc *thread;
 
@@ -1152,7 +1131,7 @@ inf_set_threads_resume_sc (struct inf *inf,
 /* Cause INF to continue execution immediately; individual threads may still
    be suspended (but their suspend counts will be updated).  */
 void
-inf_resume (struct inf *inf)
+gnu_nat_target::inf_resume (struct inf *inf)
 {
   struct proc *thread;
 
@@ -1177,7 +1156,7 @@ inf_resume (struct inf *inf)
 /* Cause INF to stop execution immediately; individual threads may still
    be running.  */
 void
-inf_suspend (struct inf *inf)
+gnu_nat_target::inf_suspend (struct inf *inf)
 {
   struct proc *thread;
 
@@ -1197,7 +1176,7 @@ inf_suspend (struct inf *inf)
    function changes it to be PROC, changing any old step_thread to be
    a normal one.  A PROC of 0 clears any existing value.  */
 void
-inf_set_step_thread (struct inf *inf, struct proc *thread)
+gnu_nat_target::inf_set_step_thread (struct inf *inf, struct proc *thread)
 {
   gdb_assert (!thread || proc_is_thread (thread));
 
@@ -1223,7 +1202,7 @@ inf_set_step_thread (struct inf *inf, struct proc *thread)
    (plus whatever other thread are set to always run).  Returns true if we
    did so, or false if we can't find a signal thread.  */
 int
-inf_set_threads_resume_sc_for_signal_thread (struct inf *inf)
+gnu_nat_target::inf_set_threads_resume_sc_for_signal_thread (struct inf *inf)
 {
   if (inf->signal_thread)
     {
@@ -1245,7 +1224,7 @@ inf_update_signal_thread (struct inf *inf)
 
 /* Detachs from INF's inferior task, letting it run once again...  */
 void
-inf_detach (struct inf *inf)
+gnu_nat_target::inf_detach (struct inf *inf)
 {
   struct proc *task = inf->task;
 
@@ -1287,7 +1266,7 @@ inf_detach (struct inf *inf)
 /* Attaches INF to the process with process id PID, returning it in a
    suspended state suitable for debugging.  */
 void
-inf_attach (struct inf *inf, int pid)
+gnu_nat_target::inf_attach (struct inf *inf, int pid)
 {
   inf_debug (inf, "attaching: %d", pid);
 
@@ -1300,7 +1279,7 @@ inf_attach (struct inf *inf, int pid)
 
 /* Makes sure that we've got our exception ports entrenched in the process.  */
 void
-inf_steal_exc_ports (struct inf *inf)
+gnu_nat_target::inf_steal_exc_ports (struct inf *inf)
 {
   struct proc *thread;
 
@@ -1315,7 +1294,7 @@ inf_steal_exc_ports (struct inf *inf)
 
 /* Makes sure the process has its own exception ports.  */
 void
-inf_restore_exc_ports (struct inf *inf)
+gnu_nat_target::inf_restore_exc_ports (struct inf *inf)
 {
   struct proc *thread;
 
@@ -1333,7 +1312,7 @@ inf_restore_exc_ports (struct inf *inf)
    signal 0, will continue it.  INF is assumed to be in a paused state, and
    the resume_sc's of INF's threads may be affected.  */
 void
-inf_signal (struct inf *inf, enum gdb_signal sig)
+gnu_nat_target::inf_signal (struct inf *inf, enum gdb_signal sig)
 {
   kern_return_t err = 0;
   int host_sig = gdb_signal_to_host (sig);
@@ -1421,7 +1400,7 @@ inf_signal (struct inf *inf, enum gdb_signal sig)
 /* Continue INF without delivering a signal.  This is meant to be used
    when INF does not have a message port.  */
 void
-inf_continue (struct inf *inf)
+gnu_nat_target::inf_continue (struct inf *inf)
 {
   process_t proc;
   kern_return_t err = proc_pid2proc (proc_server, inf->pid, &proc);
@@ -1452,19 +1431,13 @@ struct inf *gnu_current_inf = 0;
 
 /* The inferior being waited for by gnu_wait.  Since GDB is decidely not
    multi-threaded, we don't bother to lock this.  */
-struct inf *waiting_inf;
-
-/* MIG stubs are not yet ready for C++ compilation.  */
-extern "C" int exc_server (mach_msg_header_t *, mach_msg_header_t *);
-extern "C" int msg_reply_server (mach_msg_header_t *, mach_msg_header_t *);
-extern "C" int notify_server (mach_msg_header_t *, mach_msg_header_t *);
-extern "C" int process_reply_server (mach_msg_header_t *, mach_msg_header_t *);
+static struct inf *waiting_inf;
 
 /* Wait for something to happen in the inferior, returning what in STATUS.  */
 
 ptid_t
 gnu_nat_target::wait (ptid_t ptid, struct target_waitstatus *status,
-		      int options)
+		      target_wait_flags options)
 {
   struct msg
     {
@@ -1490,7 +1463,7 @@ gnu_nat_target::wait (ptid_t ptid, struct target_waitstatus *status,
 
   waiting_inf = inf;
 
-  inf_debug (inf, "waiting for: %s", target_pid_to_str (ptid));
+  inf_debug (inf, "waiting for: %s", target_pid_to_str (ptid).c_str ());
 
 rewait:
   if (proc_wait_pid != inf->pid && !inf->no_wait)
@@ -1644,15 +1617,9 @@ rewait:
       inf_update_suspends (inf);
     }
 
-  inf_debug (inf, "returning ptid = %s, status = %s (%d)",
-	     target_pid_to_str (ptid),
-	     status->kind == TARGET_WAITKIND_EXITED ? "EXITED"
-	     : status->kind == TARGET_WAITKIND_STOPPED ? "STOPPED"
-	     : status->kind == TARGET_WAITKIND_SIGNALLED ? "SIGNALLED"
-	     : status->kind == TARGET_WAITKIND_LOADED ? "LOADED"
-	     : status->kind == TARGET_WAITKIND_SPURIOUS ? "SPURIOUS"
-	     : "?",
-	     status->value.integer);
+  inf_debug (inf, "returning ptid = %s, %s",
+	     target_pid_to_str (ptid).c_str (),
+	     target_waitstatus_to_string (status).c_str ());
 
   return ptid;
 }
@@ -1734,7 +1701,7 @@ S_exception_raise_request (mach_port_t port, mach_port_t reply_port,
 	}
     }
   else
-    /* A supppressed exception, which ignore.  */
+    /* A suppressed exception, which ignore.  */
     {
       inf->wait.suppress = 1;
       mach_port_deallocate (mach_task_self (), reply_port);
@@ -1852,7 +1819,7 @@ S_proc_wait_reply (mach_port_t reply, kern_return_t err,
 	  inf->no_wait = 1;
 
 	  /* Since we can't see the inferior's signals, don't trap them.  */
-	  inf_set_traced (inf, 0);
+	  gnu_target->inf_set_traced (inf, 0);
 	}
     }
   else if (pid == inf->pid)
@@ -1877,17 +1844,19 @@ ILL_RPC (S_proc_setmsgport_reply,
 	 mach_port_t oldmsgport)
 ILL_RPC (S_proc_getmsgport_reply,
 	 mach_port_t reply_port, kern_return_t return_code,
-	 mach_port_t msgports)
+	 mach_port_t msgports, mach_msg_type_name_t msgportsPoly)
 ILL_RPC (S_proc_pid2task_reply,
 	 mach_port_t reply_port, kern_return_t return_code, mach_port_t task)
 ILL_RPC (S_proc_task2pid_reply,
 	 mach_port_t reply_port, kern_return_t return_code, pid_t pid)
 ILL_RPC (S_proc_task2proc_reply,
-	 mach_port_t reply_port, kern_return_t return_code, mach_port_t proc)
+	 mach_port_t reply_port, kern_return_t return_code,
+	 mach_port_t proc, mach_msg_type_name_t procPoly)
 ILL_RPC (S_proc_proc2task_reply,
 	 mach_port_t reply_port, kern_return_t return_code, mach_port_t task)
 ILL_RPC (S_proc_pid2proc_reply,
-	 mach_port_t reply_port, kern_return_t return_code, mach_port_t proc)
+	 mach_port_t reply_port, kern_return_t return_code,
+	 mach_port_t proc, mach_msg_type_name_t procPoly)
 ILL_RPC (S_proc_getprocinfo_reply,
 	 mach_port_t reply_port, kern_return_t return_code,
 	 int flags, procinfo_t procinfo, mach_msg_type_number_t procinfoCnt,
@@ -2007,7 +1976,7 @@ gnu_nat_target::resume (ptid_t ptid, int step, enum gdb_signal sig)
   struct inf *inf = gnu_current_inf;
 
   inf_debug (inf, "ptid = %s, step = %d, sig = %d",
-	     target_pid_to_str (ptid), step, sig);
+	     target_pid_to_str (ptid).c_str (), step, sig);
 
   inf_validate_procinfo (inf);
 
@@ -2053,8 +2022,9 @@ gnu_nat_target::resume (ptid_t ptid, int step, enum gdb_signal sig)
 
       if (!thread)
 	error (_("Can't run single thread id %s: no such thread!"),
-	       target_pid_to_str (ptid));
-      inf_debug (inf, "running one thread: %s", target_pid_to_str (ptid));
+	       target_pid_to_str (ptid).c_str ());
+      inf_debug (inf, "running one thread: %s",
+		 target_pid_to_str (ptid).c_str ());
       inf_set_threads_resume_sc (inf, thread, 0);
     }
 
@@ -2063,9 +2033,10 @@ gnu_nat_target::resume (ptid_t ptid, int step, enum gdb_signal sig)
       step_thread = inf_tid_to_thread (inf, ptid.lwp ());
       if (!step_thread)
 	warning (_("Can't step thread id %s: no such thread."),
-		 target_pid_to_str (ptid));
+		 target_pid_to_str (ptid).c_str ());
       else
-	inf_debug (inf, "stepping thread: %s", target_pid_to_str (ptid));
+	inf_debug (inf, "stepping thread: %s",
+		   target_pid_to_str (ptid).c_str ());
     }
   if (step_thread != inf->step_thread)
     inf_set_step_thread (inf, step_thread);
@@ -2142,20 +2113,22 @@ gnu_nat_target::create_inferior (const char *exec_file,
 
   inf_debug (inf, "creating inferior");
 
+  if (!target_is_pushed (this))
+    push_target (this);
+
   pid = fork_inferior (exec_file, allargs, env, gnu_ptrace_me,
-                       NULL, NULL, NULL, NULL);
+		       NULL, NULL, NULL, NULL);
 
   /* We have something that executes now.  We'll be running through
      the shell at this point (if startup-with-shell is true), but the
      pid shouldn't change.  */
-  add_thread_silent (ptid_t (pid));
+  thread_info *thr = add_thread_silent (this, ptid_t (pid));
+  switch_to_thread (thr);
 
   /* Attach to the now stopped child, which is actually a shell...  */
   inf_debug (inf, "attaching to child: %d", pid);
 
   inf_attach (inf, pid);
-
-  push_target (this);
 
   inf->pending_execs = 1;
   inf->nomsg = 1;
@@ -2166,7 +2139,7 @@ gnu_nat_target::create_inferior (const char *exec_file,
   inf_resume (inf);
 
   /* We now have thread info.  */
-  thread_change_ptid (inferior_ptid,
+  thread_change_ptid (this, inferior_ptid,
 		      ptid_t (inf->pid, inf_pick_first_thread (), 0));
 
   gdb_startup_inferior (pid, START_INFERIOR_TRAPS_EXPECTED);
@@ -2194,7 +2167,6 @@ void
 gnu_nat_target::attach (const char *args, int from_tty)
 {
   int pid;
-  char *exec_file;
   struct inf *inf = cur_inf ();
   struct inferior *inferior;
 
@@ -2205,15 +2177,13 @@ gnu_nat_target::attach (const char *args, int from_tty)
 
   if (from_tty)
     {
-      exec_file = (char *) get_exec_file (0);
+      const char *exec_file = get_exec_file (0);
 
       if (exec_file)
 	printf_unfiltered ("Attaching to program `%s', pid %d\n",
 			   exec_file, pid);
       else
 	printf_unfiltered ("Attaching to pid %d\n", pid);
-
-      gdb_flush (gdb_stdout);
     }
 
   inf_debug (inf, "attaching to pid: %d", pid);
@@ -2228,7 +2198,9 @@ gnu_nat_target::attach (const char *args, int from_tty)
 
   inf_update_procs (inf);
 
-  inferior_ptid = ptid_t (pid, inf_pick_first_thread (), 0);
+  thread_info *thr
+    = find_thread_ptid (this, ptid_t (pid, inf_pick_first_thread ()));
+  switch_to_thread (thr);
 
   /* We have to initialize the terminal settings now, since the code
      below might try to restore them.  */
@@ -2257,28 +2229,23 @@ gnu_nat_target::attach (const char *args, int from_tty)
 void
 gnu_nat_target::detach (inferior *inf, int from_tty)
 {
-  int pid;
-
   if (from_tty)
     {
-      char *exec_file = get_exec_file (0);
+      const char *exec_file = get_exec_file (0);
 
       if (exec_file)
 	printf_unfiltered ("Detaching from program `%s' pid %d\n",
 			   exec_file, gnu_current_inf->pid);
       else
 	printf_unfiltered ("Detaching from pid %d\n", gnu_current_inf->pid);
-      gdb_flush (gdb_stdout);
     }
-
-  pid = gnu_current_inf->pid;
 
   inf_detach (gnu_current_inf);
 
-  inferior_ptid = null_ptid;
-  detach_inferior (pid);
+  switch_to_no_thread ();
+  detach_inferior (inf);
 
-  inf_child_maybe_unpush_target (ops);
+  maybe_unpush_target ();
 }
 
 
@@ -2358,7 +2325,7 @@ gnu_write_inferior (task_t task, CORE_ADDR addr,
   mach_msg_type_number_t copy_count;
   int deallocate = 0;
 
-  char *errstr = "Bug in gnu_write_inferior";
+  const char *errstr = "Bug in gnu_write_inferior";
 
   struct vm_region_list *region_element;
   struct vm_region_list *region_head = NULL;
@@ -2554,7 +2521,6 @@ gnu_xfer_auxv (gdb_byte *readbuf, const gdb_byte *writebuf,
 		    ? gnu_current_inf->task->port : 0)
 		 : 0);
   process_t proc;
-  int res;
   kern_return_t err;
   vm_address_t entry;
   ElfW(auxv_t) auxv[2];
@@ -2644,7 +2610,6 @@ gnu_nat_target::find_memory_regions (find_memory_region_ftype func,
       mach_port_t object_name;
       vm_offset_t offset;
       vm_size_t region_length = VM_MAX_ADDRESS - region_address;
-      vm_address_t old_address = region_address;
 
       err = vm_region (task,
 		       &region_address,
@@ -2712,7 +2677,7 @@ proc_string (struct proc *proc)
   return tid_str;
 }
 
-const char *
+std::string
 gnu_nat_target::pid_to_str (ptid_t ptid)
 {
   struct inf *inf = gnu_current_inf;
@@ -2722,12 +2687,7 @@ gnu_nat_target::pid_to_str (ptid_t ptid)
   if (thread)
     return proc_string (thread);
   else
-    {
-      static char tid_str[80];
-
-      xsnprintf (tid_str, sizeof (tid_str), "bogus thread id %d", tid);
-      return tid_str;
-    }
+    return string_printf ("bogus thread id %d", tid);
 }
 
 
@@ -2775,7 +2735,7 @@ show_thread_default_cmd (const char *args, int from_tty)
 }
 
 static int
-parse_int_arg (const char *args, char *cmd_prefix)
+parse_int_arg (const char *args, const char *cmd_prefix)
 {
   if (args)
     {
@@ -2790,7 +2750,8 @@ parse_int_arg (const char *args, char *cmd_prefix)
 }
 
 static int
-_parse_bool_arg (const char *args, char *t_val, char *f_val, char *cmd_prefix)
+_parse_bool_arg (const char *args, const char *t_val, const char *f_val,
+		 const char *cmd_prefix)
 {
   if (!args || strcmp (args, t_val) == 0)
     return 1;
@@ -2806,7 +2767,7 @@ _parse_bool_arg (const char *args, char *t_val, char *f_val, char *cmd_prefix)
   _parse_bool_arg (args, "on", "off", cmd_prefix)
 
 static void
-check_empty (const char *args, char *cmd_prefix)
+check_empty (const char *args, const char *cmd_prefix)
 {
   if (args)
     error (_("Garbage after \"%s\" command: `%s'"), cmd_prefix, args);
@@ -2847,7 +2808,7 @@ set_task_pause_cmd (int arg, int from_tty)
   if (old_sc == 0 && inf->pause_sc != 0)
     /* If the task is currently unsuspended, immediately suspend it,
        otherwise wait until the next time it gets control.  */
-    inf_suspend (inf);
+    gnu_target->inf_suspend (inf);
 }
 
 static void
@@ -2943,8 +2904,8 @@ show_thread_default_detach_sc_cmd (const char *args, int from_tty)
 
 /* Steal a send right called NAME in the inferior task, and make it PROC's
    saved exception port.  */
-static void
-steal_exc_port (struct proc *proc, mach_port_t name)
+void
+gnu_nat_target::steal_exc_port (struct proc *proc, mach_port_t name)
 {
   kern_return_t err;
   mach_port_t port;
@@ -2985,7 +2946,7 @@ set_task_exc_port_cmd (const char *args, int from_tty)
 
   if (!args)
     error (_("No argument to \"set task exception-port\" command."));
-  steal_exc_port (inf->task, parse_and_eval_address (args));
+  gnu_target->steal_exc_port (inf->task, parse_and_eval_address (args));
 }
 
 static void
@@ -3045,7 +3006,7 @@ set_signals_cmd (int arg, int from_tty)
 
   if (inf->task && inf->want_signals != inf->traced)
     /* Make this take effect immediately in a running process.  */
-    inf_set_traced (inf, inf->want_signals);
+    gnu_target->inf_set_traced (inf, inf->want_signals);
 }
 
 static void
@@ -3318,15 +3279,15 @@ This is the same as setting `task pause', `exceptions', and\n\
 
   /* Commands to show information about the task's ports.  */
   add_info ("send-rights", info_send_rights_cmd,
-	    _("Show information about the task's send rights"));
+	    _("Show information about the task's send rights."));
   add_info ("receive-rights", info_recv_rights_cmd,
-	    _("Show information about the task's receive rights"));
+	    _("Show information about the task's receive rights."));
   add_info ("port-rights", info_port_rights_cmd,
-	    _("Show information about the task's port rights"));
+	    _("Show information about the task's port rights."));
   add_info ("port-sets", info_port_sets_cmd,
-	    _("Show information about the task's port sets"));
+	    _("Show information about the task's port sets."));
   add_info ("dead-names", info_dead_names_cmd,
-	    _("Show information about the task's dead names"));
+	    _("Show information about the task's dead names."));
   add_info_alias ("ports", "port-rights", 1);
   add_info_alias ("port", "port-rights", 1);
   add_info_alias ("psets", "port-sets", 1);
@@ -3343,7 +3304,7 @@ set_thread_pause_cmd (const char *args, int from_tty)
   if (old_sc == 0 && thread->pause_sc != 0 && thread->inf->pause_sc == 0)
     /* If the task is currently unsuspended, immediately suspend it,
        otherwise wait until the next time it gets control.  */
-    inf_suspend (thread->inf);
+    gnu_target->inf_suspend (thread->inf);
 }
 
 static void
@@ -3404,7 +3365,7 @@ set_thread_exc_port_cmd (const char *args, int from_tty)
 
   if (!args)
     error (_("No argument to \"set thread exception-port\" command."));
-  steal_exc_port (thread, parse_and_eval_address (args));
+  gnu_target->steal_exc_port (thread, parse_and_eval_address (args));
 }
 
 #if 0
@@ -3429,8 +3390,9 @@ thread_takeover_sc_cmd (const char *args, int from_tty)
   thread_basic_info_data_t _info;
   thread_basic_info_t info = &_info;
   mach_msg_type_number_t info_len = THREAD_BASIC_INFO_COUNT;
-  kern_return_t err =
-  thread_info (thread->port, THREAD_BASIC_INFO, (int *) &info, &info_len);
+  kern_return_t err
+    = mach_thread_info (thread->port, THREAD_BASIC_INFO,
+			(int *) &info, &info_len);
   if (err)
     error (("%s."), safe_strerror (err));
   thread->sc = info->suspend_count;
@@ -3506,8 +3468,9 @@ to the thread's initial suspend-count when gdb notices the threads."),
 	   &thread_cmd_list);
 }
 
+void _initialize_gnu_nat ();
 void
-_initialize_gnu_nat (void)
+_initialize_gnu_nat ()
 {
   proc_server = getproc ();
 

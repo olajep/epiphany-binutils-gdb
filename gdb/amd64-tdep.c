@@ -1,6 +1,6 @@
 /* Target-dependent code for AMD64.
 
-   Copyright (C) 2001-2019 Free Software Foundation, Inc.
+   Copyright (C) 2001-2021 Free Software Foundation, Inc.
 
    Contributed by Jiri Smid, SuSE Labs.
 
@@ -39,16 +39,17 @@
 #include "disasm.h"
 #include "amd64-tdep.h"
 #include "i387-tdep.h"
-#include "x86-xstate.h"
+#include "gdbsupport/x86-xstate.h"
 #include <algorithm>
 #include "target-descriptions.h"
 #include "arch/amd64.h"
 #include "producer.h"
 #include "ax.h"
 #include "ax-gdb.h"
-#include "common/byte-vector.h"
+#include "gdbsupport/byte-vector.h"
 #include "osabi.h"
 #include "x86-tdep.h"
+#include "amd64-ravenscar-thread.h"
 
 /* Note that the AMD64 architecture was previously known as x86-64.
    The latter is (forever) engraved into the canonical system name as
@@ -59,7 +60,7 @@
 
 /* Register information.  */
 
-static const char *amd64_register_names[] = 
+static const char * const amd64_register_names[] = 
 {
   "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
 
@@ -77,7 +78,7 @@ static const char *amd64_register_names[] =
   "mxcsr",
 };
 
-static const char *amd64_ymm_names[] = 
+static const char * const amd64_ymm_names[] = 
 {
   "ymm0", "ymm1", "ymm2", "ymm3",
   "ymm4", "ymm5", "ymm6", "ymm7",
@@ -85,7 +86,7 @@ static const char *amd64_ymm_names[] =
   "ymm12", "ymm13", "ymm14", "ymm15"
 };
 
-static const char *amd64_ymm_avx512_names[] =
+static const char * const amd64_ymm_avx512_names[] =
 {
   "ymm16", "ymm17", "ymm18", "ymm19",
   "ymm20", "ymm21", "ymm22", "ymm23",
@@ -93,7 +94,7 @@ static const char *amd64_ymm_avx512_names[] =
   "ymm28", "ymm29", "ymm30", "ymm31"
 };
 
-static const char *amd64_ymmh_names[] = 
+static const char * const amd64_ymmh_names[] = 
 {
   "ymm0h", "ymm1h", "ymm2h", "ymm3h",
   "ymm4h", "ymm5h", "ymm6h", "ymm7h",
@@ -101,7 +102,7 @@ static const char *amd64_ymmh_names[] =
   "ymm12h", "ymm13h", "ymm14h", "ymm15h"
 };
 
-static const char *amd64_ymmh_avx512_names[] =
+static const char * const amd64_ymmh_avx512_names[] =
 {
   "ymm16h", "ymm17h", "ymm18h", "ymm19h",
   "ymm20h", "ymm21h", "ymm22h", "ymm23h",
@@ -109,18 +110,18 @@ static const char *amd64_ymmh_avx512_names[] =
   "ymm28h", "ymm29h", "ymm30h", "ymm31h"
 };
 
-static const char *amd64_mpx_names[] =
+static const char * const amd64_mpx_names[] =
 {
   "bnd0raw", "bnd1raw", "bnd2raw", "bnd3raw", "bndcfgu", "bndstatus"
 };
 
-static const char *amd64_k_names[] =
+static const char * const amd64_k_names[] =
 {
   "k0", "k1", "k2", "k3",
   "k4", "k5", "k6", "k7"
 };
 
-static const char *amd64_zmmh_names[] =
+static const char * const amd64_zmmh_names[] =
 {
   "zmm0h", "zmm1h", "zmm2h", "zmm3h",
   "zmm4h", "zmm5h", "zmm6h", "zmm7h",
@@ -132,7 +133,7 @@ static const char *amd64_zmmh_names[] =
   "zmm28h", "zmm29h", "zmm30h", "zmm31h"
 };
 
-static const char *amd64_zmm_names[] =
+static const char * const amd64_zmm_names[] =
 {
   "zmm0", "zmm1", "zmm2", "zmm3",
   "zmm4", "zmm5", "zmm6", "zmm7",
@@ -144,14 +145,14 @@ static const char *amd64_zmm_names[] =
   "zmm28", "zmm29", "zmm30", "zmm31"
 };
 
-static const char *amd64_xmm_avx512_names[] = {
+static const char * const amd64_xmm_avx512_names[] = {
     "xmm16",  "xmm17",  "xmm18",  "xmm19",
     "xmm20",  "xmm21",  "xmm22",  "xmm23",
     "xmm24",  "xmm25",  "xmm26",  "xmm27",
     "xmm28",  "xmm29",  "xmm30",  "xmm31"
 };
 
-static const char *amd64_pkeys_names[] = {
+static const char * const amd64_pkeys_names[] = {
     "pkru"
 };
 
@@ -298,7 +299,7 @@ amd64_arch_reg_to_regnum (int reg)
 
 /* Register names for byte pseudo-registers.  */
 
-static const char *amd64_byte_names[] =
+static const char * const amd64_byte_names[] =
 {
   "al", "bl", "cl", "dl", "sil", "dil", "bpl", "spl",
   "r8l", "r9l", "r10l", "r11l", "r12l", "r13l", "r14l", "r15l",
@@ -310,7 +311,7 @@ static const char *amd64_byte_names[] =
 
 /* Register names for word pseudo-registers.  */
 
-static const char *amd64_word_names[] =
+static const char * const amd64_word_names[] =
 {
   "ax", "bx", "cx", "dx", "si", "di", "bp", "", 
   "r8w", "r9w", "r10w", "r11w", "r12w", "r13w", "r14w", "r15w"
@@ -318,7 +319,7 @@ static const char *amd64_word_names[] =
 
 /* Register names for dword pseudo-registers.  */
 
-static const char *amd64_dword_names[] =
+static const char * const amd64_dword_names[] =
 {
   "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", 
   "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d",
@@ -541,17 +542,108 @@ amd64_merge_classes (enum amd64_reg_class class1, enum amd64_reg_class class2)
 
 static void amd64_classify (struct type *type, enum amd64_reg_class theclass[2]);
 
-/* Return non-zero if TYPE is a non-POD structure or union type.  */
+/* Return true if TYPE is a structure or union with unaligned fields.  */
 
-static int
-amd64_non_pod_p (struct type *type)
+static bool
+amd64_has_unaligned_fields (struct type *type)
 {
-  /* ??? A class with a base class certainly isn't POD, but does this
-     catch all non-POD structure types?  */
-  if (TYPE_CODE (type) == TYPE_CODE_STRUCT && TYPE_N_BASECLASSES (type) > 0)
-    return 1;
+  if (type->code () == TYPE_CODE_STRUCT
+      || type->code () == TYPE_CODE_UNION)
+    {
+      for (int i = 0; i < type->num_fields (); i++)
+	{
+	  struct type *subtype = check_typedef (type->field (i).type ());
+	  int bitpos = TYPE_FIELD_BITPOS (type, i);
+	  int align = type_align(subtype);
 
-  return 0;
+	  /* Ignore static fields, empty fields (for example nested
+	     empty structures), and bitfields (these are handled by
+	     the caller).  */
+	  if (field_is_static (&type->field (i))
+	      || (TYPE_FIELD_BITSIZE (type, i) == 0
+		  && TYPE_LENGTH (subtype) == 0)
+	      || TYPE_FIELD_PACKED (type, i))
+	    continue;
+
+	  if (bitpos % 8 != 0)
+	    return true;
+
+	  int bytepos = bitpos / 8;
+	  if (bytepos % align != 0)
+	    return true;
+
+	  if (amd64_has_unaligned_fields (subtype))
+	    return true;
+	}
+    }
+
+  return false;
+}
+
+/* Classify field I of TYPE starting at BITOFFSET according to the rules for
+   structures and union types, and store the result in THECLASS.  */
+
+static void
+amd64_classify_aggregate_field (struct type *type, int i,
+				enum amd64_reg_class theclass[2],
+				unsigned int bitoffset)
+{
+  struct type *subtype = check_typedef (type->field (i).type ());
+  int bitpos = bitoffset + TYPE_FIELD_BITPOS (type, i);
+  int pos = bitpos / 64;
+  enum amd64_reg_class subclass[2];
+  int bitsize = TYPE_FIELD_BITSIZE (type, i);
+  int endpos;
+
+  if (bitsize == 0)
+    bitsize = TYPE_LENGTH (subtype) * 8;
+  endpos = (bitpos + bitsize - 1) / 64;
+
+  /* Ignore static fields, or empty fields, for example nested
+     empty structures.*/
+  if (field_is_static (&type->field (i)) || bitsize == 0)
+    return;
+
+  if (subtype->code () == TYPE_CODE_STRUCT
+      || subtype->code () == TYPE_CODE_UNION)
+    {
+      /* Each field of an object is classified recursively.  */
+      int j;
+      for (j = 0; j < subtype->num_fields (); j++)
+	amd64_classify_aggregate_field (subtype, j, theclass, bitpos);
+      return;
+    }
+
+  gdb_assert (pos == 0 || pos == 1);
+
+  amd64_classify (subtype, subclass);
+  theclass[pos] = amd64_merge_classes (theclass[pos], subclass[0]);
+  if (bitsize <= 64 && pos == 0 && endpos == 1)
+    /* This is a bit of an odd case:  We have a field that would
+       normally fit in one of the two eightbytes, except that
+       it is placed in a way that this field straddles them.
+       This has been seen with a structure containing an array.
+
+       The ABI is a bit unclear in this case, but we assume that
+       this field's class (stored in subclass[0]) must also be merged
+       into class[1].  In other words, our field has a piece stored
+       in the second eight-byte, and thus its class applies to
+       the second eight-byte as well.
+
+       In the case where the field length exceeds 8 bytes,
+       it should not be necessary to merge the field class
+       into class[1].  As LEN > 8, subclass[1] is necessarily
+       different from AMD64_NO_CLASS.  If subclass[1] is equal
+       to subclass[0], then the normal class[1]/subclass[1]
+       merging will take care of everything.  For subclass[1]
+       to be different from subclass[0], I can only see the case
+       where we have a SSE/SSEUP or X87/X87UP pair, which both
+       use up all 16 bytes of the aggregate, and are already
+       handled just fine (because each portion sits on its own
+       8-byte).  */
+    theclass[1] = amd64_merge_classes (theclass[1], subclass[0]);
+  if (pos == 0)
+    theclass[1] = amd64_merge_classes (theclass[1], subclass[1]);
 }
 
 /* Classify TYPE according to the rules for aggregate (structures and
@@ -560,10 +652,9 @@ amd64_non_pod_p (struct type *type)
 static void
 amd64_classify_aggregate (struct type *type, enum amd64_reg_class theclass[2])
 {
-  /* 1. If the size of an object is larger than two eightbytes, or in
-        C++, is a non-POD structure or union type, or contains
-        unaligned fields, it has class memory.  */
-  if (TYPE_LENGTH (type) > 16 || amd64_non_pod_p (type))
+  /* 1. If the size of an object is larger than two eightbytes, or it has
+	unaligned fields, it has class memory.  */
+  if (TYPE_LENGTH (type) > 16 || amd64_has_unaligned_fields (type))
     {
       theclass[0] = theclass[1] = AMD64_MEMORY;
       return;
@@ -573,11 +664,11 @@ amd64_classify_aggregate (struct type *type, enum amd64_reg_class theclass[2])
   theclass[0] = theclass[1] = AMD64_NO_CLASS;
 
   /* 3. Each field of an object is classified recursively so that
-        always two fields are considered. The resulting class is
-        calculated according to the classes of the fields in the
-        eightbyte: */
+	always two fields are considered. The resulting class is
+	calculated according to the classes of the fields in the
+	eightbyte: */
 
-  if (TYPE_CODE (type) == TYPE_CODE_ARRAY)
+  if (type->code () == TYPE_CODE_ARRAY)
     {
       struct type *subtype = check_typedef (TYPE_TARGET_TYPE (type));
 
@@ -591,57 +682,11 @@ amd64_classify_aggregate (struct type *type, enum amd64_reg_class theclass[2])
       int i;
 
       /* Structure or union.  */
-      gdb_assert (TYPE_CODE (type) == TYPE_CODE_STRUCT
-		  || TYPE_CODE (type) == TYPE_CODE_UNION);
+      gdb_assert (type->code () == TYPE_CODE_STRUCT
+		  || type->code () == TYPE_CODE_UNION);
 
-      for (i = 0; i < TYPE_NFIELDS (type); i++)
-	{
-	  struct type *subtype = check_typedef (TYPE_FIELD_TYPE (type, i));
-	  int pos = TYPE_FIELD_BITPOS (type, i) / 64;
-	  enum amd64_reg_class subclass[2];
-	  int bitsize = TYPE_FIELD_BITSIZE (type, i);
-	  int endpos;
-
-	  if (bitsize == 0)
-	    bitsize = TYPE_LENGTH (subtype) * 8;
-	  endpos = (TYPE_FIELD_BITPOS (type, i) + bitsize - 1) / 64;
-
-	  /* Ignore static fields, or empty fields, for example nested
-	     empty structures.*/
-	  if (field_is_static (&TYPE_FIELD (type, i)) || bitsize == 0)
-	    continue;
-
-	  gdb_assert (pos == 0 || pos == 1);
-
-	  amd64_classify (subtype, subclass);
-	  theclass[pos] = amd64_merge_classes (theclass[pos], subclass[0]);
-	  if (bitsize <= 64 && pos == 0 && endpos == 1)
-	    /* This is a bit of an odd case:  We have a field that would
-	       normally fit in one of the two eightbytes, except that
-	       it is placed in a way that this field straddles them.
-	       This has been seen with a structure containing an array.
-
-	       The ABI is a bit unclear in this case, but we assume that
-	       this field's class (stored in subclass[0]) must also be merged
-	       into class[1].  In other words, our field has a piece stored
-	       in the second eight-byte, and thus its class applies to
-	       the second eight-byte as well.
-
-	       In the case where the field length exceeds 8 bytes,
-	       it should not be necessary to merge the field class
-	       into class[1].  As LEN > 8, subclass[1] is necessarily
-	       different from AMD64_NO_CLASS.  If subclass[1] is equal
-	       to subclass[0], then the normal class[1]/subclass[1]
-	       merging will take care of everything.  For subclass[1]
-	       to be different from subclass[0], I can only see the case
-	       where we have a SSE/SSEUP or X87/X87UP pair, which both
-	       use up all 16 bytes of the aggregate, and are already
-	       handled just fine (because each portion sits on its own
-	       8-byte).  */
-	    theclass[1] = amd64_merge_classes (theclass[1], subclass[0]);
-	  if (pos == 0)
-	    theclass[1] = amd64_merge_classes (theclass[1], subclass[1]);
-	}
+      for (i = 0; i < type->num_fields (); i++)
+	amd64_classify_aggregate_field (type, i, theclass, 0);
     }
 
   /* 4. Then a post merger cleanup is done:  */
@@ -664,7 +709,7 @@ amd64_classify_aggregate (struct type *type, enum amd64_reg_class theclass[2])
 static void
 amd64_classify (struct type *type, enum amd64_reg_class theclass[2])
 {
-  enum type_code code = TYPE_CODE (type);
+  enum type_code code = type->code ();
   int len = TYPE_LENGTH (type);
 
   theclass[0] = theclass[1] = AMD64_NO_CLASS;
@@ -754,8 +799,8 @@ amd64_return_value (struct gdbarch *gdbarch, struct value *function,
   if (theclass[0] == AMD64_MEMORY)
     {
       /* As indicated by the comment above, the ABI guarantees that we
-         can always find the return value just after the function has
-         returned.  */
+	 can always find the return value just after the function has
+	 returned.  */
 
       if (readbuf)
 	{
@@ -769,7 +814,7 @@ amd64_return_value (struct gdbarch *gdbarch, struct value *function,
     }
 
   /* 8. If the class is COMPLEX_X87, the real part of the value is
-        returned in %st0 and the imaginary part in %st1.  */
+	returned in %st0 and the imaginary part in %st1.  */
   if (theclass[0] == AMD64_COMPLEX_X87)
     {
       if (readbuf)
@@ -810,7 +855,7 @@ amd64_return_value (struct gdbarch *gdbarch, struct value *function,
 
 	case AMD64_SSE:
 	  /* 4. If the class is SSE, the next available SSE register
-             of the sequence %xmm0, %xmm1 is used.  */
+	     of the sequence %xmm0, %xmm1 is used.  */
 	  regnum = sse_regnum[sse_reg++];
 	  break;
 
@@ -824,7 +869,7 @@ amd64_return_value (struct gdbarch *gdbarch, struct value *function,
 
 	case AMD64_X87:
 	  /* 6. If the class is X87, the value is returned on the X87
-             stack in %st0 as 80-bit x87 number.  */
+	     stack in %st0 as 80-bit x87 number.  */
 	  regnum = AMD64_ST0_REGNUM;
 	  if (writebuf)
 	    i387_return_value (gdbarch, regcache);
@@ -832,7 +877,7 @@ amd64_return_value (struct gdbarch *gdbarch, struct value *function,
 
 	case AMD64_X87UP:
 	  /* 7. If the class is X87UP, the value is returned together
-             with the previous X87 value in %st0.  */
+	     with the previous X87 value in %st0.  */
 	  gdb_assert (i > 0 && theclass[0] == AMD64_X87);
 	  regnum = AMD64_ST0_REGNUM;
 	  offset = 8;
@@ -906,7 +951,7 @@ if (return_method == return_method_struct)
       amd64_classify (type, theclass);
 
       /* Calculate the number of integer and SSE registers needed for
-         this argument.  */
+	 this argument.  */
       for (j = 0; j < 2; j++)
 	{
 	  if (theclass[j] == AMD64_INTEGER)
@@ -916,7 +961,7 @@ if (return_method == return_method_struct)
 	}
 
       /* Check whether enough registers are available, and if the
-         argument should be passed in registers at all.  */
+	 argument should be passed in registers at all.  */
       if (integer_reg + needed_integer_regs > ARRAY_SIZE (integer_regnum)
 	  || sse_reg + needed_sse_regs > ARRAY_SIZE (sse_regnum)
 	  || (needed_integer_regs == 0 && needed_sse_regs == 0))
@@ -953,6 +998,9 @@ if (return_method == return_method_struct)
 		  regnum = sse_regnum[sse_reg - 1];
 		  offset = 8;
 		  break;
+
+		case AMD64_NO_CLASS:
+		  continue;
 
 		default:
 		  gdb_assert (!"Unexpected register class.");
@@ -1055,9 +1103,10 @@ struct amd64_insn
   gdb_byte *raw_insn;
 };
 
-struct amd64_displaced_step_closure : public displaced_step_closure
+struct amd64_displaced_step_copy_insn_closure
+  : public displaced_step_copy_insn_closure
 {
-  amd64_displaced_step_closure (int insn_buf_len)
+  amd64_displaced_step_copy_insn_closure (int insn_buf_len)
   : insn_buf (insn_buf_len, 0)
   {}
 
@@ -1338,7 +1387,8 @@ amd64_get_insn_details (gdb_byte *insn, struct amd64_insn *details)
    We set base = pc + insn_length so we can leave disp unchanged.  */
 
 static void
-fixup_riprel (struct gdbarch *gdbarch, amd64_displaced_step_closure *dsc,
+fixup_riprel (struct gdbarch *gdbarch,
+	      amd64_displaced_step_copy_insn_closure *dsc,
 	      CORE_ADDR from, CORE_ADDR to, struct regcache *regs)
 {
   const struct amd64_insn *insn_details = &dsc->insn_details;
@@ -1391,16 +1441,15 @@ fixup_riprel (struct gdbarch *gdbarch, amd64_displaced_step_closure *dsc,
 
   regcache_cooked_write_unsigned (regs, tmp_regno, rip_base);
 
-  if (debug_displaced)
-    fprintf_unfiltered (gdb_stdlog, "displaced: %%rip-relative addressing used.\n"
-			"displaced: using temp reg %d, old value %s, new value %s\n",
-			dsc->tmp_regno, paddress (gdbarch, dsc->tmp_save),
-			paddress (gdbarch, rip_base));
+  displaced_debug_printf ("%%rip-relative addressing used.");
+  displaced_debug_printf ("using temp reg %d, old value %s, new value %s",
+			  dsc->tmp_regno, paddress (gdbarch, dsc->tmp_save),
+			  paddress (gdbarch, rip_base));
 }
 
 static void
 fixup_displaced_copy (struct gdbarch *gdbarch,
-		      amd64_displaced_step_closure *dsc,
+		      amd64_displaced_step_copy_insn_closure *dsc,
 		      CORE_ADDR from, CORE_ADDR to, struct regcache *regs)
 {
   const struct amd64_insn *details = &dsc->insn_details;
@@ -1418,7 +1467,7 @@ fixup_displaced_copy (struct gdbarch *gdbarch,
     }
 }
 
-struct displaced_step_closure *
+displaced_step_copy_insn_closure_up
 amd64_displaced_step_copy_insn (struct gdbarch *gdbarch,
 				CORE_ADDR from, CORE_ADDR to,
 				struct regcache *regs)
@@ -1427,8 +1476,8 @@ amd64_displaced_step_copy_insn (struct gdbarch *gdbarch,
   /* Extra space for sentinels so fixup_{riprel,displaced_copy} don't have to
      continually watch for running off the end of the buffer.  */
   int fixup_sentinel_space = len;
-  amd64_displaced_step_closure *dsc
-    = new amd64_displaced_step_closure (len + fixup_sentinel_space);
+  std::unique_ptr<amd64_displaced_step_copy_insn_closure> dsc
+    (new amd64_displaced_step_copy_insn_closure (len + fixup_sentinel_space));
   gdb_byte *buf = &dsc->insn_buf[0];
   struct amd64_insn *details = &dsc->insn_details;
 
@@ -1453,18 +1502,16 @@ amd64_displaced_step_copy_insn (struct gdbarch *gdbarch,
 
   /* Modify the insn to cope with the address where it will be executed from.
      In particular, handle any rip-relative addressing.	 */
-  fixup_displaced_copy (gdbarch, dsc, from, to, regs);
+  fixup_displaced_copy (gdbarch, dsc.get (), from, to, regs);
 
   write_memory (to, buf, len);
 
-  if (debug_displaced)
-    {
-      fprintf_unfiltered (gdb_stdlog, "displaced: copy %s->%s: ",
-			  paddress (gdbarch, from), paddress (gdbarch, to));
-      displaced_step_dump_bytes (gdb_stdlog, buf, len);
-    }
+  displaced_debug_printf ("copy %s->%s: %s",
+			  paddress (gdbarch, from), paddress (gdbarch, to),
+			  displaced_step_dump_bytes (buf, len).c_str ());
 
-  return dsc;
+  /* This is a work around for a problem with g++ 4.8.  */
+  return displaced_step_copy_insn_closure_up (dsc.release ());
 }
 
 static int
@@ -1626,31 +1673,28 @@ amd64_insn_is_jump (struct gdbarch *gdbarch, CORE_ADDR addr)
 
 void
 amd64_displaced_step_fixup (struct gdbarch *gdbarch,
-			    struct displaced_step_closure *dsc_,
+			    struct displaced_step_copy_insn_closure *dsc_,
 			    CORE_ADDR from, CORE_ADDR to,
 			    struct regcache *regs)
 {
-  amd64_displaced_step_closure *dsc = (amd64_displaced_step_closure *) dsc_;
+  amd64_displaced_step_copy_insn_closure *dsc
+    = (amd64_displaced_step_copy_insn_closure *) dsc_;
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   /* The offset we applied to the instruction's address.  */
   ULONGEST insn_offset = to - from;
   gdb_byte *insn = dsc->insn_buf.data ();
   const struct amd64_insn *insn_details = &dsc->insn_details;
 
-  if (debug_displaced)
-    fprintf_unfiltered (gdb_stdlog,
-			"displaced: fixup (%s, %s), "
-			"insn = 0x%02x 0x%02x ...\n",
-			paddress (gdbarch, from), paddress (gdbarch, to),
-			insn[0], insn[1]);
+  displaced_debug_printf ("fixup (%s, %s), insn = 0x%02x 0x%02x ...",
+			  paddress (gdbarch, from), paddress (gdbarch, to),
+			  insn[0], insn[1]);
 
   /* If we used a tmp reg, restore it.	*/
 
   if (dsc->tmp_used)
     {
-      if (debug_displaced)
-	fprintf_unfiltered (gdb_stdlog, "displaced: restoring reg %d to %s\n",
-			    dsc->tmp_regno, paddress (gdbarch, dsc->tmp_save));
+      displaced_debug_printf ("restoring reg %d to %s",
+			      dsc->tmp_regno, paddress (gdbarch, dsc->tmp_save));
       regcache_cooked_write_unsigned (regs, dsc->tmp_regno, dsc->tmp_save);
     }
 
@@ -1695,12 +1739,7 @@ amd64_displaced_step_fixup (struct gdbarch *gdbarch,
 	     Presumably this is a kernel bug.
 	     Fixup ensures its a nop, we add one to the length for it.  */
 	  && orig_rip != to + insn_len + 1)
-	{
-	  if (debug_displaced)
-	    fprintf_unfiltered (gdb_stdlog,
-				"displaced: syscall changed %%rip; "
-				"not relocating\n");
-	}
+	displaced_debug_printf ("syscall changed %%rip; not relocating");
       else
 	{
 	  ULONGEST rip = orig_rip - insn_offset;
@@ -1711,12 +1750,9 @@ amd64_displaced_step_fixup (struct gdbarch *gdbarch,
 
 	  regcache_cooked_write_unsigned (regs, AMD64_RIP_REGNUM, rip);
 
-	  if (debug_displaced)
-	    fprintf_unfiltered (gdb_stdlog,
-				"displaced: "
-				"relocated %%rip from %s to %s\n",
-				paddress (gdbarch, orig_rip),
-				paddress (gdbarch, rip));
+	  displaced_debug_printf ("relocated %%rip from %s to %s",
+				  paddress (gdbarch, orig_rip),
+				  paddress (gdbarch, rip));
 	}
     }
 
@@ -1739,12 +1775,9 @@ amd64_displaced_step_fixup (struct gdbarch *gdbarch,
       retaddr = (retaddr - insn_offset) & 0xffffffffffffffffULL;
       write_memory_unsigned_integer (rsp, retaddr_len, byte_order, retaddr);
 
-      if (debug_displaced)
-	fprintf_unfiltered (gdb_stdlog,
-			    "displaced: relocated return addr at %s "
-			    "to %s\n",
-			    paddress (gdbarch, rsp),
-			    paddress (gdbarch, retaddr));
+      displaced_debug_printf ("relocated return addr at %s to %s",
+			      paddress (gdbarch, rsp),
+			      paddress (gdbarch, retaddr));
     }
 }
 
@@ -1862,12 +1895,9 @@ amd64_relocate_instruction (struct gdbarch *gdbarch,
       newrel = (oldloc - *to) + rel32;
       store_signed_integer (insn + 1, 4, byte_order, newrel);
 
-      if (debug_displaced)
-	fprintf_unfiltered (gdb_stdlog,
-			    "Adjusted insn rel32=%s at %s to"
-			    " rel32=%s at %s\n",
-			    hex_string (rel32), paddress (gdbarch, oldloc),
-			    hex_string (newrel), paddress (gdbarch, *to));
+      displaced_debug_printf ("adjusted insn rel32=%s at %s to rel32=%s at %s",
+			      hex_string (rel32), paddress (gdbarch, oldloc),
+			      hex_string (newrel), paddress (gdbarch, *to));
 
       /* Write the adjusted jump into its displaced location.  */
       append_insns (to, 5, insn);
@@ -1891,12 +1921,9 @@ amd64_relocate_instruction (struct gdbarch *gdbarch,
       rel32 = extract_signed_integer (insn + offset, 4, byte_order);
       newrel = (oldloc - *to) + rel32;
       store_signed_integer (insn + offset, 4, byte_order, newrel);
-      if (debug_displaced)
-	fprintf_unfiltered (gdb_stdlog,
-			    "Adjusted insn rel32=%s at %s to"
-			    " rel32=%s at %s\n",
-			    hex_string (rel32), paddress (gdbarch, oldloc),
-			    hex_string (newrel), paddress (gdbarch, *to));
+      displaced_debug_printf ("adjusted insn rel32=%s at %s to rel32=%s at %s",
+			      hex_string (rel32), paddress (gdbarch, oldloc),
+			      hex_string (newrel), paddress (gdbarch, *to));
     }
 
   /* Write the adjusted instruction into its displaced location.  */
@@ -2314,6 +2341,9 @@ amd64_x32_analyze_stack_align (CORE_ADDR pc, CORE_ADDR current_pc,
       pushq %rbp        0x55
       movl %esp, %ebp   0x89 0xe5 (or 0x8b 0xec)
 
+   The `endbr64` instruction can be found before these sequences, and will be
+   skipped if found.
+
    Any function that doesn't start with one of these sequences will be
    assumed to have no prologue and thus no valid frame pointer in
    %rbp.  */
@@ -2324,6 +2354,8 @@ amd64_analyze_prologue (struct gdbarch *gdbarch,
 			struct amd64_frame_cache *cache)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+  /* The `endbr64` instruction.  */
+  static const gdb_byte endbr64[4] = { 0xf3, 0x0f, 0x1e, 0xfa };
   /* There are two variations of movq %rsp, %rbp.  */
   static const gdb_byte mov_rsp_rbp_1[3] = { 0x48, 0x89, 0xe5 };
   static const gdb_byte mov_rsp_rbp_2[3] = { 0x48, 0x8b, 0xec };
@@ -2344,16 +2376,30 @@ amd64_analyze_prologue (struct gdbarch *gdbarch,
 
   op = read_code_unsigned_integer (pc, 1, byte_order);
 
+  /* Check for the `endbr64` instruction, skip it if found.  */
+  if (op == endbr64[0])
+    {
+      read_code (pc + 1, buf, 3);
+
+      if (memcmp (buf, &endbr64[1], 3) == 0)
+	pc += 4;
+
+      op = read_code_unsigned_integer (pc, 1, byte_order);
+    }
+
+  if (current_pc <= pc)
+    return current_pc;
+
   if (op == 0x55)		/* pushq %rbp */
     {
       /* Take into account that we've executed the `pushq %rbp' that
-         starts this instruction sequence.  */
+	 starts this instruction sequence.  */
       cache->saved_regs[AMD64_RBP_REGNUM] = 0;
       cache->sp_offset += 8;
 
       /* If that's all, return now.  */
       if (current_pc <= pc + 1)
-        return current_pc;
+	return current_pc;
 
       read_code (pc + 1, buf, 3);
 
@@ -2366,7 +2412,7 @@ amd64_analyze_prologue (struct gdbarch *gdbarch,
 	  return pc + 4;
 	}
 
-      /* For X32, also check for `movq %esp, %ebp'.  */
+      /* For X32, also check for `movl %esp, %ebp'.  */
       if (gdbarch_ptr_bit (gdbarch) == 32)
 	{
 	  if (memcmp (buf, mov_esp_ebp_1, 2) == 0
@@ -2439,7 +2485,7 @@ amd64_skip_xmm_prologue (CORE_ADDR pc, CORE_ADDR start_pc)
     {
       /* 0x0f 0x29 0b??000101 movaps %xmmreg?,-0x??(%rbp) */
       if (buf[offset] != 0x0f || buf[offset + 1] != 0x29
-          || (buf[offset + 2] & 0x3f) != (xmmreg << 3 | 0x5))
+	  || (buf[offset + 2] & 0x3f) != (xmmreg << 3 | 0x5))
 	return pc;
 
       /* 0b01?????? */
@@ -2480,13 +2526,14 @@ amd64_skip_prologue (struct gdbarch *gdbarch, CORE_ADDR start_pc)
 	= skip_prologue_using_sal (gdbarch, func_addr);
       struct compunit_symtab *cust = find_pc_compunit_symtab (func_addr);
 
-      /* Clang always emits a line note before the prologue and another
-	 one after.  We trust clang to emit usable line notes.  */
+      /* LLVM backend (Clang/Flang) always emits a line note before the
+	 prologue and another one after.  We trust clang to emit usable
+	 line notes.  */
       if (post_prologue_pc
 	  && (cust != NULL
 	      && COMPUNIT_PRODUCER (cust) != NULL
-	      && startswith (COMPUNIT_PRODUCER (cust), "clang ")))
-        return std::max (start_pc, post_prologue_pc);
+	      && producer_is_llvm (COMPUNIT_PRODUCER (cust))))
+	return std::max (start_pc, post_prologue_pc);
     }
 
   amd64_init_frame_cache (&cache);
@@ -2581,16 +2628,15 @@ amd64_frame_cache (struct frame_info *this_frame, void **this_cache)
   cache = amd64_alloc_frame_cache ();
   *this_cache = cache;
 
-  TRY
+  try
     {
       amd64_frame_cache_1 (this_frame, cache);
     }
-  CATCH (ex, RETURN_MASK_ERROR)
+  catch (const gdb_exception_error &ex)
     {
       if (ex.error != NOT_AVAILABLE_ERROR)
-	throw_exception (ex);
+	throw;
     }
-  END_CATCH
 
   return cache;
 }
@@ -2699,7 +2745,7 @@ amd64_sigtramp_frame_cache (struct frame_info *this_frame, void **this_cache)
 
   cache = amd64_alloc_frame_cache ();
 
-  TRY
+  try
     {
       get_frame_register (this_frame, AMD64_RSP_REGNUM, buf);
       cache->base = extract_unsigned_integer (buf, 8, byte_order) - 8;
@@ -2713,12 +2759,11 @@ amd64_sigtramp_frame_cache (struct frame_info *this_frame, void **this_cache)
 
       cache->base_p = 1;
     }
-  CATCH (ex, RETURN_MASK_ERROR)
+  catch (const gdb_exception_error &ex)
     {
       if (ex.error != NOT_AVAILABLE_ERROR)
-	throw_exception (ex);
+	throw;
     }
-  END_CATCH
 
   *this_cache = cache;
   return cache;
@@ -2876,7 +2921,7 @@ amd64_epilogue_frame_cache (struct frame_info *this_frame, void **this_cache)
   cache = amd64_alloc_frame_cache ();
   *this_cache = cache;
 
-  TRY
+  try
     {
       /* Cache base will be %esp plus cache->sp_offset (-8).  */
       get_frame_register (this_frame, AMD64_RSP_REGNUM, buf);
@@ -2894,12 +2939,11 @@ amd64_epilogue_frame_cache (struct frame_info *this_frame, void **this_cache)
 
       cache->base_p = 1;
     }
-  CATCH (ex, RETURN_MASK_ERROR)
+  catch (const gdb_exception_error &ex)
     {
       if (ex.error != NOT_AVAILABLE_ERROR)
-	throw_exception (ex);
+	throw;
     }
-  END_CATCH
 
   return cache;
 }
@@ -3107,15 +3151,7 @@ amd64_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch,
 
   if (tdesc_find_feature (tdesc, "org.gnu.gdb.i386.segments") != NULL)
     {
-      const struct tdesc_feature *feature =
-	  tdesc_find_feature (tdesc, "org.gnu.gdb.i386.segments");
-      struct tdesc_arch_data *tdesc_data_segments =
-	  (struct tdesc_arch_data *) info.tdep_info;
-
-      tdesc_numbered_register (feature, tdesc_data_segments,
-		       AMD64_FSBASE_REGNUM, "fs_base");
-      tdesc_numbered_register (feature, tdesc_data_segments,
-		       AMD64_GSBASE_REGNUM, "gs_base");
+      tdep->fsbase_regnum = AMD64_FSBASE_REGNUM;
     }
 
   if (tdesc_find_feature (tdesc, "org.gnu.gdb.i386.pkeys") != NULL)
@@ -3224,6 +3260,8 @@ amd64_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch,
 
   set_gdbarch_in_indirect_branch_thunk (gdbarch,
 					amd64_in_indirect_branch_thunk);
+
+  register_amd64_ravenscar_ops (gdbarch);
 }
 
 /* Initialize ARCH for x86-64, no osabi.  */
@@ -3298,36 +3336,14 @@ amd64_target_description (uint64_t xcr0, bool segments)
   return *tdesc;
 }
 
+void _initialize_amd64_tdep ();
 void
-_initialize_amd64_tdep (void)
+_initialize_amd64_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_i386, bfd_mach_x86_64, GDB_OSABI_NONE,
  			  amd64_none_init_abi);
   gdbarch_register_osabi (bfd_arch_i386, bfd_mach_x64_32, GDB_OSABI_NONE,
  			  amd64_x32_none_init_abi);
-
-#if GDB_SELF_TEST
-  struct
-  {
-    const char *xml;
-    uint64_t mask;
-  } xml_masks[] = {
-    { "i386/amd64.xml", X86_XSTATE_SSE_MASK },
-    { "i386/amd64-avx.xml", X86_XSTATE_AVX_MASK },
-    { "i386/amd64-mpx.xml", X86_XSTATE_MPX_MASK },
-    { "i386/amd64-avx-mpx.xml", X86_XSTATE_AVX_MPX_MASK },
-    { "i386/amd64-avx-avx512.xml", X86_XSTATE_AVX_AVX512_MASK },
-    { "i386/amd64-avx-mpx-avx512-pku.xml",
-      X86_XSTATE_AVX_MPX_AVX512_PKU_MASK },
-  };
-
-  for (auto &a : xml_masks)
-    {
-      auto tdesc = amd64_target_description (a.mask, true);
-
-      selftests::record_xml_tdesc (a.xml, tdesc);
-    }
-#endif /* GDB_SELF_TEST */
 }
 
 

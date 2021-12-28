@@ -1,6 +1,6 @@
 /* addrmap.c --- implementation of address map data structure.
 
-   Copyright (C) 2007-2019 Free Software Foundation, Inc.
+   Copyright (C) 2007-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -22,6 +22,11 @@
 #include "gdb_obstack.h"
 #include "addrmap.h"
 
+/* Make sure splay trees can actually hold the values we want to
+   store in them.  */
+gdb_static_assert (sizeof (splay_tree_key) >= sizeof (CORE_ADDR *));
+gdb_static_assert (sizeof (splay_tree_value) >= sizeof (void *));
+
 
 /* The "abstract class".  */
 
@@ -30,11 +35,11 @@
 struct addrmap_funcs
 {
   void (*set_empty) (struct addrmap *self,
-                     CORE_ADDR start, CORE_ADDR end_inclusive,
-                     void *obj);
+		     CORE_ADDR start, CORE_ADDR end_inclusive,
+		     void *obj);
   void *(*find) (struct addrmap *self, CORE_ADDR addr);
   struct addrmap *(*create_fixed) (struct addrmap *self,
-                                   struct obstack *obstack);
+				   struct obstack *obstack);
   void (*relocate) (struct addrmap *self, CORE_ADDR offset);
   int (*foreach) (struct addrmap *self, addrmap_foreach_fn fn, void *data);
 };
@@ -48,8 +53,8 @@ struct addrmap
 
 void
 addrmap_set_empty (struct addrmap *map,
-                   CORE_ADDR start, CORE_ADDR end_inclusive,
-                   void *obj)
+		   CORE_ADDR start, CORE_ADDR end_inclusive,
+		   void *obj)
 {
   map->funcs->set_empty (map, start, end_inclusive, obj);
 }
@@ -114,12 +119,12 @@ struct addrmap_fixed
 
 static void
 addrmap_fixed_set_empty (struct addrmap *self,
-                   CORE_ADDR start, CORE_ADDR end_inclusive,
-                   void *obj)
+		   CORE_ADDR start, CORE_ADDR end_inclusive,
+		   void *obj)
 {
   internal_error (__FILE__, __LINE__,
-                  "addrmap_fixed_set_empty: "
-                  "fixed addrmaps can't be changed\n");
+		  "addrmap_fixed_set_empty: "
+		  "fixed addrmaps can't be changed\n");
 }
 
 
@@ -133,23 +138,23 @@ addrmap_fixed_find (struct addrmap *self, CORE_ADDR addr)
   while (bottom < top)
     {
       /* This needs to round towards top, or else when top = bottom +
-         1 (i.e., two entries are under consideration), then mid ==
-         bottom, and then we may not narrow the range when (mid->addr
-         < addr).  */
+	 1 (i.e., two entries are under consideration), then mid ==
+	 bottom, and then we may not narrow the range when (mid->addr
+	 < addr).  */
       struct addrmap_transition *mid = top - (top - bottom) / 2;
 
       if (mid->addr == addr)
-        {
-          bottom = mid;
-          break;
-        }
+	{
+	  bottom = mid;
+	  break;
+	}
       else if (mid->addr < addr)
-        /* We don't eliminate mid itself here, since each transition
-           covers all subsequent addresses until the next.  This is why
-           we must round up in computing the midpoint.  */
-        bottom = mid;
+	/* We don't eliminate mid itself here, since each transition
+	   covers all subsequent addresses until the next.  This is why
+	   we must round up in computing the midpoint.  */
+	bottom = mid;
       else
-        top = mid - 1;
+	top = mid - 1;
     }
 
   return bottom->value;
@@ -160,8 +165,8 @@ static struct addrmap *
 addrmap_fixed_create_fixed (struct addrmap *self, struct obstack *obstack)
 {
   internal_error (__FILE__, __LINE__,
-                  _("addrmap_create_fixed is not implemented yet "
-                    "for fixed addrmaps"));
+		  _("addrmap_create_fixed is not implemented yet "
+		    "for fixed addrmaps"));
 }
 
 
@@ -306,8 +311,8 @@ addrmap_splay_tree_insert (struct addrmap_mutable *map,
 			   CORE_ADDR key, void *value)
 {
   splay_tree_insert (map->tree,
-                     allocate_key (map, key),
-                     (splay_tree_value) value);
+		     allocate_key (map, key),
+		     (splay_tree_value) value);
 }
 
 
@@ -324,15 +329,15 @@ force_transition (struct addrmap_mutable *self, CORE_ADDR addr)
     {
       n = addrmap_splay_tree_predecessor (self, addr);
       addrmap_splay_tree_insert (self, addr,
-                                 n ? addrmap_node_value (n) : NULL);
+				 n ? addrmap_node_value (n) : NULL);
     }
 }
 
 
 static void
 addrmap_mutable_set_empty (struct addrmap *self,
-                           CORE_ADDR start, CORE_ADDR end_inclusive,
-                           void *obj)
+			   CORE_ADDR start, CORE_ADDR end_inclusive,
+			   void *obj)
 {
   struct addrmap_mutable *map = (struct addrmap_mutable *) self;
   splay_tree_node n, next;
@@ -361,7 +366,7 @@ addrmap_mutable_set_empty (struct addrmap *self,
        n = addrmap_splay_tree_successor (map, addrmap_node_key (n)))
     {
       if (! addrmap_node_value (n))
-        addrmap_node_set_value (n, obj);
+	addrmap_node_set_value (n, obj);
     }
 
   /* Walk the area again, removing transitions from any value to
@@ -371,14 +376,14 @@ addrmap_mutable_set_empty (struct addrmap *self,
   prior_value = n ? addrmap_node_value (n) : NULL;
   for (n = addrmap_splay_tree_lookup (map, start), gdb_assert (n);
        n && (end_inclusive == CORE_ADDR_MAX
-             || addrmap_node_key (n) <= end_inclusive + 1);
+	     || addrmap_node_key (n) <= end_inclusive + 1);
        n = next)
     {
       next = addrmap_splay_tree_successor (map, addrmap_node_key (n));
       if (addrmap_node_value (n) == prior_value)
-        addrmap_splay_tree_remove (map, addrmap_node_key (n));
+	addrmap_splay_tree_remove (map, addrmap_node_key (n));
       else
-        prior_value = addrmap_node_value (n);
+	prior_value = addrmap_node_value (n);
     }
 }
 
@@ -388,8 +393,8 @@ addrmap_mutable_find (struct addrmap *self, CORE_ADDR addr)
 {
   /* Not needed yet.  */
   internal_error (__FILE__, __LINE__,
-                  _("addrmap_find is not implemented yet "
-                    "for mutable addrmaps"));
+		  _("addrmap_find is not implemented yet "
+		    "for mutable addrmaps"));
 }
 
 
@@ -461,8 +466,8 @@ addrmap_mutable_relocate (struct addrmap *self, CORE_ADDR offset)
 {
   /* Not needed yet.  */
   internal_error (__FILE__, __LINE__,
-                  _("addrmap_relocate is not implemented yet "
-                    "for mutable addrmaps"));
+		  _("addrmap_relocate is not implemented yet "
+		    "for mutable addrmaps"));
 }
 
 
@@ -579,22 +584,11 @@ addrmap_create_mutable (struct obstack *obstack)
   map->free_nodes = NULL;
 
   map->tree = splay_tree_new_with_allocator (splay_compare_CORE_ADDR_ptr,
-                                             NULL, /* no delete key */
-                                             NULL, /* no delete value */
-                                             splay_obstack_alloc,
-                                             splay_obstack_free,
-                                             map);
+					     NULL, /* no delete key */
+					     NULL, /* no delete value */
+					     splay_obstack_alloc,
+					     splay_obstack_free,
+					     map);
 
   return (struct addrmap *) map;
-}
-
-/* Initialization.  */
-
-void
-_initialize_addrmap (void)
-{
-  /* Make sure splay trees can actually hold the values we want to 
-     store in them.  */
-  gdb_assert (sizeof (splay_tree_key) >= sizeof (CORE_ADDR *));
-  gdb_assert (sizeof (splay_tree_value) >= sizeof (void *));
 }

@@ -1,6 +1,6 @@
 /* Python interface to line tables.
 
-   Copyright (C) 2013-2019 Free Software Foundation, Inc.
+   Copyright (C) 2013-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,31 +19,30 @@
 
 #include "defs.h"
 #include "python-internal.h"
-#include "py-ref.h"
 
-typedef struct {
+struct linetable_entry_object {
   PyObject_HEAD
   /* The line table source line.  */
   int line;
   /* The pc associated with the source line.  */
   CORE_ADDR pc;
-} linetable_entry_object;
+};
 
 extern PyTypeObject linetable_entry_object_type
     CPYCHECKER_TYPE_OBJECT_FOR_TYPEDEF ("linetable_entry_object");
 
-typedef struct {
+struct linetable_object {
   PyObject_HEAD
   /* The symtab python object.  We store the Python object here as the
      underlying symtab can become invalid, and we have to run validity
      checks on it.  */
   PyObject *symtab;
-} linetable_object;
+};
 
 extern PyTypeObject linetable_object_type
     CPYCHECKER_TYPE_OBJECT_FOR_TYPEDEF ("linetable_object");
 
-typedef struct {
+struct ltpy_iterator_object {
   PyObject_HEAD
   /* The current entry in the line table for the iterator  */
   int current_index;
@@ -51,7 +50,7 @@ typedef struct {
      check if the line table is still valid, and has not been invalidated
      when an object file has been freed.  */
   PyObject *source;
-} ltpy_iterator_object;
+};
 
 extern PyTypeObject ltpy_iterator_object_type
     CPYCHECKER_TYPE_OBJECT_FOR_TYPEDEF ("ltpy_iterator_object");
@@ -165,15 +164,14 @@ ltpy_get_pcs_for_line (PyObject *self, PyObject *args)
   if (! PyArg_ParseTuple (args, GDB_PY_LL_ARG, &py_line))
     return NULL;
 
-  TRY
+  try
     {
       pcs = find_pcs_for_symtab_line (symtab, py_line, &best_entry);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
   return build_line_table_tuple_from_pcs (py_line, pcs);
 }
@@ -338,7 +336,7 @@ ltpy_entry_get_pc (PyObject *self, void *closure)
 {
   linetable_entry_object *obj = (linetable_entry_object *) self;
 
-  return  gdb_py_object_from_longest (obj->pc).release ();
+  return gdb_py_object_from_ulongest (obj->pc).release ();
 }
 
 /* LineTable iterator functions.  */
@@ -371,6 +369,7 @@ ltpy_iterator_dealloc (PyObject *obj)
   ltpy_iterator_object *iter_obj = (ltpy_iterator_object *) obj;
 
   Py_DECREF (iter_obj->source);
+  Py_TYPE (obj)->tp_free (obj);
 }
 
 /* Return a reference to the line table iterator.  */

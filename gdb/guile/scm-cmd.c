@@ -1,6 +1,6 @@
 /* GDB commands implemented in Scheme.
 
-   Copyright (C) 2008-2019 Free Software Foundation, Inc.
+   Copyright (C) 2008-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -37,7 +37,7 @@
    any side-effects.  This means that the smob needs to store everything
    that was passed to make-command.  */
 
-typedef struct _command_smob
+struct command_smob
 {
   /* This always appears first.  */
   gdb_smob base;
@@ -85,7 +85,7 @@ typedef struct _command_smob
      the object since a reference to it comes from non-gc-managed space
      (the command context pointer).  */
   SCM containing_scm;
-} command_smob;
+};
 
 static const char command_smob_name[] = "gdb:command";
 
@@ -492,10 +492,7 @@ gdbscm_parse_command_name (const char *name,
   lastchar = i;
 
   /* Find first character of the final word.  */
-  for (; i > 0 && (isalnum (name[i - 1])
-		   || name[i - 1] == '-'
-		   || name[i - 1] == '_');
-       --i)
+  for (; i > 0 && valid_cmd_char_p (name[i - 1]); --i)
     ;
   result = (char *) xmalloc (lastchar - i + 2);
   memcpy (result, &name[i], lastchar - i + 1);
@@ -515,7 +512,7 @@ gdbscm_parse_command_name (const char *name,
   prefix_text[i + 1] = '\0';
 
   prefix_text2 = prefix_text;
-  elt = lookup_cmd_1 (&prefix_text2, *start_list, NULL, 1);
+  elt = lookup_cmd_1 (&prefix_text2, *start_list, NULL, NULL, 1);
   if (elt == NULL || elt == CMD_LIST_AMBIGUOUS)
     {
       msg = xstrprintf (_("could not find command prefix '%s'"), prefix_text);
@@ -638,9 +635,9 @@ gdbscm_canonicalize_command_name (const char *name, int want_trailing_space)
      One of the COMPLETE_* constants defined in the gdb module.
      A procedure of three arguments: (lambda (self text word) ...).
        Its result is one of:
-         A list of strings.
-         A <gdb:iterator> object that returns the set of possible completions,
-         ending with #f.
+	 A list of strings.
+	 A <gdb:iterator> object that returns the set of possible completions,
+	 ending with #f.
 	 TODO(dje): Once PR 16699 is fixed, add support for returning
 	 a COMPLETE_* constant.
    If not specified, then completion is not supported for this command.
@@ -758,7 +755,8 @@ gdbscm_register_command_x (SCM self)
   c_smob->cmd_name = gdbscm_gc_xstrdup (cmd_name);
   xfree (cmd_name);
 
-  TRY
+  gdbscm_gdb_exception exc {};
+  try
     {
       if (c_smob->is_prefix)
 	{
@@ -776,11 +774,11 @@ gdbscm_register_command_x (SCM self)
 			 c_smob->doc, cmd_list);
 	}
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      GDBSCM_HANDLE_GDB_EXCEPTION (except);
+      exc = unpack (except);
     }
-  END_CATCH
+  GDBSCM_HANDLE_GDB_EXCEPTION (exc);
 
   /* Note: At this point the command exists in gdb.
      So no more errors after this point.  */

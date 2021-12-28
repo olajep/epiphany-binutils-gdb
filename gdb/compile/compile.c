@@ -1,6 +1,6 @@
 /* General Compile and inject code
 
-   Copyright (C) 2014-2019 Free Software Foundation, Inc.
+   Copyright (C) 2014-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -23,6 +23,7 @@
 #include "command.h"
 #include "cli/cli-script.h"
 #include "cli/cli-utils.h"
+#include "cli/cli-option.h"
 #include "completer.h"
 #include "gdbcmd.h"
 #include "compile.h"
@@ -34,14 +35,14 @@
 #include "source.h"
 #include "block.h"
 #include "arch-utils.h"
-#include "filestuff.h"
+#include "gdbsupport/filestuff.h"
 #include "target.h"
 #include "osabi.h"
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
 #include "valprint.h"
-#include "common/gdb_optional.h"
-#include "common/gdb_unlinker.h"
-#include "common/pathstuff.h"
+#include "gdbsupport/gdb_optional.h"
+#include "gdbsupport/gdb_unlinker.h"
+#include "gdbsupport/pathstuff.h"
 
 
 
@@ -55,7 +56,7 @@ static struct cmd_list_element *compile_command_list;
 
 /* Debug flag for "compile" commands.  */
 
-int compile_debug;
+bool compile_debug;
 
 /* Object of this type are stored in the compiler's symbol_err_map.  */
 
@@ -235,19 +236,34 @@ show_compile_debug (struct ui_file *file, int from_tty,
 
 
 
-/* Check *ARG for a "-raw" or "-r" argument.  Return 0 if not seen.
-   Return 1 if seen and update *ARG.  */
+/* Options for the compile command.  */
 
-static int
-check_raw_argument (const char **arg)
+struct compile_options
 {
-  *arg = skip_spaces (*arg);
+  /* For -raw.  */
+  bool raw = false;
+};
 
-  if (arg != NULL
-      && (check_for_argument (arg, "-raw", sizeof ("-raw") - 1)
-	  || check_for_argument (arg, "-r", sizeof ("-r") - 1)))
-      return 1;
-  return 0;
+using compile_flag_option_def
+  = gdb::option::flag_option_def<compile_options>;
+
+static const gdb::option::option_def compile_command_option_defs[] = {
+
+  compile_flag_option_def {
+    "raw",
+    [] (compile_options *opts) { return &opts->raw; },
+    N_("Suppress automatic 'void _gdb_expr () { CODE }' wrapping."),
+  },
+
+};
+
+/* Create an option_def_group for the "compile" command's options,
+   with OPTS as context.  */
+
+static gdb::option::option_def_group
+make_compile_options_def_group (compile_options *opts)
+{
+  return {{compile_command_option_defs}, opts};
 }
 
 /* Handle the input from the 'compile file' command.  The "compile
@@ -255,35 +271,50 @@ check_raw_argument (const char **arg)
    that may contain calls to the GCC compiler.  */
 
 static void
-compile_file_command (const char *arg, int from_tty)
+compile_file_command (const char *args, int from_tty)
 {
-  enum compile_i_scope_types scope = COMPILE_I_SIMPLE_SCOPE;
-
   scoped_restore save_async = make_scoped_restore (&current_ui->async, 0);
 
-  /* Check the user did not just <enter> after command.  */
-  if (arg == NULL)
+  /* Check if a -raw option is provided.  */
+
+  compile_options options;
+
+  const gdb::option::option_def_group group
+    = make_compile_options_def_group (&options);
+  gdb::option::process_options
+    (&args, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR,
+     group);
+
+  enum compile_i_scope_types scope
+    = options.raw ? COMPILE_I_RAW_SCOPE : COMPILE_I_SIMPLE_SCOPE;
+
+  args = skip_spaces (args);
+
+  /* After processing options, check whether we have a filename.  */
+  if (args == nullptr || args[0] == '\0')
     error (_("You must provide a filename for this command."));
 
-  /* Check if a raw (-r|-raw) argument is provided.  */
-  if (arg != NULL && check_raw_argument (&arg))
-    {
-      scope = COMPILE_I_RAW_SCOPE;
-      arg = skip_spaces (arg);
-    }
-
-  /* After processing arguments, check there is a filename at the end
-     of the command.  */
-  if (arg[0] == '\0')
-    error (_("You must provide a filename with the raw option set."));
-
-  if (arg[0] == '-')
-    error (_("Unknown argument specified."));
-
-  arg = skip_spaces (arg);
-  gdb::unique_xmalloc_ptr<char> abspath = gdb_abspath (arg);
+  args = skip_spaces (args);
+  gdb::unique_xmalloc_ptr<char> abspath = gdb_abspath (args);
   std::string buffer = string_printf ("#include \"%s\"\n", abspath.get ());
   eval_compile_command (NULL, buffer.c_str (), scope, NULL);
+}
+
+/* Completer for the "compile file" command.  */
+
+static void
+compile_file_command_completer (struct cmd_list_element *ignore,
+				completion_tracker &tracker,
+				const char *text, const char *word)
+{
+  const gdb::option::option_def_group group
+    = make_compile_options_def_group (nullptr);
+  if (gdb::option::complete_options
+      (tracker, &text, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR, group))
+    return;
+
+  word = advance_to_filename_complete_word_point (tracker, text);
+  filename_completer (ignore, tracker, text, word);
 }
 
 /* Handle the input from the 'compile code' command.  The
@@ -292,28 +323,22 @@ compile_file_command (const char *arg, int from_tty)
    compile command is the language currently set in GDB.  */
 
 static void
-compile_code_command (const char *arg, int from_tty)
+compile_code_command (const char *args, int from_tty)
 {
-  enum compile_i_scope_types scope = COMPILE_I_SIMPLE_SCOPE;
-
   scoped_restore save_async = make_scoped_restore (&current_ui->async, 0);
 
-  if (arg != NULL && check_raw_argument (&arg))
-    {
-      scope = COMPILE_I_RAW_SCOPE;
-      arg = skip_spaces (arg);
-    }
+  compile_options options;
 
-  arg = skip_spaces (arg);
+  const gdb::option::option_def_group group
+    = make_compile_options_def_group (&options);
+  gdb::option::process_options
+    (&args, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR, group);
 
-  if (arg != NULL && !check_for_argument (&arg, "--", sizeof ("--") - 1))
-    {
-      if (arg[0] == '-')
-	error (_("Unknown argument specified."));
-    }
+  enum compile_i_scope_types scope
+    = options.raw ? COMPILE_I_RAW_SCOPE : COMPILE_I_SIMPLE_SCOPE;
 
-  if (arg && *arg)
-    eval_compile_command (NULL, arg, scope, NULL);
+  if (args && *args)
+    eval_compile_command (NULL, args, scope, NULL);
   else
     {
       counted_command_line l = get_command_line (compile_control, "");
@@ -323,14 +348,31 @@ compile_code_command (const char *arg, int from_tty)
     }
 }
 
+/* Completer for the "compile code" command.  */
+
+static void
+compile_code_command_completer (struct cmd_list_element *ignore,
+				completion_tracker &tracker,
+				const char *text, const char *word)
+{
+  const gdb::option::option_def_group group
+    = make_compile_options_def_group (nullptr);
+  if (gdb::option::complete_options
+      (tracker, &text, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR, group))
+    return;
+
+  word = advance_to_expression_complete_word_point (tracker, text);
+  symbol_completer (ignore, tracker, text, word);
+}
+
 /* Callback for compile_print_command.  */
 
 void
 compile_print_value (struct value *val, void *data_voidp)
 {
-  const struct format_data *fmtp = (const struct format_data *) data_voidp;
+  const value_print_options *print_opts = (value_print_options *) data_voidp;
 
-  print_value (val, fmtp);
+  print_value (val, *print_opts);
 }
 
 /* Handle the input from the 'compile print' command.  The "compile
@@ -342,22 +384,30 @@ static void
 compile_print_command (const char *arg, int from_tty)
 {
   enum compile_i_scope_types scope = COMPILE_I_PRINT_ADDRESS_SCOPE;
-  struct format_data fmt;
+  value_print_options print_opts;
 
   scoped_restore save_async = make_scoped_restore (&current_ui->async, 0);
 
-  /* Passing &FMT as SCOPE_DATA is safe as do_module_cleanup will not
-     touch the stale pointer if compile_object_run has already quit.  */
-  print_command_parse_format (&arg, "compile print", &fmt);
+  get_user_print_options (&print_opts);
+  /* Override global settings with explicit options, if any.  */
+  auto group = make_value_print_options_def_group (&print_opts);
+  gdb::option::process_options
+    (&arg, gdb::option::PROCESS_OPTIONS_REQUIRE_DELIMITER, group);
+
+  print_command_parse_format (&arg, "compile print", &print_opts);
+
+  /* Passing &PRINT_OPTS as SCOPE_DATA is safe as do_module_cleanup
+     will not touch the stale pointer if compile_object_run has
+     already quit.  */
 
   if (arg && *arg)
-    eval_compile_command (NULL, arg, scope, &fmt);
+    eval_compile_command (NULL, arg, scope, &print_opts);
   else
     {
       counted_command_line l = get_command_line (compile_control, "");
 
       l->control_u.compile.scope = scope;
-      l->control_u.compile.scope_data = &fmt;
+      l->control_u.compile.scope_data = &print_opts;
       execute_control_command_untraced (l.get ());
     }
 }
@@ -443,33 +493,18 @@ get_expr_block_and_pc (CORE_ADDR *pc)
   return block;
 }
 
-/* Call buildargv (via gdb_argv), set its result for S into *ARGVP but
-   calculate also the number of parsed arguments into *ARGCP.  If
-   buildargv has returned NULL then *ARGCP is set to zero.  */
-
-static void
-build_argc_argv (const char *s, int *argcp, char ***argvp)
-{
-  gdb_argv args (s);
-
-  *argcp = args.count ();
-  *argvp = args.release ();
-}
-
 /* String for 'set compile-args' and 'show compile-args'.  */
 static char *compile_args;
 
-/* Parsed form of COMPILE_ARGS.  COMPILE_ARGS_ARGV is NULL terminated.  */
-static int compile_args_argc;
-static char **compile_args_argv;
+/* Parsed form of COMPILE_ARGS.  */
+static gdb_argv compile_args_argv;
 
 /* Implement 'set compile-args'.  */
 
 static void
 set_compile_args (const char *args, int from_tty, struct cmd_list_element *c)
 {
-  freeargv (compile_args_argv);
-  build_argc_argv (compile_args, &compile_args_argc, &compile_args_argv);
+  compile_args_argv = gdb_argv (compile_args);
 }
 
 /* Implement 'show compile-args'.  */
@@ -481,21 +516,6 @@ show_compile_args (struct ui_file *file, int from_tty,
   fprintf_filtered (file, _("Compile command command-line arguments "
 			    "are \"%s\".\n"),
 		    value);
-}
-
-/* Append ARGC and ARGV (as parsed by build_argc_argv) to *ARGCP and *ARGVP.
-   ARGCP+ARGVP can be zero+NULL and also ARGC+ARGV can be zero+NULL.  */
-
-static void
-append_args (int *argcp, char ***argvp, int argc, char **argv)
-{
-  int argi;
-
-  *argvp = XRESIZEVEC (char *, *argvp, (*argcp + argc + 1));
-
-  for (argi = 0; argi < argc; argi++)
-    (*argvp)[(*argcp)++] = xstrdup (argv[argi]);
-  (*argvp)[(*argcp)] = NULL;
 }
 
 /* String for 'set compile-gcc' and 'show compile-gcc'.  */
@@ -536,10 +556,10 @@ get_selected_pc_producer_options (void)
   return cs;
 }
 
-/* Filter out unwanted options from *ARGCP and ARGV.  */
+/* Filter out unwanted options from ARGV.  */
 
 static void
-filter_args (int *argcp, char **argv)
+filter_args (char **argv)
 {
   char **destv;
 
@@ -549,7 +569,6 @@ filter_args (int *argcp, char **argv)
       if (strcmp (*argv, "-fpreprocessed") == 0)
 	{
 	  xfree (*argv);
-	  (*argcp)--;
 	  continue;
 	}
       *destv++ = *argv;
@@ -577,35 +596,26 @@ filter_args (int *argcp, char **argv)
    appended last so as to override any of the arguments automatically
    generated above.  */
 
-static void
-get_args (const compile_instance *compiler, struct gdbarch *gdbarch,
-	  int *argcp, char ***argvp)
+static gdb_argv
+get_args (const compile_instance *compiler, struct gdbarch *gdbarch)
 {
   const char *cs_producer_options;
-  int argc_compiler;
-  char **argv_compiler;
 
-  build_argc_argv (gdbarch_gcc_target_options (gdbarch),
-		   argcp, argvp);
+  gdb_argv result (gdbarch_gcc_target_options (gdbarch).c_str ());
 
   cs_producer_options = get_selected_pc_producer_options ();
   if (cs_producer_options != NULL)
     {
-      int argc_producer;
-      char **argv_producer;
+      gdb_argv argv_producer (cs_producer_options);
+      filter_args (argv_producer.get ());
 
-      build_argc_argv (cs_producer_options, &argc_producer, &argv_producer);
-      filter_args (&argc_producer, argv_producer);
-      append_args (argcp, argvp, argc_producer, argv_producer);
-      freeargv (argv_producer);
+      result.append (std::move (argv_producer));
     }
 
-  build_argc_argv (compiler->gcc_target_options ().c_str (),
-		   &argc_compiler, &argv_compiler);
-  append_args (argcp, argvp, argc_compiler, argv_compiler);
-  freeargv (argv_compiler);
+  result.append (gdb_argv (compiler->gcc_target_options ().c_str ()));
+  result.append (compile_args_argv);
 
-  append_args (argcp, argvp, compile_args_argc, compile_args_argv);
+  return result;
 }
 
 /* A helper function suitable for use as the "print_callback" in the
@@ -627,13 +637,11 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
 {
   const struct block *expr_block;
   CORE_ADDR trash_pc, expr_pc;
-  int argc;
-  char **argv;
   int ok;
   struct gdbarch *gdbarch = get_current_arch ();
   std::string triplet_rx;
 
-  if (!target_has_execution)
+  if (!target_has_execution ())
     error (_("The program must be running for the compile command to "\
 	     "work."));
 
@@ -641,13 +649,11 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
   expr_pc = get_frame_address_in_block (get_selected_frame (NULL));
 
   /* Set up instance and context for the compiler.  */
-  if (current_language->la_get_compile_instance == NULL)
+  std::unique_ptr <compile_instance> compiler
+			(current_language->get_compile_instance ());
+  if (compiler == nullptr)
     error (_("No compiler support for language %s."),
-	   current_language->la_name);
-
-  compile_instance *compiler_instance
-    = current_language->la_get_compile_instance ();
-  std::unique_ptr<compile_instance> compiler (compiler_instance);
+	   current_language->name ());
   compiler->set_print_callback (print_callback, NULL);
   compiler->set_scope (scope);
   compiler->set_block (expr_block);
@@ -676,8 +682,8 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
     error (_("Neither a simple expression, or a multi-line specified."));
 
   std::string code
-    = current_language->la_compute_program (compiler.get (), input, gdbarch,
-					    expr_block, expr_pc);
+    = current_language->compute_program (compiler.get (), input, gdbarch,
+					 expr_block, expr_pc);
   if (compile_debug)
     fprintf_unfiltered (gdb_stdlog, "debug output:\n\n%s", code.c_str ());
 
@@ -702,8 +708,9 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
     }
 
   /* Set compiler command-line arguments.  */
-  get_args (compiler.get (), gdbarch, &argc, &argv);
-  gdb_argv argv_holder (argv);
+  gdb_argv argv_holder = get_args (compiler.get (), gdbarch);
+  int argc = argv_holder.count ();
+  char **argv = argv_holder.get ();
 
   gdb::unique_xmalloc_ptr<char> error_message;
   error_message.reset (compiler->set_arguments (argc, argv,
@@ -772,14 +779,13 @@ void
 eval_compile_command (struct command_line *cmd, const char *cmd_string,
 		      enum compile_i_scope_types scope, void *scope_data)
 {
-  struct compile_module *compile_module;
-
   compile_file_names fnames = compile_to_object (cmd, cmd_string, scope);
 
   gdb::unlinker object_remover (fnames.object_file ());
   gdb::unlinker source_remover (fnames.source_file ());
 
-  compile_module = compile_object_load (fnames, scope, scope_data);
+  compile_module_up compile_module = compile_object_load (fnames, scope,
+							  scope_data);
   if (compile_module == NULL)
     {
       gdb_assert (scope == COMPILE_I_PRINT_ADDRESS_SCOPE);
@@ -792,7 +798,7 @@ eval_compile_command (struct command_line *cmd, const char *cmd_string,
   source_remover.keep ();
   object_remover.keep ();
 
-  compile_object_run (compile_module);
+  compile_object_run (std::move (compile_module));
 }
 
 /* See compile/compile-internal.h.  */
@@ -907,8 +913,9 @@ compile_instance::compile (const char *filename, int verbose_level)
 /* See compile.h.  */
 cmd_list_element *compile_cmd_element = nullptr;
 
+void _initialize_compile ();
 void
-_initialize_compile (void)
+_initialize_compile ()
 {
   struct cmd_list_element *c = NULL;
 
@@ -918,14 +925,16 @@ Command to compile source code and inject it into the inferior."),
 		  &compile_command_list, "compile ", 1, &cmdlist);
   add_com_alias ("expression", "compile", class_obscure, 0);
 
-  add_cmd ("code", class_obscure, compile_code_command,
-	   _("\
+  const auto compile_opts = make_compile_options_def_group (nullptr);
+
+  static const std::string compile_code_help
+    = gdb::option::build_help (_("\
 Compile, inject, and execute code.\n\
 \n\
-Usage: compile code [-r|-raw] [--] [CODE]\n\
--r|-raw: Suppress automatic 'void _gdb_expr () { CODE }' wrapping.\n\
---: Do not parse any options beyond this delimiter.  All text to the\n\
-    right will be treated as source code.\n\
+Usage: compile code [OPTION]... [CODE]\n\
+\n\
+Options:\n\
+%OPTIONS%\n\
 \n\
 The source code may be specified as a simple one line expression, e.g.:\n\
 \n\
@@ -935,22 +944,42 @@ Alternatively, you can type a multiline expression by invoking\n\
 this command with no argument.  GDB will then prompt for the\n\
 expression interactively; type a line containing \"end\" to\n\
 indicate the end of the expression."),
-	   &compile_command_list);
+			       compile_opts);
 
-  c = add_cmd ("file", class_obscure, compile_file_command,
-	       _("\
+  c = add_cmd ("code", class_obscure, compile_code_command,
+	       compile_code_help.c_str (),
+	       &compile_command_list);
+  set_cmd_completer_handle_brkchars (c, compile_code_command_completer);
+
+static const std::string compile_file_help
+    = gdb::option::build_help (_("\
 Evaluate a file containing source code.\n\
 \n\
-Usage: compile file [-r|-raw] [FILENAME]\n\
--r|-raw: Suppress automatic 'void _gdb_expr () { CODE }' wrapping."),
-	       &compile_command_list);
-  set_cmd_completer (c, filename_completer);
+Usage: compile file [OPTION].. [FILENAME]\n\
+\n\
+Options:\n\
+%OPTIONS%"),
+			       compile_opts);
 
-  add_cmd ("print", class_obscure, compile_print_command,
-	   _("\
+  c = add_cmd ("file", class_obscure, compile_file_command,
+	       compile_file_help.c_str (),
+	       &compile_command_list);
+  set_cmd_completer_handle_brkchars (c, compile_file_command_completer);
+
+  const auto compile_print_opts = make_value_print_options_def_group (nullptr);
+
+  static const std::string compile_print_help
+    = gdb::option::build_help (_("\
 Evaluate EXPR by using the compiler and print result.\n\
 \n\
-Usage: compile print[/FMT] [EXPR]\n\
+Usage: compile print [[OPTION]... --] [/FMT] [EXPR]\n\
+\n\
+Options:\n\
+%OPTIONS%\n\
+\n\
+Note: because this command accepts arbitrary expressions, if you\n\
+specify any command option, you must use a double dash (\"--\")\n\
+to mark the end of option processing.  E.g.: \"compile print -o -- myobj\".\n\
 \n\
 The expression may be specified on the same line as the command, e.g.:\n\
 \n\
@@ -963,7 +992,12 @@ indicate the end of the expression.\n\
 \n\
 EXPR may be preceded with /FMT, where FMT is a format letter\n\
 but no count or size letter (see \"x\" command)."),
-	   &compile_command_list);
+			       compile_print_opts);
+
+  c = add_cmd ("print", class_obscure, compile_print_command,
+	       compile_print_help.c_str (),
+	       &compile_command_list);
+  set_cmd_completer_handle_brkchars (c, print_command_completer);
 
   add_setshow_boolean_cmd ("compile", class_maintenance, &compile_debug, _("\
 Set compile command debugging."), _("\
@@ -974,8 +1008,8 @@ When on, compile command debugging is enabled."),
 
   add_setshow_string_cmd ("compile-args", class_support,
 			  &compile_args,
-			  _("Set compile command GCC command-line arguments"),
-			  _("Show compile command GCC command-line arguments"),
+			  _("Set compile command GCC command-line arguments."),
+			  _("Show compile command GCC command-line arguments."),
 			  _("\
 Use options like -I (include file directory) or ABI settings.\n\
 String quoting is parsed like in shell, for example:\n\
@@ -1003,9 +1037,9 @@ String quoting is parsed like in shell, for example:\n\
   add_setshow_optional_filename_cmd ("compile-gcc", class_support,
 				     &compile_gcc,
 				     _("Set compile command "
-				       "GCC driver filename"),
+				       "GCC driver filename."),
 				     _("Show compile command "
-				       "GCC driver filename"),
+				       "GCC driver filename."),
 				     _("\
 It should be absolute filename of the gcc executable.\n\
 If empty the default target triplet will be searched in $PATH."),

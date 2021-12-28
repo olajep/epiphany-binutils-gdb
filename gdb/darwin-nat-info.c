@@ -1,5 +1,5 @@
 /* Darwin support for GDB, the GNU debugger.
-   Copyright (C) 1997-2019 Free Software Foundation, Inc.
+   Copyright (C) 1997-2021 Free Software Foundation, Inc.
 
    Contributed by Apple Computer, Inc.
 
@@ -34,6 +34,7 @@
 #include "value.h"
 #include "gdbcmd.h"
 #include "inferior.h"
+#include "gdbarch.h"
 
 #include <sys/sysctl.h>
 
@@ -89,20 +90,20 @@ info_mach_tasks_command (const char *args, int from_tty)
       mach_port_t taskPort;
 
       result =
-        task_by_unix_pid (mach_task_self (), procInfo[index].kp_proc.p_pid,
-                          &taskPort);
+	task_by_unix_pid (mach_task_self (), procInfo[index].kp_proc.p_pid,
+			  &taskPort);
       if (KERN_SUCCESS == result)
-        {
-          printf_unfiltered (_("    %s is %d has task %#x\n"),
-                             procInfo[index].kp_proc.p_comm,
-                             procInfo[index].kp_proc.p_pid, taskPort);
-        }
+	{
+	  printf_unfiltered (_("    %s is %d has task %#x\n"),
+			     procInfo[index].kp_proc.p_comm,
+			     procInfo[index].kp_proc.p_pid, taskPort);
+	}
       else
-        {
-          printf_unfiltered (_("    %s is %d unknown task port\n"),
-                             procInfo[index].kp_proc.p_comm,
-                             procInfo[index].kp_proc.p_pid);
-        }
+	{
+	  printf_unfiltered (_("    %s is %d unknown task port\n"),
+			     procInfo[index].kp_proc.p_comm,
+			     procInfo[index].kp_proc.p_pid);
+	}
     }
 
   xfree (procInfo);
@@ -155,8 +156,8 @@ info_mach_task_command (const char *args, int from_tty)
   printf_unfiltered (_("TASK_BASIC_INFO for 0x%x:\n"), task);
   info_count = TASK_BASIC_INFO_COUNT;
   result = task_info (task,
-                      TASK_BASIC_INFO,
-                      (task_info_t) & task_info_data.basic, &info_count);
+		      TASK_BASIC_INFO,
+		      (task_info_t) & task_info_data.basic, &info_count);
   MACH_CHECK_ERROR (result);
 
   PRINT_FIELD (&task_info_data.basic, suspend_count);
@@ -167,8 +168,8 @@ info_mach_task_command (const char *args, int from_tty)
   printf_unfiltered (_("\nTASK_EVENTS_INFO:\n"));
   info_count = TASK_EVENTS_INFO_COUNT;
   result = task_info (task,
-                      TASK_EVENTS_INFO,
-                      (task_info_t) & task_info_data.events, &info_count);
+		      TASK_EVENTS_INFO,
+		      (task_info_t) & task_info_data.events, &info_count);
   MACH_CHECK_ERROR (result);
 
   PRINT_FIELD (&task_info_data.events, faults);
@@ -183,9 +184,9 @@ info_mach_task_command (const char *args, int from_tty)
   printf_unfiltered (_("\nTASK_THREAD_TIMES_INFO:\n"));
   info_count = TASK_THREAD_TIMES_INFO_COUNT;
   result = task_info (task,
-                      TASK_THREAD_TIMES_INFO,
-                      (task_info_t) & task_info_data.thread_times,
-                      &info_count);
+		      TASK_THREAD_TIMES_INFO,
+		      (task_info_t) & task_info_data.thread_times,
+		      &info_count);
   MACH_CHECK_ERROR (result);
   PRINT_TV_FIELD (&task_info_data.thread_times, user_time);
   PRINT_TV_FIELD (&task_info_data.thread_times, system_time);
@@ -292,9 +293,9 @@ info_mach_ports_command (const char *args, int from_tty)
     }
 
   vm_deallocate (task_self (), (vm_address_t) names,
-                 (name_count * sizeof (mach_port_t)));
+		 (name_count * sizeof (mach_port_t)));
   vm_deallocate (task_self (), (vm_address_t) types,
-                 (type_count * sizeof (mach_port_type_t)));
+		 (type_count * sizeof (mach_port_type_t)));
 }
 
 
@@ -310,7 +311,7 @@ darwin_debug_port_info (task_t task, mach_port_t port)
   MACH_CHECK_ERROR (kret);
 
   printf_unfiltered (_("Port 0x%lx in task 0x%lx:\n"), (unsigned long) port,
-                     (unsigned long) task);
+		     (unsigned long) task);
   printf_unfiltered (_("  port set: 0x%x\n"), status.mps_pset);
   printf_unfiltered (_("     seqno: 0x%x\n"), status.mps_seqno);
   printf_unfiltered (_("   mscount: 0x%x\n"), status.mps_mscount);
@@ -359,7 +360,7 @@ info_mach_threads_command (const char *args, int from_tty)
     }
 
   vm_deallocate (task_self (), (vm_address_t) threads,
-                 (thread_count * sizeof (thread_t)));
+		 (thread_count * sizeof (thread_t)));
 }
 
 static void
@@ -542,65 +543,65 @@ darwin_debug_regions (task_t task, mach_vm_address_t address, int max)
 
       /* Check to see if address space has wrapped around.  */
       if (address == 0)
-        print = done = 1;
+	print = done = 1;
 
       if (!done)
-        {
-          count = VM_REGION_BASIC_INFO_COUNT_64;
-          kret =
-            mach_vm_region (task, &address, &size, VM_REGION_BASIC_INFO_64,
-                 	      (vm_region_info_t) &info, &count, &object_name);
-          if (kret != KERN_SUCCESS)
-            {
-              size = 0;
-              print = done = 1;
-            }
-        }
+	{
+	  count = VM_REGION_BASIC_INFO_COUNT_64;
+	  kret =
+	    mach_vm_region (task, &address, &size, VM_REGION_BASIC_INFO_64,
+		 	      (vm_region_info_t) &info, &count, &object_name);
+	  if (kret != KERN_SUCCESS)
+	    {
+	      size = 0;
+	      print = done = 1;
+	    }
+	}
 
       if (address != prev_address + prev_size)
-        print = 1;
+	print = 1;
 
       if ((info.protection != prev_info.protection)
-          || (info.max_protection != prev_info.max_protection)
-          || (info.inheritance != prev_info.inheritance)
-          || (info.shared != prev_info.reserved)
-          || (info.reserved != prev_info.reserved))
-        print = 1;
+	  || (info.max_protection != prev_info.max_protection)
+	  || (info.inheritance != prev_info.inheritance)
+	  || (info.shared != prev_info.reserved)
+	  || (info.reserved != prev_info.reserved))
+	print = 1;
 
       if (print)
-        {
-          printf_filtered (_("%s-%s %s/%s  %s %s %s"),
-                           paddress (target_gdbarch (), prev_address),
-                           paddress (target_gdbarch (), prev_address + prev_size),
-                           unparse_protection (prev_info.protection),
-                           unparse_protection (prev_info.max_protection),
-                           unparse_inheritance (prev_info.inheritance),
-                           prev_info.shared ? _("shrd") : _("priv"),
-                           prev_info.reserved ? _("reserved") : _("not-rsvd"));
+	{
+	  printf_filtered (_("%s-%s %s/%s  %s %s %s"),
+			   paddress (target_gdbarch (), prev_address),
+			   paddress (target_gdbarch (), prev_address + prev_size),
+			   unparse_protection (prev_info.protection),
+			   unparse_protection (prev_info.max_protection),
+			   unparse_inheritance (prev_info.inheritance),
+			   prev_info.shared ? _("shrd") : _("priv"),
+			   prev_info.reserved ? _("reserved") : _("not-rsvd"));
 
-          if (nsubregions > 1)
-            printf_filtered (_(" (%d sub-rgn)"), nsubregions);
+	  if (nsubregions > 1)
+	    printf_filtered (_(" (%d sub-rgn)"), nsubregions);
 
-          printf_filtered (_("\n"));
+	  printf_filtered (_("\n"));
 
-          prev_address = address;
-          prev_size = size;
-          memcpy (&prev_info, &info, sizeof (vm_region_basic_info_data_64_t));
-          nsubregions = 1;
+	  prev_address = address;
+	  prev_size = size;
+	  memcpy (&prev_info, &info, sizeof (vm_region_basic_info_data_64_t));
+	  nsubregions = 1;
 
-          num_printed++;
-        }
+	  num_printed++;
+	}
       else
-        {
-          prev_size += size;
-          nsubregions++;
-        }
+	{
+	  prev_size += size;
+	  nsubregions++;
+	}
 
       if ((max > 0) && (num_printed >= max))
-        done = 1;
+	done = 1;
 
       if (done)
-        break;
+	break;
     }
 }
 
@@ -664,14 +665,14 @@ darwin_debug_regions_recurse (task_t task)
 			     unparse_inheritance (r_info.inheritance));
 	uiout->field_string ("share-mode",
 			     unparse_share_mode (r_info.share_mode));
-	uiout->field_int ("depth", r_depth);
+	uiout->field_signed ("depth", r_depth);
 	uiout->field_string ("submap",
 			     r_info.is_submap ? _("sm ") : _("obj"));
 	tag = unparse_user_tag (r_info.user_tag);
 	if (tag)
 	  uiout->field_string ("tag", tag);
 	else
-	  uiout->field_int ("tag", r_info.user_tag);
+	  uiout->field_signed ("tag", r_info.user_tag);
       }
 
       uiout->text ("\n");
@@ -809,7 +810,7 @@ info_mach_exceptions_command (const char *args, int from_tty)
 	}
       else if (strcmp (args, "host") == 0)
 	{
-	  /* FIXME: This need a privilegied host port!  */
+	  /* FIXME: This needs a privileged host port!  */
 	  kret = host_get_exception_ports
 	    (darwin_host_self, EXC_MASK_ALL, info.masks,
 	     &info.count, info.ports, info.behaviors, info.flavors);
@@ -837,29 +838,30 @@ info_mach_exceptions_command (const char *args, int from_tty)
     }
 }
 
+void _initialize_darwin_info_commands ();
 void
-_initialize_darwin_info_commands (void)
+_initialize_darwin_info_commands ()
 {
   add_info ("mach-tasks", info_mach_tasks_command,
-            _("Get list of tasks in system."));
+	    _("Get list of tasks in system."));
   add_info ("mach-ports", info_mach_ports_command,
-            _("Get list of ports in a task."));
+	    _("Get list of ports in a task."));
   add_info ("mach-port", info_mach_port_command,
-            _("Get info on a specific port."));
+	    _("Get info on a specific port."));
   add_info ("mach-task", info_mach_task_command,
-            _("Get info on a specific task."));
+	    _("Get info on a specific task."));
   add_info ("mach-threads", info_mach_threads_command,
-            _("Get list of threads in a task."));
+	    _("Get list of threads in a task."));
   add_info ("mach-thread", info_mach_thread_command,
-            _("Get info on a specific thread."));
+	    _("Get info on a specific thread."));
 
   add_info ("mach-regions", info_mach_regions_command,
-            _("Get information on all mach region for the task."));
+	    _("Get information on all mach region for the task."));
   add_info ("mach-regions-rec", info_mach_regions_recurse_command,
-            _("Get information on all mach sub region for the task."));
+	    _("Get information on all mach sub region for the task."));
   add_info ("mach-region", info_mach_region_command,
-            _("Get information on mach region at given address."));
+	    _("Get information on mach region at given address."));
 
   add_info ("mach-exceptions", info_mach_exceptions_command,
-            _("Disp mach exceptions."));
+	    _("Disp mach exceptions."));
 }

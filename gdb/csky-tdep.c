@@ -1,6 +1,6 @@
 /* Target-dependent code for the CSKY architecture, for GDB.
 
-   Copyright (C) 2010-2019 Free Software Foundation, Inc.
+   Copyright (C) 2010-2021 Free Software Foundation, Inc.
 
    Contributed by C-SKY Microsystems and Mentor Graphics.
 
@@ -20,7 +20,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "defs.h"
-#include "gdb_assert.h"
+#include "gdbsupport/gdb_assert.h"
 #include "frame.h"
 #include "inferior.h"
 #include "symtab.h"
@@ -49,19 +49,17 @@
 #include "floatformat.h"
 #include "remote.h"
 #include "target-descriptions.h"
-#include "dwarf2-frame.h"
+#include "dwarf2/frame.h"
 #include "user-regs.h"
 #include "valprint.h"
-#include "reggroups.h"
 #include "csky-tdep.h"
 #include "regset.h"
-#include "block.h"
 #include "opcode/csky.h"
 #include <algorithm>
 #include <vector>
 
 /* Control debugging information emitted in this file.  */
-static int csky_debug = 0;
+static bool csky_debug = false;
 
 static struct reggroup *cr_reggroup;
 static struct reggroup *fr_reggroup;
@@ -162,17 +160,9 @@ csky_write_pc (regcache *regcache, CORE_ADDR val)
   regcache_cooked_write_unsigned (regcache, CSKY_PC_REGNUM, val);
 }
 
-/* Implement the unwind_sp gdbarch method.  */
-
-static CORE_ADDR
-csky_unwind_sp (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, CSKY_SP_REGNUM);
-}
-
 /* C-Sky ABI register names.  */
 
-static const char *csky_register_names[] =
+static const char * const csky_register_names[] =
 {
   /* General registers 0 - 31.  */
   "r0",  "r1",  "r2",  "r3",  "r4",  "r5",  "r6",  "r7",
@@ -276,8 +266,8 @@ csky_vector_type (struct gdbarch *gdbarch)
   append_composite_type_field (t, "u8",
 			       init_vector_type (bt->builtin_int8, 16));
 
-  TYPE_VECTOR (t) = 1;
-  TYPE_NAME (t) = "builtin_type_vec128i";
+  t->set_is_vector (true);
+  t->set_name ("builtin_type_vec128i");
 
   return t;
 }
@@ -512,7 +502,7 @@ struct csky_unwind_cache
   int framereg;
 
   /* Saved register offsets.  */
-  struct trad_frame_saved_reg *saved_regs;
+  trad_frame_saved_reg *saved_regs;
 };
 
 /* Do prologue analysis, returning the PC of the first instruction
@@ -1469,17 +1459,17 @@ csky_analyze_prologue (struct gdbarch *gdbarch,
 	{
 	  if (register_offsets[rn] >= 0)
 	    {
-	      this_cache->saved_regs[rn].addr
-		= this_cache->prev_sp - register_offsets[rn];
+	      this_cache->saved_regs[rn].set_addr (this_cache->prev_sp
+						   - register_offsets[rn]);
 	      if (csky_debug)
 		{
 		  CORE_ADDR rn_value = read_memory_unsigned_integer (
-		    this_cache->saved_regs[rn].addr, 4, byte_order);
+		    this_cache->saved_regs[rn].addr (), 4, byte_order);
 		  fprintf_unfiltered (gdb_stdlog, "Saved register %s "
 				      "stored at 0x%08lx, value=0x%08lx\n",
 				      csky_register_names[rn],
 				      (unsigned long)
-					this_cache->saved_regs[rn].addr,
+					this_cache->saved_regs[rn].addr (),
 				      (unsigned long) rn_value);
 		}
 	    }
@@ -1885,14 +1875,6 @@ csky_frame_unwind_cache (struct frame_info *this_frame)
   return cache;
 }
 
-/* Implement the unwind_pc gdbarch method.  */
-
-static CORE_ADDR
-csky_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, CSKY_PC_REGNUM);
-}
-
 /* Implement the this_id function for the normal unwinder.  */
 
 static void
@@ -2046,19 +2028,6 @@ static const struct frame_base csky_frame_base = {
   csky_frame_base_address,
   csky_frame_base_address
 };
-
-/* Implement the dummy_id gdbarch method.  The frame ID's base
-   needs to match the TOS value saved by save_dummy_frame_tos,
-   and the PC should match the dummy frame's breakpoint.  */
-
-static struct frame_id
-csky_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
-{
-  unsigned int sp_regnum = CSKY_SP_REGNUM;
-
-  CORE_ADDR sp = get_frame_register_unsigned (this_frame, sp_regnum);
-  return frame_id_build (sp, get_frame_pc (this_frame));
-}
 
 /* Initialize register access method.  */
 
@@ -2247,13 +2216,8 @@ csky_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_frame_align (gdbarch, csky_frame_align);
   set_gdbarch_stack_frame_destroyed_p (gdbarch, csky_stack_frame_destroyed_p);
 
-  /* Functions to access frame data.  */
-  set_gdbarch_unwind_pc (gdbarch, csky_unwind_pc);
-  set_gdbarch_unwind_sp (gdbarch, csky_unwind_sp);
-
   /* Functions handling dummy frames.  */
   set_gdbarch_push_dummy_call (gdbarch, csky_push_dummy_call);
-  set_gdbarch_dummy_id (gdbarch, csky_dummy_id);
 
   /* Frame unwinders.  Use DWARF debug info if available,
      otherwise use our own unwinder.  */
@@ -2276,8 +2240,9 @@ csky_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   return gdbarch;
 }
 
+void _initialize_csky_tdep ();
 void
-_initialize_csky_tdep (void)
+_initialize_csky_tdep ()
 {
 
   register_gdbarch_init (bfd_arch_csky, csky_gdbarch_init);

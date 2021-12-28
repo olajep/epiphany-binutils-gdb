@@ -1,6 +1,6 @@
 /* Ravenscar Aarch64 target support.
 
-   Copyright (C) 2017-2019 Free Software Foundation, Inc.
+   Copyright (C) 2017-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -24,6 +24,7 @@
 #include "inferior.h"
 #include "ravenscar-thread.h"
 #include "aarch64-ravenscar-thread.h"
+#include "gdbarch.h"
 
 #define NO_OFFSET -1
 
@@ -80,7 +81,7 @@ struct ravenscar_reg_info
 
 static void
 supply_register_at_address (struct regcache *regcache, int regnum,
-                            CORE_ADDR register_addr)
+			    CORE_ADDR register_addr)
 {
   struct gdbarch *gdbarch = regcache->arch ();
   int buf_size = register_size (gdbarch, regnum);
@@ -124,22 +125,13 @@ aarch64_ravenscar_generic_fetch_registers
   for (current_regnum = 0; current_regnum < num_regs; current_regnum++)
     {
       if (register_in_thread_descriptor_p (reg_info, current_regnum))
-        {
-          current_address = thread_descriptor_address
-            + reg_info->context_offsets[current_regnum];
-          supply_register_at_address (regcache, current_regnum,
-                                      current_address);
-        }
+	{
+	  current_address = thread_descriptor_address
+	    + reg_info->context_offsets[current_regnum];
+	  supply_register_at_address (regcache, current_regnum,
+				      current_address);
+	}
     }
-}
-
-/* to_prepare_to_store when inferior_ptid is different from the running
-   thread.  */
-
-static void
-aarch64_ravenscar_generic_prepare_to_store (struct regcache *regcache)
-{
-  /* Nothing to do.  */
 }
 
 /* to_store_registers when inferior_ptid is different from the running
@@ -163,8 +155,8 @@ aarch64_ravenscar_generic_store_registers
 
   regcache->raw_collect (regnum, buf);
   write_memory (register_address,
-                buf,
-                buf_size);
+		buf,
+		buf_size);
 }
 
 /* The ravenscar_reg_info for most Aarch64 targets.  */
@@ -175,34 +167,24 @@ static const struct ravenscar_reg_info aarch64_reg_info =
   ARRAY_SIZE (aarch64_context_offsets),
 };
 
-/* Implement the to_fetch_registers ravenscar_arch_ops method
-   for most Aarch64 targets.  */
-
-static void
-aarch64_ravenscar_fetch_registers (struct regcache *regcache, int regnum)
+struct aarch64_ravenscar_ops : public ravenscar_arch_ops
 {
-  aarch64_ravenscar_generic_fetch_registers
-    (&aarch64_reg_info, regcache, regnum);
-}
+  void fetch_registers (struct regcache *regcache, int regnum) override
+  {
+    aarch64_ravenscar_generic_fetch_registers
+      (&aarch64_reg_info, regcache, regnum);
+  }
 
-/* Implement the to_store_registers ravenscar_arch_ops method
-   for most Aarch64 targets.  */
-
-static void
-aarch64_ravenscar_store_registers (struct regcache *regcache, int regnum)
-{
-  aarch64_ravenscar_generic_store_registers
-    (&aarch64_reg_info, regcache, regnum);
-}
+  void store_registers (struct regcache *regcache, int regnum) override
+  {
+    aarch64_ravenscar_generic_store_registers
+      (&aarch64_reg_info, regcache, regnum);
+  }
+};
 
 /* The ravenscar_arch_ops vector for most Aarch64 targets.  */
 
-static struct ravenscar_arch_ops aarch64_ravenscar_ops =
-{
-  aarch64_ravenscar_fetch_registers,
-  aarch64_ravenscar_store_registers,
-  aarch64_ravenscar_generic_prepare_to_store
-};
+static struct aarch64_ravenscar_ops aarch64_ravenscar_ops;
 
 /* Register aarch64_ravenscar_ops in GDBARCH.  */
 

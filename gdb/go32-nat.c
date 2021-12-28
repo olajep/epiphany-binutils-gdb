@@ -1,5 +1,5 @@
 /* Native debugging support for Intel x86 running DJGPP.
-   Copyright (C) 1997-2019 Free Software Foundation, Inc.
+   Copyright (C) 1997-2021 Free Software Foundation, Inc.
    Written by Robert Hoehne.
 
    This file is part of GDB.
@@ -89,7 +89,7 @@
 #include "inferior.h"
 #include "infrun.h"
 #include "gdbthread.h"
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
 #include "gdbcore.h"
 #include "command.h"
 #include "gdbcmd.h"
@@ -342,7 +342,7 @@ struct go32_nat_target final : public x86_nat_target<inf_child_target>
 
   void resume (ptid_t, int, enum gdb_signal) override;
 
-  ptid_t wait (ptid_t, struct target_waitstatus *, int) override;
+  ptid_t wait (ptid_t, struct target_waitstatus *, target_wait_flags) override;
 
   void fetch_registers (struct regcache *, int) override;
   void store_registers (struct regcache *, int) override;
@@ -377,7 +377,7 @@ struct go32_nat_target final : public x86_nat_target<inf_child_target>
 
   bool thread_alive (ptid_t ptid) override;
 
-  const char *pid_to_str (ptid_t) override;
+  std::string pid_to_str (ptid_t) override;
 };
 
 static go32_nat_target the_go32_nat_target;
@@ -419,7 +419,7 @@ static char child_cwd[FILENAME_MAX];
 
 ptid_t
 go32_nat_target::wait (ptid_t ptid, struct target_waitstatus *status,
-		       int options)
+		       target_wait_flags options)
 {
   int i;
   unsigned char saved_opcode;
@@ -507,7 +507,8 @@ go32_nat_target::wait (ptid_t ptid, struct target_waitstatus *status,
     }
 
   getcwd (child_cwd, sizeof (child_cwd)); /* in case it has changed */
-  chdir (current_directory);
+  if (current_directory != NULL)
+    chdir (current_directory);
 
   if (a_tss.tss_irqn == 0x21)
     {
@@ -752,14 +753,14 @@ go32_nat_target::create_inferior (const char *exec_file,
   save_npx ();
 #endif
 
-  inferior_ptid = ptid_t (SOME_PID);
   inf = current_inferior ();
   inferior_appeared (inf, SOME_PID);
 
   if (!target_is_pushed (this))
     push_target (this);
 
-  add_thread_silent (inferior_ptid);
+  thread_info *thr = add_thread_silent (ptid_t (SOME_PID));
+  switch_to_thread (thr);
 
   clear_proceed_status (0);
   insert_breakpoints ();
@@ -769,8 +770,6 @@ go32_nat_target::create_inferior (const char *exec_file,
 void
 go32_nat_target::mourn_inferior ()
 {
-  ptid_t ptid;
-
   redir_cmdline_delete (&child_cmd);
   resume_signal = -1;
   resume_is_step = 0;
@@ -786,8 +785,6 @@ go32_nat_target::mourn_inferior ()
      the OS cleans up when the debuggee exits.  */
   x86_cleanup_dregs ();
 
-  ptid = inferior_ptid;
-  inferior_ptid = null_ptid;
   prog_has_started = 0;
 
   generic_mourn_inferior ();
@@ -992,7 +989,7 @@ go32_nat_target::thread_alive (ptid_t ptid)
   return ptid != null_ptid;
 }
 
-const char *
+std::string
 go32_nat_target::pid_to_str (ptid_t ptid)
 {
   return normal_pid_to_str (ptid);
@@ -1109,8 +1106,8 @@ go32_sysinfo (const char *arg, int from_tty)
       /* CPUID with EAX = 0 returns the Vendor ID.  */
 #if 0
       /* Ideally we would use x86_cpuid(), but it needs someone to run
-         native tests first to make sure things actually work.  They should.
-         http://sourceware.org/ml/gdb-patches/2013-05/msg00164.html  */
+	 native tests first to make sure things actually work.  They should.
+	 http://sourceware.org/ml/gdb-patches/2013-05/msg00164.html  */
       unsigned int eax, ebx, ecx, edx;
 
       if (x86_cpuid (0, &eax, &ebx, &ecx, &edx))
@@ -1162,6 +1159,7 @@ go32_sysinfo (const char *arg, int from_tty)
       unsigned brand_idx;
       int intel_p = strcmp (cpuid_vendor, "GenuineIntel") == 0;
       int amd_p = strcmp (cpuid_vendor, "AuthenticAMD") == 0;
+      int hygon_p = strcmp (cpuid_vendor, "HygonGenuine") == 0;
       unsigned cpu_family, cpu_model;
 
 #if 0
@@ -1261,12 +1259,12 @@ go32_sysinfo (const char *arg, int from_tty)
 	    }
 	}
       xsnprintf (cpu_string, sizeof (cpu_string), "%s%s Model %d Stepping %d",
-	         intel_p ? "Pentium" : (amd_p ? "AMD" : "ix86"),
-	         cpu_brand, cpu_model, cpuid_eax & 0xf);
-      printfi_filtered (31, "%s\n", cpu_string);
+		 intel_p ? "Pentium" : (amd_p ? "AMD" : (hygon_p ? "Hygon" : "ix86")),
+		 cpu_brand, cpu_model, cpuid_eax & 0xf);
+      printf_filtered ("%*s%s\n", 31, "", cpu_string);
       if (((cpuid_edx & (6 | (0x0d << 23))) != 0)
 	  || ((cpuid_edx & 1) == 0)
-	  || (amd_p && (cpuid_edx & (3 << 30)) != 0))
+	  || ((amd_p || hygon_p) && (cpuid_edx & (3 << 30)) != 0))
 	{
 	  puts_filtered ("CPU Features...................");
 	  /* We only list features which might be useful in the DPMI
@@ -1285,7 +1283,7 @@ go32_sysinfo (const char *arg, int from_tty)
 	    puts_filtered ("SSE ");
 	  if ((cpuid_edx & (1 << 26)) != 0)
 	    puts_filtered ("SSE2 ");
-	  if (amd_p)
+	  if (amd_p || hygon_p)
 	    {
 	      if ((cpuid_edx & (1 << 31)) != 0)
 		puts_filtered ("3DNow! ");
@@ -1374,11 +1372,11 @@ go32_sysinfo (const char *arg, int from_tty)
 		   "%s-bit DPMI, with%s Virtual Memory support\n",
 		   (dpmi_version_data.flags & 1) ? "32" : "16",
 		   (dpmi_version_data.flags & 4) ? "" : "out");
-  printfi_filtered (31, "Interrupts reflected to %s mode\n",
+  printf_filtered ("%*sInterrupts reflected to %s mode\n", 31, "",
 		   (dpmi_version_data.flags & 2) ? "V86" : "Real");
-  printfi_filtered (31, "Processor type: i%d86\n",
+  printf_filtered ("%*sProcessor type: i%d86\n", 31, "",
 		   dpmi_version_data.cpu);
-  printfi_filtered (31, "PIC base interrupt: Master: %#x  Slave: %#x\n",
+  printf_filtered ("%*sPIC base interrupt: Master: %#x  Slave: %#x\n", 31, "",
 		   dpmi_version_data.master_pic, dpmi_version_data.slave_pic);
 
   /* a_tss is only initialized when the debuggee is first run.  */
@@ -1432,8 +1430,8 @@ go32_sysinfo (const char *arg, int from_tty)
       __dpmi_int (0x21, &regs);
       if ((regs.x.flags & 1) != 0)
 	regs.h.al = 0;
-      printfi_filtered (31, "UMBs %sin DOS memory chain\n",
-			regs.h.al == 0 ? "not " : "");
+      printf_filtered ("%*sUMBs %sin DOS memory chain\n", 31, "",
+		       regs.h.al == 0 ? "not " : "");
     }
 }
 
@@ -1597,7 +1595,7 @@ display_descriptor (unsigned type, unsigned long base_addr, int idx, int force)
 		break;
 	      case 5:
 		printf_filtered ("TSS selector=0x%04x", descr.base0);
-		printfi_filtered (16, "Task Gate");
+		printf_filtered ("%*sTask Gate", 16, "");
 		break;
 	      case 6:
 	      case 7:
@@ -1876,13 +1874,13 @@ get_cr3 (void)
   cr3 = _farnspeekl (taskbase + 0x1c) & ~0xfff;
   if (cr3 > 0xfffff)
     {
-#if 0  /* Not fullly supported yet.  */
+#if 0  /* Not fully supported yet.  */
       /* The Page Directory is in UMBs.  In that case, CWSDPMI puts
 	 the first Page Table right below the Page Directory.  Thus,
 	 the first Page Table's entry for its own address and the Page
 	 Directory entry for that Page Table will hold the same
 	 physical address.  The loop below searches the entire UMB
-	 range of addresses for such an occurence.  */
+	 range of addresses for such an occurrence.  */
       unsigned long addr, pte_idx;
 
       for (addr = 0xb0000, pte_idx = 0xb0;
@@ -2073,14 +2071,9 @@ go32_pte_for_address (const char *arg, int from_tty)
 
 static struct cmd_list_element *info_dos_cmdlist = NULL;
 
-static void
-go32_info_dos_command (const char *args, int from_tty)
-{
-  help_list (info_dos_cmdlist, "info dos ", class_info, gdb_stdout);
-}
-
+void _initialize_go32_nat ();
 void
-_initialize_go32_nat (void)
+_initialize_go32_nat ()
 {
   x86_dr_low.set_control = go32_set_dr7;
   x86_dr_low.set_addr = go32_set_dr;
@@ -2104,9 +2097,9 @@ _initialize_go32_nat (void)
   /* We are always processing GCC-compiled programs.  */
   processing_gcc_compilation = 2;
 
-  add_prefix_cmd ("dos", class_info, go32_info_dos_command, _("\
+  add_basic_prefix_cmd ("dos", class_info, _("\
 Print information specific to DJGPP (aka MS-DOS) debugging."),
-		  &info_dos_cmdlist, "info dos ", 0, &infolist);
+			&info_dos_cmdlist, "info dos ", 0, &infolist);
 
   add_cmd ("sysinfo", class_info, go32_sysinfo, _("\
 Display information about the target system, including CPU, OS, DPMI, etc."),

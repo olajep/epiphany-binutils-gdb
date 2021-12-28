@@ -1,6 +1,6 @@
 /* Python interface to record targets.
 
-   Copyright 2017-2019 Free Software Foundation, Inc.
+   Copyright 2017-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,15 +17,15 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef GDB_PY_RECORD_H
-#define GDB_PY_RECORD_H
+#ifndef PYTHON_PY_RECORD_H
+#define PYTHON_PY_RECORD_H
 
 #include "inferior.h"
 #include "python-internal.h"
 #include "record.h"
 
 /* Python Record object.  */
-typedef struct
+struct recpy_record_object
 {
   PyObject_HEAD
 
@@ -34,12 +34,12 @@ typedef struct
 
   /* The current recording method.  */
   enum record_method method;
-} recpy_record_object;
+};
 
 /* Python recorded element object.  This is generic enough to represent
    recorded instructions as well as recorded function call segments, hence the
    generic name.  */
-typedef struct
+struct recpy_element_object
 {
   PyObject_HEAD
 
@@ -51,7 +51,7 @@ typedef struct
 
   /* Element number.  */
   Py_ssize_t number;
-} recpy_element_object;
+};
 
 /* Python RecordInstruction type.  */
 extern PyTypeObject recpy_insn_type;
@@ -71,4 +71,4 @@ extern PyObject *recpy_func_new (thread_info *thread, enum record_method method,
 extern PyObject *recpy_gap_new (int reason_code, const char *reason_string,
 				Py_ssize_t number);
 
-#endif /* GDB_PY_RECORD_H */
+#endif /* PYTHON_PY_RECORD_H */

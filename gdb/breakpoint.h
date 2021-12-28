@@ -1,5 +1,5 @@
 /* Data structures associated with breakpoints in GDB.
-   Copyright (C) 1992-2019 Free Software Foundation, Inc.
+   Copyright (C) 1992-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,14 +21,15 @@
 
 #include "frame.h"
 #include "value.h"
-#include "vec.h"
 #include "ax.h"
 #include "command.h"
-#include "break-common.h"
+#include "gdbsupport/break-common.h"
 #include "probe.h"
 #include "location.h"
 #include <vector>
-#include "common/array-view.h"
+#include "gdbsupport/array-view.h"
+#include "gdbsupport/function-view.h"
+#include "gdbsupport/refcounted-object.h"
 #include "cli/cli-script.h"
 
 struct block;
@@ -41,6 +42,16 @@ struct bp_location;
 struct linespec_result;
 struct linespec_sals;
 struct inferior;
+
+/* Enum for exception-handling support in 'catch throw', 'catch rethrow',
+   'catch catch' and the MI equivalent.  */
+
+enum exception_event_kind
+{
+  EX_EVENT_THROW,
+  EX_EVENT_RETHROW,
+  EX_EVENT_CATCH
+};
 
 /* Why are we removing the breakpoint from the target?  */
 
@@ -301,33 +312,23 @@ enum bp_loc_type
   bp_loc_other			/* Miscellaneous...  */
 };
 
-/* This structure is a collection of function pointers that, if
-   available, will be called instead of performing the default action
-   for this bp_loc_type.  */
-
-struct bp_location_ops
-{
-  /* Destructor.  Releases everything from SELF (but not SELF
-     itself).  */
-  void (*dtor) (struct bp_location *self);
-};
-
-class bp_location
+class bp_location : public refcounted_object
 {
 public:
   bp_location () = default;
 
-  bp_location (const bp_location_ops *ops, breakpoint *owner);
+  /* Construct a bp_location with the type inferred from OWNER's
+     type.  */
+  explicit bp_location (breakpoint *owner);
+
+  /* Construct a bp_location with type TYPE.  */
+  bp_location (breakpoint *owner, bp_loc_type type);
+
+  virtual ~bp_location ();
 
   /* Chain pointer to the next breakpoint location for
      the same parent breakpoint.  */
   bp_location *next = NULL;
-
-  /* Methods associated with this location.  */
-  const bp_location_ops *ops = NULL;
-
-  /* The reference count.  */
-  int refc = 0;
 
   /* Type of this breakpoint location.  */
   bp_loc_type loc_type {};
@@ -372,7 +373,7 @@ public:
   agent_expr_up cmd_bytecode;
 
   /* Signals that breakpoint conditions and/or commands need to be
-     re-synched with the target.  This has no use other than
+     re-synced with the target.  This has no use other than
      target-side breakpoints.  */
   bool needs_update = false;
 
@@ -384,17 +385,23 @@ public:
   /* Is this particular location enabled.  */
   bool enabled = false;
   
-  /* Nonzero if this breakpoint is now inserted.  */
+  /* Is this particular location disabled because the condition
+     expression is invalid at this location.  For a location to be
+     reported as enabled, the ENABLED field above has to be true *and*
+     the DISABLED_BY_COND field has to be false.  */
+  bool disabled_by_cond = false;
+
+  /* True if this breakpoint is now inserted.  */
   bool inserted = false;
 
-  /* Nonzero if this is a permanent breakpoint.  There is a breakpoint
+  /* True if this is a permanent breakpoint.  There is a breakpoint
      instruction hard-wired into the target's code.  Don't try to
      write another breakpoint instruction on top of it, or restore its
      value.  Step over it using the architecture's
      gdbarch_skip_permanent_breakpoint method.  */
   bool permanent = false;
 
-  /* Nonzero if this is not the first breakpoint in the list
+  /* True if this is not the first breakpoint in the list
      for the given address.  location of tracepoint can _never_
      be duplicated with other locations of tracepoints and other
      kinds of breakpoints, because two locations at the same
@@ -501,6 +508,27 @@ public:
   const struct objfile *objfile = NULL;
 };
 
+/* A policy class for bp_location reference counting.  */
+struct bp_location_ref_policy
+{
+  static void incref (bp_location *loc)
+  {
+    loc->incref ();
+  }
+
+  static void decref (bp_location *loc)
+  {
+    gdb_assert (loc->refcount () > 0);
+    loc->decref ();
+    if (loc->refcount () == 0)
+      delete loc;
+  }
+};
+
+/* A gdb::ref_ptr that has been specialized for bp_location.  */
+typedef gdb::ref_ptr<bp_location, bp_location_ref_policy>
+     bp_location_ref_ptr;
+
 /* The possible return values for print_bpstat, print_it_normal,
    print_it_done, print_it_noop.  */
 enum print_stop_action
@@ -606,7 +634,7 @@ struct breakpoint_ops
      `create_sals_from_location_default'.
 
      This function is called inside `create_breakpoint'.  */
-  void (*create_sals_from_location) (const struct event_location *location,
+  void (*create_sals_from_location) (struct event_location *location,
 				     struct linespec_result *canonical,
 				     enum bptype type_wanted);
 
@@ -633,7 +661,7 @@ struct breakpoint_ops
      This function is called inside `location_to_sals'.  */
   std::vector<symtab_and_line> (*decode_location)
     (struct breakpoint *b,
-     const struct event_location *location,
+     struct event_location *location,
      struct program_space *search_pspace);
 
   /* Return true if this breakpoint explains a signal.  See
@@ -669,10 +697,10 @@ enum watchpoint_triggered
 
 /* Some targets (e.g., embedded PowerPC) need two debug registers to set
    a watchpoint over a memory region.  If this flag is true, GDB will use
-   only one register per watchpoint, thus assuming that all acesses that
+   only one register per watchpoint, thus assuming that all accesses that
    modify a memory location happen at its starting address. */
 
-extern int target_exact_watchpoints;
+extern bool target_exact_watchpoints;
 
 /* Note that the ->silent field is not currently used by any commands
    (though the code is in there if it was to be, and set_raw_breakpoint
@@ -731,9 +759,8 @@ struct breakpoint
   event_location_up location;
 
   /* The filter that should be passed to decode_line_full when
-     re-setting this breakpoint.  This may be NULL, but otherwise is
-     allocated with xmalloc.  */
-  char *filter = NULL;
+     re-setting this breakpoint.  This may be NULL.  */
+  gdb::unique_xmalloc_ptr<char> filter;
 
   /* For a ranged breakpoint, the location we used to find the end of
      the range.  */
@@ -815,9 +842,10 @@ struct watchpoint : public breakpoint
      we do not know the value yet or the value was not readable.  VAL
      is never lazy.  */
   value_ref_ptr val;
-  /* Nonzero if VAL is valid.  If VAL_VALID is set but VAL is NULL,
+
+  /* True if VAL is valid.  If VAL_VALID is set but VAL is NULL,
      then an error occurred reading the value.  */
-  int val_valid;
+  bool val_valid;
 
   /* When watching the location of a bitfield, contains the offset and size of
      the bitfield.  Otherwise contains 0.  */
@@ -863,11 +891,17 @@ extern struct breakpoint *breakpoint_find_if
 /* Return true if BPT is either a software breakpoint or a hardware
    breakpoint.  */
 
-extern int is_breakpoint (const struct breakpoint *bpt);
+extern bool is_breakpoint (const struct breakpoint *bpt);
 
-/* Returns true if BPT is really a watchpoint.  */
+/* Return true if BPT is of any watchpoint kind, hardware or
+   software.  */
 
-extern int is_watchpoint (const struct breakpoint *bpt);
+extern bool is_watchpoint (const struct breakpoint *bpt);
+
+/* Return true if BPT is a C++ exception catchpoint (catch
+   catch/throw/rethrow).  */
+
+extern bool is_exception_catchpoint (breakpoint *bp);
 
 /* An instance of this type is used to represent all kinds of
    tracepoints.  */
@@ -1040,7 +1074,7 @@ struct bpstat_what
     /* Used for BPSTAT_WHAT_SET_LONGJMP_RESUME and
        BPSTAT_WHAT_CLEAR_LONGJMP_RESUME.  True if we are handling a
        longjmp, false if we are handling an exception.  */
-    int is_longjmp;
+    bool is_longjmp;
   };
 
 /* Tell what to do about this bpstat.  */
@@ -1053,18 +1087,18 @@ extern void bpstat_run_callbacks (bpstat bs_head);
 /* Find the bpstat associated with a breakpoint.  NULL otherwise.  */
 bpstat bpstat_find_breakpoint (bpstat, struct breakpoint *);
 
-/* Nonzero if a signal that we got in target_wait() was due to
+/* True if a signal that we got in target_wait() was due to
    circumstances explained by the bpstat; the signal is therefore not
    random.  */
-extern int bpstat_explains_signal (bpstat, enum gdb_signal);
+extern bool bpstat_explains_signal (bpstat, enum gdb_signal);
 
-/* Nonzero is this bpstat causes a stop.  */
-extern int bpstat_causes_stop (bpstat);
+/* True if this bpstat causes a stop.  */
+extern bool bpstat_causes_stop (bpstat);
 
-/* Nonzero if we should step constantly (e.g. watchpoints on machines
+/* True if we should step constantly (e.g. watchpoints on machines
    without hardware support).  This isn't related to a specific bpstat,
    just to things like whether watchpoints are set.  */
-extern int bpstat_should_step (void);
+extern bool bpstat_should_step ();
 
 /* Print a message indicating what happened.  Returns nonzero to
    say that only the source line should be printed after this (zero
@@ -1115,7 +1149,6 @@ struct bpstats
   {
     bpstats ();
     bpstats (struct bp_location *bl, bpstat **bs_link_pointer);
-    ~bpstats ();
 
     bpstats (const bpstats &);
     bpstats &operator= (const bpstats &) = delete;
@@ -1140,7 +1173,7 @@ struct bpstats
        What this means is that we should not (in most cases) follow
        the `bpstat->bp_location->owner' link, but instead use the
        `breakpoint_at' field below.  */
-    struct bp_location *bp_location_at;
+    bp_location_ref_ptr bp_location_at;
 
     /* Breakpoint that caused the stop.  This is nullified if the
        breakpoint ends up being deleted.  See comments on
@@ -1184,11 +1217,6 @@ enum breakpoint_here
 
 
 /* Prototypes for breakpoint-related functions.  */
-
-/* Return 1 if there's a program/permanent breakpoint planted in
-   memory at ADDRESS, return 0 otherwise.  */
-
-extern int program_breakpoint_here_p (struct gdbarch *gdbarch, CORE_ADDR address);
 
 extern enum breakpoint_here breakpoint_here_p (const address_space *,
 					       CORE_ADDR);
@@ -1290,12 +1318,9 @@ const char *bpdisp_text (enum bpdisp disp);
 
 extern void break_command (const char *, int);
 
-extern void hbreak_command_wrapper (const char *, int);
-extern void thbreak_command_wrapper (const char *, int);
-extern void rbreak_command_wrapper (const char *, int);
-extern void watch_command_wrapper (const char *, int, int);
-extern void awatch_command_wrapper (const char *, int, int);
-extern void rwatch_command_wrapper (const char *, int, int);
+extern void watch_command_wrapper (const char *, int, bool);
+extern void awatch_command_wrapper (const char *, int, bool);
+extern void rwatch_command_wrapper (const char *, int, bool);
 extern void tbreak_command (const char *, int);
 
 extern struct breakpoint_ops base_breakpoint_ops;
@@ -1332,8 +1357,13 @@ extern void
 				 int enabled,
 				 int from_tty);
 
+/* Initialize a new breakpoint of the bp_catchpoint kind.  If TEMP
+   is true, then make the breakpoint temporary.  If COND_STRING is
+   not NULL, then store it in the breakpoint.  OPS, if not NULL, is
+   the breakpoint_ops structure associated to the catchpoint.  */
+
 extern void init_catchpoint (struct breakpoint *b,
-			     struct gdbarch *gdbarch, int tempflag,
+			     struct gdbarch *gdbarch, bool temp,
 			     const char *cond_string,
 			     const struct breakpoint_ops *ops);
 
@@ -1345,6 +1375,15 @@ extern void init_catchpoint (struct breakpoint *b,
 
 extern void install_breakpoint (int internal, std::unique_ptr<breakpoint> &&b,
 				int update_gll);
+
+/* Returns the breakpoint ops appropriate for use with with LOCATION and
+   according to IS_TRACEPOINT.  Use this to ensure, for example, that you pass
+   the correct ops to create_breakpoint for probe locations.  If LOCATION is
+   NULL, returns bkpt_breakpoint_ops (or tracepoint_breakpoint_ops, if
+   IS_TRACEPOINT is true).  */
+
+extern const struct breakpoint_ops *breakpoint_ops_for_event_location
+  (const struct event_location *location, bool is_tracepoint);
 
 /* Flags that can be passed down to create_breakpoint, etc., to affect
    breakpoint creation in several ways.  */
@@ -1376,7 +1415,7 @@ enum breakpoint_create_flags
    Returns true if any breakpoint was created; false otherwise.  */
 
 extern int create_breakpoint (struct gdbarch *gdbarch,
-			      const struct event_location *location,
+			      struct event_location *location,
 			      const char *cond_string, int thread,
 			      const char *extra_string,
 			      int parse_extra,
@@ -1392,7 +1431,9 @@ extern void insert_breakpoints (void);
 
 extern int remove_breakpoints (void);
 
-extern int remove_breakpoints_inf (inferior *inf);
+/* Remove breakpoints of inferior INF.  */
+
+extern void remove_breakpoints_inf (inferior *inf);
 
 /* This function can be used to update the breakpoint package's state
    after an exec() system call has been executed.
@@ -1519,7 +1560,7 @@ extern void breakpoint_set_task (struct breakpoint *b, int task);
 extern void mark_breakpoints_out (void);
 
 extern struct breakpoint *create_jit_event_breakpoint (struct gdbarch *,
-                                                       CORE_ADDR);
+						       CORE_ADDR);
 
 extern struct breakpoint *create_solib_event_breakpoint (struct gdbarch *,
 							 CORE_ADDR);
@@ -1544,13 +1585,19 @@ extern void remove_solib_event_breakpoints_at_next_stop (void);
 
 extern void disable_breakpoints_in_shlibs (void);
 
-/* This function returns TRUE if ep is a catchpoint.  */
-extern int is_catchpoint (struct breakpoint *);
+/* This function returns true if B is a catchpoint.  */
+
+extern bool is_catchpoint (struct breakpoint *b);
 
 /* Shared helper function (MI and CLI) for creating and installing
-   a shared object event catchpoint.  */
-extern void add_solib_catchpoint (const char *arg, int is_load, int is_temp,
-                                  int enabled);
+   a shared object event catchpoint.  If IS_LOAD is true then
+   the events to be caught are load events, otherwise they are
+   unload events.  If IS_TEMP is true the catchpoint is a
+   temporary one.  If ENABLED is true the catchpoint is
+   created in an enabled state.  */
+
+extern void add_solib_catchpoint (const char *arg, bool is_load, bool is_temp,
+				  bool enabled);
 
 /* Create and insert a new software single step breakpoint for the
    current thread.  May be called multiple times; each time will add a
@@ -1598,9 +1645,11 @@ extern int breakpoints_should_be_inserted_now (void);
    in our opinion won't ever trigger.  */
 extern void breakpoint_retire_moribund (void);
 
-/* Set break condition of breakpoint B to EXP.  */
+/* Set break condition of breakpoint B to EXP.
+   If FORCE, define the condition even if it is invalid in
+   all of the breakpoint locations.  */
 extern void set_breakpoint_condition (struct breakpoint *b, const char *exp,
-				      int from_tty);
+				      int from_tty, bool force);
 
 /* Checks if we are catching syscalls or not.
    Returns 0 if not, greater than 0 if we are.  */
@@ -1624,7 +1673,9 @@ extern struct tracepoint *
 /* Return a vector of all tracepoints currently defined.  */
 extern std::vector<breakpoint *> all_tracepoints (void);
 
-extern int is_tracepoint (const struct breakpoint *b);
+/* Return true if B is of tracepoint kind.  */
+
+extern bool is_tracepoint (const struct breakpoint *b);
 
 /* Return a vector of all static tracepoints defined at ADDR.  */
 extern std::vector<breakpoint *> static_tracepoints_here (CORE_ADDR addr);
@@ -1650,8 +1701,8 @@ public:
    returned.  This can be useful for implementing a search for a
    breakpoint with arbitrary attributes, or for applying an operation
    to every breakpoint.  */
-extern struct breakpoint *iterate_over_breakpoints (int (*) (struct breakpoint *,
-							     void *), void *);
+extern struct breakpoint *iterate_over_breakpoints
+  (gdb::function_view<bool (breakpoint *)>);
 
 /* Nonzero if the specified PC cannot be a location where functions
    have been inlined.  */
@@ -1681,5 +1732,20 @@ extern void print_breakpoint (breakpoint *bp);
 
 /* Command element for the 'commands' command.  */
 extern cmd_list_element *commands_cmd_element;
+
+/* Whether to use the fixed output when printing information about a
+   multi-location breakpoint (see PR 9659).  */
+
+extern bool fix_multi_location_breakpoint_output_globally;
+
+/* Deal with "catch catch", "catch throw", and "catch rethrow" commands and
+   the MI equivalents.  Sets up to catch events of type EX_EVENT.  When
+   TEMPFLAG is true only the next matching event is caught after which the
+   catch-point is deleted.  If REGEX is not NULL then only exceptions whose
+   type name matches REGEX will trigger the event.  */
+
+extern void catch_exception_event (enum exception_event_kind ex_event,
+				   const char *regex, bool tempflag,
+				   int from_tty);
 
 #endif /* !defined (BREAKPOINT_H) */

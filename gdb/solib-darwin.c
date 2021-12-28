@@ -1,6 +1,6 @@
 /* Handle Darwin shared libraries for GDB, the GNU Debugger.
 
-   Copyright (C) 2009-2019 Free Software Foundation, Inc.
+   Copyright (C) 2009-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -73,20 +73,14 @@ struct gdb_dyld_all_image_infos
 struct darwin_info
 {
   /* Address of structure dyld_all_image_infos in inferior.  */
-  CORE_ADDR all_image_addr;
+  CORE_ADDR all_image_addr = 0;
 
   /* Gdb copy of dyld_all_info_infos.  */
-  struct gdb_dyld_all_image_infos all_image;
+  struct gdb_dyld_all_image_infos all_image {};
 };
 
 /* Per-program-space data key.  */
-static const struct program_space_data *solib_darwin_pspace_data;
-
-static void
-darwin_pspace_data_cleanup (struct program_space *pspace, void *arg)
-{
-  xfree (arg);
-}
+static program_space_key<darwin_info> solib_darwin_pspace_data;
 
 /* Get the current darwin data.  If none is found yet, add it now.  This
    function always returns a valid object.  */
@@ -96,15 +90,11 @@ get_darwin_info (void)
 {
   struct darwin_info *info;
 
-  info = (struct darwin_info *) program_space_data (current_program_space,
-						    solib_darwin_pspace_data);
+  info = solib_darwin_pspace_data.get (current_program_space);
   if (info != NULL)
     return info;
 
-  info = XCNEW (struct darwin_info);
-  set_program_space_data (current_program_space,
-			  solib_darwin_pspace_data, info);
-  return info;
+  return solib_darwin_pspace_data.emplace (current_program_space);
 }
 
 /* Return non-zero if the version in dyld_all_image is known.  */
@@ -202,14 +192,15 @@ find_program_interpreter (void)
 {
   char *buf = NULL;
 
-  /* If we have an exec_bfd, get the interpreter from the load commands.  */
-  if (exec_bfd)
+  /* If we have an current exec_bfd, get the interpreter from the load
+     commands.  */
+  if (current_program_space->exec_bfd ())
     {
       bfd_mach_o_load_command *cmd;
 
-      if (bfd_mach_o_lookup_command (exec_bfd,
-                                     BFD_MACH_O_LC_LOAD_DYLINKER, &cmd) == 1)
-        return cmd->command.dylinker.name_str;
+      if (bfd_mach_o_lookup_command (current_program_space->exec_bfd (),
+				     BFD_MACH_O_LC_LOAD_DYLINKER, &cmd) == 1)
+	return cmd->command.dylinker.name_str;
     }
 
   /* If we didn't find it, read from memory.
@@ -233,7 +224,7 @@ static struct so_list *
 darwin_current_sos (void)
 {
   struct type *ptr_type = builtin_type (target_gdbarch ())->builtin_data_ptr;
-  enum bfd_endian byte_order = gdbarch_byte_order (target_gdbarch ());
+  enum bfd_endian byte_order = type_byte_order (ptr_type);
   int ptr_len = TYPE_LENGTH (ptr_type);
   unsigned int image_info_size;
   struct so_list *head = NULL;
@@ -261,8 +252,6 @@ darwin_current_sos (void)
       CORE_ADDR path_addr;
       struct mach_o_header_external hdr;
       unsigned long hdr_val;
-      gdb::unique_xmalloc_ptr<char> file_path;
-      int errcode;
 
       /* Read image info from inferior.  */
       if (target_read_memory (iinfo, buf, image_info_size))
@@ -276,18 +265,18 @@ darwin_current_sos (void)
 	break;
       /* Discard wrong magic numbers.  Shouldn't happen.  */
       hdr_val = extract_unsigned_integer
-        (hdr.magic, sizeof (hdr.magic), byte_order);
+	(hdr.magic, sizeof (hdr.magic), byte_order);
       if (hdr_val != BFD_MACH_O_MH_MAGIC && hdr_val != BFD_MACH_O_MH_MAGIC_64)
-        continue;
+	continue;
       /* Discard executable.  Should happen only once.  */
       hdr_val = extract_unsigned_integer
-        (hdr.filetype, sizeof (hdr.filetype), byte_order);
+	(hdr.filetype, sizeof (hdr.filetype), byte_order);
       if (hdr_val == BFD_MACH_O_MH_EXECUTE)
-        continue;
+	continue;
 
-      target_read_string (path_addr, &file_path,
-			  SO_NAME_MAX_PATH_SIZE - 1, &errcode);
-      if (errcode)
+      gdb::unique_xmalloc_ptr<char> file_path
+	= target_read_string (path_addr, SO_NAME_MAX_PATH_SIZE - 1);
+      if (file_path == nullptr)
 	break;
 
       /* Create and fill the new so_list element.  */
@@ -446,16 +435,13 @@ darwin_get_dyld_bfd ()
     return NULL;
 
   /* Create a bfd for the interpreter.  */
-  gdb_bfd_ref_ptr dyld_bfd (gdb_bfd_open (interp_name, gnutarget, -1));
+  gdb_bfd_ref_ptr dyld_bfd (gdb_bfd_open (interp_name, gnutarget));
   if (dyld_bfd != NULL)
     {
       gdb_bfd_ref_ptr sub
 	(gdb_bfd_mach_o_fat_extract (dyld_bfd.get (), bfd_object,
 				     gdbarch_bfd_arch_info (target_gdbarch ())));
-      if (sub != NULL)
-	dyld_bfd = sub;
-      else
-	dyld_bfd.release ();
+      dyld_bfd = sub;
     }
   return dyld_bfd;
 }
@@ -476,7 +462,7 @@ darwin_solib_get_all_image_info_addr_at_init (struct darwin_info *info)
      the current pc (which should point at the entry point for the
      dynamic linker) and subtracting the offset of the entry point.  */
   load_addr = (regcache_read_pc (get_current_regcache ())
-               - bfd_get_start_address (dyld_bfd.get ()));
+	       - bfd_get_start_address (dyld_bfd.get ()));
 
   /* Now try to set a breakpoint in the dynamic linker.  */
   info->all_image_addr =
@@ -553,16 +539,17 @@ darwin_solib_create_inferior_hook (int from_tty)
       load_addr = darwin_read_exec_load_addr_at_init (info);
     }
 
-  if (load_addr != 0 && symfile_objfile != NULL)
+  if (load_addr != 0 && current_program_space->symfile_object_file != NULL)
     {
       CORE_ADDR vmaddr;
 
       /* Find the base address of the executable.  */
-      vmaddr = bfd_mach_o_get_base_address (exec_bfd);
+      vmaddr = bfd_mach_o_get_base_address (current_program_space->exec_bfd ());
 
       /* Relocate.  */
       if (vmaddr != load_addr)
-	objfile_rebase (symfile_objfile, load_addr - vmaddr);
+	objfile_rebase (current_program_space->symfile_object_file,
+			load_addr - vmaddr);
     }
 
   /* Set solib notifier (to reload list of shared libraries).  */
@@ -572,35 +559,36 @@ darwin_solib_create_inferior_hook (int from_tty)
     {
       /* Dyld hasn't yet relocated itself, so the notifier address may
 	 be incorrect (as it has to be relocated).  */
-      CORE_ADDR start = bfd_get_start_address (exec_bfd);
+      CORE_ADDR start
+	= bfd_get_start_address (current_program_space->exec_bfd ());
       if (start == 0)
 	notifier = 0;
       else
-        {
-          gdb_bfd_ref_ptr dyld_bfd = darwin_get_dyld_bfd ();
-          if (dyld_bfd != NULL)
-            {
-              CORE_ADDR dyld_bfd_start_address;
-              CORE_ADDR dyld_relocated_base_address;
-              CORE_ADDR pc;
+	{
+	  gdb_bfd_ref_ptr dyld_bfd = darwin_get_dyld_bfd ();
+	  if (dyld_bfd != NULL)
+	    {
+	      CORE_ADDR dyld_bfd_start_address;
+	      CORE_ADDR dyld_relocated_base_address;
+	      CORE_ADDR pc;
 
-              dyld_bfd_start_address = bfd_get_start_address (dyld_bfd.get());
+	      dyld_bfd_start_address = bfd_get_start_address (dyld_bfd.get());
 
-              /* We find the dynamic linker's base address by examining
-                 the current pc (which should point at the entry point
-                 for the dynamic linker) and subtracting the offset of
-                 the entry point.  */
+	      /* We find the dynamic linker's base address by examining
+		 the current pc (which should point at the entry point
+		 for the dynamic linker) and subtracting the offset of
+		 the entry point.  */
 
-              pc = regcache_read_pc (get_current_regcache ());
-              dyld_relocated_base_address = pc - dyld_bfd_start_address;
+	      pc = regcache_read_pc (get_current_regcache ());
+	      dyld_relocated_base_address = pc - dyld_bfd_start_address;
 
-              /* We get the proper notifier relocated address by
-                 adding the dyld relocated base address to the current
-                 notifier offset value.  */
+	      /* We get the proper notifier relocated address by
+		 adding the dyld relocated base address to the current
+		 notifier offset value.  */
 
-              notifier += dyld_relocated_base_address;
-            }
-        }
+	      notifier += dyld_relocated_base_address;
+	    }
+	}
     }
 
   /* Add the breakpoint which is hit by dyld when the list of solib is
@@ -651,14 +639,6 @@ darwin_relocate_section_addresses (struct so_list *so,
     so->addr_low = sec->addr;
 }
 
-static struct block_symbol
-darwin_lookup_lib_symbol (struct objfile *objfile,
-			  const char *name,
-			  const domain_enum domain)
-{
-  return (struct block_symbol) {NULL, NULL};
-}
-
 static gdb_bfd_ref_ptr
 darwin_bfd_open (const char *pathname)
 {
@@ -683,21 +663,17 @@ darwin_bfd_open (const char *pathname)
   /* The current filename for fat-binary BFDs is a name generated
      by BFD, usually a string containing the name of the architecture.
      Reset its value to the actual filename.  */
-  xfree (bfd_get_filename (res.get ()));
-  res->filename = xstrdup (pathname);
+  bfd_set_filename (res.get (), pathname);
 
   return res;
 }
 
 struct target_so_ops darwin_so_ops;
 
+void _initialize_darwin_solib ();
 void
-_initialize_darwin_solib (void)
+_initialize_darwin_solib ()
 {
-  solib_darwin_pspace_data
-    = register_program_space_data_with_cleanup (NULL,
-						darwin_pspace_data_cleanup);
-
   darwin_so_ops.relocate_section_addresses = darwin_relocate_section_addresses;
   darwin_so_ops.free_so = darwin_free_so;
   darwin_so_ops.clear_solib = darwin_clear_solib;
@@ -705,6 +681,5 @@ _initialize_darwin_solib (void)
   darwin_so_ops.current_sos = darwin_current_sos;
   darwin_so_ops.open_symbol_file_object = open_symbol_file_object;
   darwin_so_ops.in_dynsym_resolve_code = darwin_in_dynsym_resolve_code;
-  darwin_so_ops.lookup_lib_global_symbol = darwin_lookup_lib_symbol;
   darwin_so_ops.bfd_open = darwin_bfd_open;
 }

@@ -1,6 +1,6 @@
 /* Common target dependent code for Alpha BSD's.
 
-   Copyright (C) 2002-2019 Free Software Foundation, Inc.
+   Copyright (C) 2002-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,6 +20,8 @@
 #ifndef ALPHA_BSD_TDEP_H
 #define ALPHA_BSD_TDEP_H
 
+#include "gdbarch.h"
+
 struct regcache;
 
 void alphabsd_supply_reg (struct regcache *, const char *, int);
@@ -29,7 +31,7 @@ void alphabsd_supply_fpreg (struct regcache *, const char *, int);
 void alphabsd_fill_fpreg (const struct regcache *, char *, int);
 
 
-/* Functions exported from alpha-nbsd-tdep.c.  */
+/* Functions exported from alpha-netbsd-tdep.c.  */
 
 /* Iterate over supported core file register note sections. */
 void alphanbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,

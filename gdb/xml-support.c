@@ -1,6 +1,6 @@
 /* Helper routines for parsing XML using Expat.
 
-   Copyright (C) 2006-2019 Free Software Foundation, Inc.
+   Copyright (C) 2006-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,14 +19,15 @@
 
 #include "defs.h"
 #include "gdbcmd.h"
+#include "xml-builtin.h"
 #include "xml-support.h"
-#include "filestuff.h"
+#include "gdbsupport/filestuff.h"
 #include "safe-ctype.h"
 #include <vector>
 #include <string>
 
 /* Debugging flag.  */
-static int debug_xml;
+static bool debug_xml;
 
 /* The contents of this file are only useful if XML support is
    available.  */
@@ -113,9 +114,9 @@ struct gdb_xml_parser
   { m_is_xinclude = is_xinclude; }
 
   /* A thrown error, if any.  */
-  void set_error (gdb_exception error)
+  void set_error (gdb_exception &&error)
   {
-    m_error = error;
+    m_error = std::move (error);
 #ifdef HAVE_XML_STOPPARSER
     XML_StopParser (m_expat_parser, XML_FALSE);
 #endif
@@ -383,15 +384,14 @@ gdb_xml_start_element_wrapper (void *data, const XML_Char *name,
 {
   struct gdb_xml_parser *parser = (struct gdb_xml_parser *) data;
 
-  TRY
+  try
     {
       parser->start_element (name, attrs);
     }
-  CATCH (ex, RETURN_MASK_ALL)
+  catch (gdb_exception &ex)
     {
-      parser->set_error (ex);
+      parser->set_error (std::move (ex));
     }
-  END_CATCH
 }
 
 /* Handle the end of an element.  NAME is the current element.  */
@@ -456,15 +456,14 @@ gdb_xml_end_element_wrapper (void *data, const XML_Char *name)
 {
   struct gdb_xml_parser *parser = (struct gdb_xml_parser *) data;
 
-  TRY
+  try
     {
       parser->end_element (name);
     }
-  CATCH (ex, RETURN_MASK_ALL)
+  catch (gdb_exception &ex)
     {
-      parser->set_error (ex);
+      parser->set_error (std::move (ex));
     }
-  END_CATCH
 }
 
 /* Free a parser and all its associated state.  */
@@ -481,7 +480,6 @@ gdb_xml_parser::gdb_xml_parser (const char *name,
 				void *user_data)
   : m_name (name),
     m_user_data (user_data),
-    m_error (exception_none),
     m_last_line (0),
     m_dtd_name (NULL),
     m_is_xinclude (false)
@@ -595,7 +593,7 @@ gdb_xml_parser::parse (const char *buffer)
       && m_error.error == XML_PARSE_ERROR)
     {
       gdb_assert (m_error.message != NULL);
-      error_string = m_error.message;
+      error_string = m_error.what ();
     }
   else if (status == XML_STATUS_ERROR)
     {
@@ -606,7 +604,7 @@ gdb_xml_parser::parse (const char *buffer)
   else
     {
       gdb_assert (m_error.reason < 0);
-      throw_exception (m_error);
+      throw_exception (std::move (m_error));
     }
 
   if (m_last_line != 0)
@@ -747,13 +745,12 @@ gdb_xml_parse_attr_enum (struct gdb_xml_parser *parser,
 struct xinclude_parsing_data
 {
   xinclude_parsing_data (std::string &output_,
-			 xml_fetch_another fetcher_, void *fetcher_baton_,
+			 xml_fetch_another fetcher_,
 			 int include_depth_)
     : output (output_),
       skip_depth (0),
       include_depth (include_depth_),
-      fetcher (fetcher_),
-      fetcher_baton (fetcher_baton_)
+      fetcher (fetcher_)
   {}
 
   /* Where the output goes.  */
@@ -772,7 +769,6 @@ struct xinclude_parsing_data
   /* A function to call to obtain additional features, and its
      baton.  */
   xml_fetch_another fetcher;
-  void *fetcher_baton;
 };
 
 static void
@@ -791,14 +787,12 @@ xinclude_start_include (struct gdb_xml_parser *parser,
     gdb_xml_error (parser, _("Maximum XInclude depth (%d) exceeded"),
 		   MAX_XINCLUDE_DEPTH);
 
-  gdb::optional<gdb::char_vector> text
-    = data->fetcher (href, data->fetcher_baton);
+  gdb::optional<gdb::char_vector> text = data->fetcher (href);
   if (!text)
     gdb_xml_error (parser, _("Could not load XML document \"%s\""), href);
 
   if (!xml_process_xincludes (data->output, parser->name (),
 			      text->data (), data->fetcher,
-			      data->fetcher_baton,
 			      data->include_depth + 1))
     gdb_xml_error (parser, _("Parsing \"%s\" failed"), href);
 
@@ -880,10 +874,9 @@ const struct gdb_xml_element xinclude_elements[] = {
 bool
 xml_process_xincludes (std::string &result,
 		       const char *name, const char *text,
-		       xml_fetch_another fetcher, void *fetcher_baton,
-		       int depth)
+		       xml_fetch_another fetcher, int depth)
 {
-  xinclude_parsing_data data (result, fetcher, fetcher_baton, depth);
+  xinclude_parsing_data data (result, fetcher, depth);
 
   gdb_xml_parser parser (name, xinclude_elements, &data);
   parser.set_is_xinclude (true);
@@ -922,7 +915,7 @@ xml_process_xincludes (std::string &result,
 const char *
 fetch_xml_builtin (const char *filename)
 {
-  const char *(*p)[2];
+  const char *const (*p)[2];
 
   for (p = xml_builtin; (*p)[0]; p++)
     if (strcmp ((*p)[0], filename) == 0)
@@ -970,22 +963,19 @@ show_debug_xml (struct ui_file *file, int from_tty,
 }
 
 gdb::optional<gdb::char_vector>
-xml_fetch_content_from_file (const char *filename, void *baton)
+xml_fetch_content_from_file (const char *filename, const char *dirname)
 {
-  const char *dirname = (const char *) baton;
   gdb_file_up file;
 
-  if (dirname && *dirname)
+  if (dirname != nullptr && *dirname != '\0')
     {
-      char *fullname = concat (dirname, "/", filename, (char *) NULL);
+      gdb::unique_xmalloc_ptr<char> fullname
+	(concat (dirname, "/", filename, (char *) NULL));
 
-      if (fullname == NULL)
-	malloc_failure (0);
-      file = gdb_fopen_cloexec (fullname, FOPEN_RT);
-      xfree (fullname);
+      file = gdb_fopen_cloexec (fullname.get (), FOPEN_RB);
     }
   else
-    file = gdb_fopen_cloexec (filename, FOPEN_RT);
+    file = gdb_fopen_cloexec (filename, FOPEN_RB);
 
   if (file == NULL)
     return {};
@@ -1012,8 +1002,10 @@ xml_fetch_content_from_file (const char *filename, void *baton)
   return text;
 }
 
+void _initialize_xml_support ();
+void _initialize_xml_support ();
 void
-_initialize_xml_support (void)
+_initialize_xml_support ()
 {
   add_setshow_boolean_cmd ("xml", class_maintenance, &debug_xml,
 			   _("Set XML parser debugging."),

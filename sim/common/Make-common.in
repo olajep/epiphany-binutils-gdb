@@ -1,5 +1,5 @@
 # Makefile fragment for common parts of all simulators.
-# Copyright 1997-2019 Free Software Foundation, Inc.
+# Copyright 1997-2021 Free Software Foundation, Inc.
 # Contributed by Cygnus Support.
 
 # This program is free software; you can redistribute it and/or modify
@@ -70,6 +70,7 @@ INSTALL_PROGRAM = @INSTALL_PROGRAM@
 INSTALL_DATA = @INSTALL_DATA@
 
 CC = @CC@
+C_DIALECT = @C_DIALECT@
 CC_FOR_BUILD = @CC_FOR_BUILD@
 CFLAGS = @CFLAGS@
 CPPFLAGS = @CPPFLAGS@
@@ -107,7 +108,7 @@ depcomp = $(SHELL) $(srcroot)/depcomp
 
 # Note that these are overridden by GNU make-specific code below if
 # GNU make is used.  The overrides implement dependency tracking.
-COMPILE.pre = $(CC)
+COMPILE.pre = $(CC) $(C_DIALECT)
 COMPILE.post = -c -o $@
 COMPILE = $(COMPILE.pre) $(ALL_CFLAGS) $(COMPILE.post)
 POSTCOMPILE = @true
@@ -289,8 +290,8 @@ stamp-tvals: gentmap
 	$(SHELL) $(srcroot)/move-if-change tmp-tmap.c targ-map.c
 	touch stamp-tvals
 
-version.c: Makefile $(srcroot)/gdb/version.in $(srcroot)/bfd/version.h $(srcroot)/gdb/common/create-version.sh
-	$(SHELL) $(srcroot)/gdb/common/create-version.sh $(srcroot)/gdb \
+version.c: Makefile $(srcroot)/gdb/version.in $(srcroot)/bfd/version.h $(srcroot)/sim/common/create-version.sh
+	$(SHELL) $(srcroot)/sim/common/create-version.sh $(srcroot)/gdb \
 	    $(host_alias) $(target_alias) version.c
 
 #
@@ -319,8 +320,7 @@ SIM_MAIN_DEPS = \
 	$(sim_main_headers)
 
 sim-alu_h = $(srccom)/sim-alu.h
-sim-arange_h = $(srccom)/sim-arange.h \
-		$(srccom)/sim-arange.c
+sim-arange_h = $(srccom)/sim-arange.h
 sim-assert_h = $(srccom)/sim-assert.h
 sim-base_h = $(srccom)/sim-base.h \
 		$(sim-module_h) \

@@ -1,5 +1,5 @@
 /* Build symbol tables in GDB's internal format - legacy APIs
-   Copyright (C) 1986-2019 Free Software Foundation, Inc.
+   Copyright (C) 1986-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -16,8 +16,8 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#if !defined (LEGACY_BUILDSYM_H)
-#define LEGACY_BUILDSYM_H 1
+#ifndef BUILDSYM_LEGACY_H
+#define BUILDSYM_LEGACY_H
 
 #include "buildsym.h"
 
@@ -63,7 +63,7 @@ extern struct block *finish_block (struct symbol *symbol,
 				   CORE_ADDR end);
 
 extern void record_block_range (struct block *,
-                                CORE_ADDR start, CORE_ADDR end_inclusive);
+				CORE_ADDR start, CORE_ADDR end_inclusive);
 
 extern void start_subfile (const char *name);
 
@@ -179,4 +179,4 @@ extern struct pending **get_global_symbols ();
 
 extern struct buildsym_compunit *get_buildsym_compunit ();
 
-#endif /* defined (LEGACY_BUILDSYM_H) */
+#endif /* BUILDSYM_LEGACY_H */

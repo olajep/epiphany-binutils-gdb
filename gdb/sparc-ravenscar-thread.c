@@ -1,6 +1,6 @@
 /* Ravenscar SPARC target support.
 
-   Copyright (C) 2004-2019 Free Software Foundation, Inc.
+   Copyright (C) 2004-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -24,12 +24,13 @@
 #include "inferior.h"
 #include "ravenscar-thread.h"
 #include "sparc-ravenscar-thread.h"
+#include "gdbarch.h"
 
-static void sparc_ravenscar_fetch_registers (struct regcache *regcache,
-                                             int regnum);
-static void sparc_ravenscar_store_registers (struct regcache *regcache,
-                                             int regnum);
-static void sparc_ravenscar_prepare_to_store (struct regcache *regcache);
+struct sparc_ravenscar_ops : public ravenscar_arch_ops
+{
+  void fetch_registers (struct regcache *, int) override;
+  void store_registers (struct regcache *, int) override;
+};
 
 /* Register offsets from a referenced address (exempli gratia the
    Thread_Descriptor).  The referenced address depends on the register
@@ -60,7 +61,7 @@ static const int sparc_register_offsets[] =
 
 static void
 supply_register_at_address (struct regcache *regcache, int regnum,
-                            CORE_ADDR register_addr)
+			    CORE_ADDR register_addr)
 {
   struct gdbarch *gdbarch = regcache->arch ();
   int buf_size = register_size (gdbarch, regnum);
@@ -100,8 +101,8 @@ register_in_thread_descriptor_p (int regnum)
 /* to_fetch_registers when inferior_ptid is different from the running
    thread.  */
 
-static void
-sparc_ravenscar_fetch_registers (struct regcache *regcache, int regnum)
+void
+sparc_ravenscar_ops::fetch_registers (struct regcache *regcache, int regnum)
 {
   struct gdbarch *gdbarch = regcache->arch ();
   const int sp_regnum = gdbarch_sp_regnum (gdbarch);
@@ -124,36 +125,27 @@ sparc_ravenscar_fetch_registers (struct regcache *regcache, int regnum)
   for (current_regnum = 0; current_regnum < num_regs; current_regnum ++)
     {
       if (register_in_thread_descriptor_p (current_regnum))
-        {
-          current_address = thread_descriptor_address
-            + sparc_register_offsets [current_regnum];
-          supply_register_at_address (regcache, current_regnum,
-                                      current_address);
-        }
+	{
+	  current_address = thread_descriptor_address
+	    + sparc_register_offsets [current_regnum];
+	  supply_register_at_address (regcache, current_regnum,
+				      current_address);
+	}
       else if (register_on_stack_p (current_regnum))
-        {
-          current_address = stack_address
-            + sparc_register_offsets [current_regnum];
-          supply_register_at_address (regcache, current_regnum,
-                                      current_address);
-        }
+	{
+	  current_address = stack_address
+	    + sparc_register_offsets [current_regnum];
+	  supply_register_at_address (regcache, current_regnum,
+				      current_address);
+	}
     }
-}
-
-/* to_prepare_to_store when inferior_ptid is different from the running
-   thread.  */
-
-static void
-sparc_ravenscar_prepare_to_store (struct regcache *regcache)
-{
-  /* Nothing to do.  */
 }
 
 /* to_store_registers when inferior_ptid is different from the running
    thread.  */
 
-static void
-sparc_ravenscar_store_registers (struct regcache *regcache, int regnum)
+void
+sparc_ravenscar_ops::store_registers (struct regcache *regcache, int regnum)
 {
   struct gdbarch *gdbarch = regcache->arch ();
   int buf_size = register_size (gdbarch, regnum);
@@ -166,7 +158,7 @@ sparc_ravenscar_store_registers (struct regcache *regcache, int regnum)
   else if (register_on_stack_p (regnum))
     {
       regcache_cooked_read_unsigned (regcache, SPARC_SP_REGNUM,
-                                     &register_address);
+				     &register_address);
       register_address += sparc_register_offsets [regnum];
     }
   else
@@ -174,16 +166,11 @@ sparc_ravenscar_store_registers (struct regcache *regcache, int regnum)
 
   regcache->raw_collect (regnum, buf);
   write_memory (register_address,
-                buf,
-                buf_size);
+		buf,
+		buf_size);
 }
 
-static struct ravenscar_arch_ops sparc_ravenscar_ops =
-{
-  sparc_ravenscar_fetch_registers,
-  sparc_ravenscar_store_registers,
-  sparc_ravenscar_prepare_to_store
-};
+static struct sparc_ravenscar_ops sparc_ravenscar_ops;
 
 /* Register ravenscar_arch_ops in GDBARCH.  */
 

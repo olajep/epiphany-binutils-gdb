@@ -1,4 +1,4 @@
-/* Copyright (C) 1992-2019 Free Software Foundation, Inc.
+/* Copyright (C) 1992-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,20 +19,13 @@
 #include "target-dcache.h"
 #include "gdbcmd.h"
 #include "progspace.h"
+#include "cli/cli-cmds.h"
 
 /* The target dcache is kept per-address-space.  This key lets us
    associate the cache with the address space.  */
 
-static const struct address_space_data *target_dcache_aspace_key;
-
-/* Clean up dcache, represented by ARG, which is associated with
-   ASPACE.  */
-
-static void
-target_dcache_cleanup (struct address_space *aspace, void *arg)
-{
-  dcache_free ((DCACHE *) arg);
-}
+static const struct address_space_key<DCACHE, dcache_deleter>
+  target_dcache_aspace_key;
 
 /* Target dcache is initialized or not.  */
 
@@ -40,8 +33,7 @@ int
 target_dcache_init_p (void)
 {
   DCACHE *dcache
-    = (DCACHE *) address_space_data (current_program_space->aspace,
-				     target_dcache_aspace_key);
+    = target_dcache_aspace_key.get (current_program_space->aspace);
 
   return (dcache != NULL);
 }
@@ -52,8 +44,7 @@ void
 target_dcache_invalidate (void)
 {
   DCACHE *dcache
-    = (DCACHE *) address_space_data (current_program_space->aspace,
-				     target_dcache_aspace_key);
+    = target_dcache_aspace_key.get (current_program_space->aspace);
 
   if (dcache != NULL)
     dcache_invalidate (dcache);
@@ -65,11 +56,7 @@ target_dcache_invalidate (void)
 DCACHE *
 target_dcache_get (void)
 {
-  DCACHE *dcache
-    = (DCACHE *) address_space_data (current_program_space->aspace,
-				     target_dcache_aspace_key);
-
-  return dcache;
+  return target_dcache_aspace_key.get (current_program_space->aspace);
 }
 
 /* Return the target dcache.  If it is not initialized yet, initialize
@@ -79,21 +66,19 @@ DCACHE *
 target_dcache_get_or_init (void)
 {
   DCACHE *dcache
-    = (DCACHE *) address_space_data (current_program_space->aspace,
-				     target_dcache_aspace_key);
+    = target_dcache_aspace_key.get (current_program_space->aspace);
 
   if (dcache == NULL)
     {
       dcache = dcache_init ();
-      set_address_space_data (current_program_space->aspace,
-			      target_dcache_aspace_key, dcache);
+      target_dcache_aspace_key.set (current_program_space->aspace, dcache);
     }
 
   return dcache;
 }
 
 /* The option sets this.  */
-static int stack_cache_enabled_1 = 1;
+static bool stack_cache_enabled_1 = true;
 /* And set_stack_cache updates this.
    The reason for the separation is so that we don't flush the cache for
    on->on transitions.  */
@@ -130,7 +115,7 @@ stack_cache_enabled_p (void)
 
 /* The option sets this.  */
 
-static int code_cache_enabled_1 = 1;
+static bool code_cache_enabled_1 = true;
 
 /* And set_code_cache updates this.
    The reason for the separation is so that we don't flush the cache for
@@ -168,8 +153,19 @@ code_cache_enabled_p (void)
   return code_cache_enabled;
 }
 
+/* Implement the 'maint flush dcache' command.  */
+
+static void
+maint_flush_dcache_command (const char *command, int from_tty)
+{
+  target_dcache_invalidate ();
+  if (from_tty)
+    printf_filtered (_("The dcache was flushed.\n"));
+}
+
+void _initialize_target_dcache ();
 void
-_initialize_target_dcache (void)
+_initialize_target_dcache ()
 {
   add_setshow_boolean_cmd ("stack-cache", class_support,
 			   &stack_cache_enabled_1, _("\
@@ -194,7 +190,11 @@ access is on."),
 			   show_code_cache,
 			   &setlist, &showlist);
 
-  target_dcache_aspace_key
-    = register_address_space_data_with_cleanup (NULL,
-						target_dcache_cleanup);
+  add_cmd ("dcache", class_maintenance, maint_flush_dcache_command,
+	   _("\
+Force gdb to flush its target memory data cache.\n\
+\n\
+The dcache caches all target memory accesses where possible, this\n\
+includes the stack-cache and the code-cache."),
+	   &maintenanceflushlist);
 }

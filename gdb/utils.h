@@ -1,7 +1,7 @@
 /* *INDENT-OFF* */ /* ATTRIBUTE_PRINTF confuses indent, avoid running it
 		      for now.  */
 /* I/O, string, cleanup, and other random utilities for GDB.
-   Copyright (C) 1986-2019 Free Software Foundation, Inc.
+   Copyright (C) 1986-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -22,14 +22,20 @@
 #define UTILS_H
 
 #include "exceptions.h"
-#include "common/scoped_restore.h"
+#include "gdbsupport/array-view.h"
+#include "gdbsupport/scoped_restore.h"
 #include <chrono>
 
-extern void initialize_utils (void);
+#ifdef HAVE_LIBXXHASH
+#include <xxhash.h>
+#endif
+
+struct completion_match_for_lcd;
+class compiled_regex;
 
 /* String utilities.  */
 
-extern int sevenbit_strings;
+extern bool sevenbit_strings;
 
 /* Modes of operation for strncmp_iw_with_mode.  */
 
@@ -100,8 +106,6 @@ extern int streq_hash (const void *, const void *);
 
 extern int subset_compare (const char *, const char *);
 
-int compare_positive_ints (const void *ap, const void *bp);
-
 /* Compare C strings for std::sort.  */
 
 static inline bool
@@ -122,7 +126,7 @@ void reset_prompt_for_continue_wait_time (void);
 /* Return the time spent in prompt_for_continue.  */
 std::chrono::steady_clock::duration get_prompt_for_continue_wait_time ();
 
-/* Parsing utilites.  */
+/* Parsing utilities.  */
 
 extern int parse_pid_to_attach (const char *args);
 
@@ -143,10 +147,7 @@ public:
   }
 
   /* A constructor that calls buildargv on STR.  STR may be NULL, in
-     which case this object is initialized with a NULL array.  If
-     buildargv fails due to out-of-memory, call malloc_failure.
-     Therefore, the value is guaranteed to be non-NULL, unless the
-     parameter itself is NULL.  */
+     which case this object is initialized with a NULL array.  */
 
   explicit gdb_argv (const char *str)
     : m_argv (NULL)
@@ -163,6 +164,20 @@ public:
 
   gdb_argv (const gdb_argv &) = delete;
   gdb_argv &operator= (const gdb_argv &) = delete;
+
+  gdb_argv &operator= (gdb_argv &&other)
+  {
+    freeargv (m_argv);
+    m_argv = other.m_argv;
+    other.m_argv = nullptr;
+    return *this;
+  }
+
+  gdb_argv (gdb_argv &&other)
+  {
+    m_argv = other.m_argv;
+    other.m_argv = nullptr;
+  }
 
   ~gdb_argv ()
   {
@@ -188,7 +203,7 @@ public:
   /* Return the underlying array, transferring ownership to the
      caller.  */
 
-  char **release ()
+  ATTRIBUTE_UNUSED_RESULT char **release ()
   {
     char **result = m_argv;
     m_argv = NULL;
@@ -208,6 +223,42 @@ public:
   {
     gdb_assert (m_argv != NULL);
     return m_argv[arg];
+  }
+
+  /* Return the arguments array as an array view.  */
+
+  gdb::array_view<char *> as_array_view ()
+  {
+    return gdb::array_view<char *> (this->get (), this->count ());
+  }
+
+  /* Append arguments to this array.  */
+  void append (gdb_argv &&other)
+  {
+    int size = count ();
+    int argc = other.count ();
+    m_argv = XRESIZEVEC (char *, m_argv, (size + argc + 1));
+
+    for (int argi = 0; argi < argc; argi++)
+      {
+	/* Transfer ownership of the string.  */
+	m_argv[size++] = other.m_argv[argi];
+	/* Ensure that destruction of OTHER works correctly.  */
+	other.m_argv[argi] = nullptr;
+      }
+    m_argv[size] = nullptr;
+  }
+
+  /* Append arguments to this array.  */
+  void append (const gdb_argv &other)
+  {
+    int size = count ();
+    int argc = other.count ();
+    m_argv = XRESIZEVEC (char *, m_argv, (size + argc + 1));
+
+    for (int argi = 0; argi < argc; argi++)
+      m_argv[size++] = xstrdup (other.m_argv[argi]);
+    m_argv[size] = nullptr;
   }
 
   /* The iterator type.  */
@@ -260,8 +311,6 @@ struct htab_deleter
 /* A unique_ptr wrapper for htab_t.  */
 typedef std::unique_ptr<htab, htab_deleter> htab_up;
 
-extern void free_current_contents (void *);
-
 extern void init_page_info (void);
 
 /* Temporarily set BATCH_FLAG and the associated unlimited terminal size.
@@ -286,7 +335,6 @@ private:
   int m_save_batch_flag;
 };
 
-extern struct cleanup *make_bpstat_clear_actions_cleanup (void);
 
 /* Path utilities.  */
 
@@ -316,12 +364,22 @@ extern void wrap_here (const char *);
 
 extern void reinitialize_more_filter (void);
 
-extern int pagination_enabled;
+/* Return the number of characters in a line.  */
+
+extern int get_chars_per_line ();
+
+extern bool pagination_enabled;
 
 extern struct ui_file **current_ui_gdb_stdout_ptr (void);
 extern struct ui_file **current_ui_gdb_stdin_ptr (void);
 extern struct ui_file **current_ui_gdb_stderr_ptr (void);
 extern struct ui_file **current_ui_gdb_stdlog_ptr (void);
+
+/* Flush STREAM.  This is a wrapper for ui_file_flush that also
+   flushes any output pending from uses of the *_filtered output
+   functions; that output is kept in a special buffer so that
+   pagination and styling are handled properly.  */
+extern void gdb_flush (struct ui_file *);
 
 /* The current top level's ui_file streams.  */
 
@@ -352,7 +410,10 @@ extern struct ui_file *gdb_stdtargin;
 extern void set_screen_width_and_height (int width, int height);
 
 /* More generic printf like operations.  Filtered versions may return
-   non-locally on error.  */
+   non-locally on error.  As an extension over plain printf, these
+   support some GDB-specific format specifiers.  Particularly useful
+   here are the styling formatters: '%p[', '%p]' and '%ps'.  See
+   ui_out::message for details.  */
 
 extern void fputs_filtered (const char *, struct ui_file *);
 
@@ -382,12 +443,7 @@ extern void vfprintf_filtered (struct ui_file *, const char *, va_list)
 extern void fprintf_filtered (struct ui_file *, const char *, ...)
   ATTRIBUTE_PRINTF (2, 3);
 
-extern void fprintfi_filtered (int, struct ui_file *, const char *, ...)
-  ATTRIBUTE_PRINTF (3, 4);
-
 extern void printf_filtered (const char *, ...) ATTRIBUTE_PRINTF (1, 2);
-
-extern void printfi_filtered (int, const char *, ...) ATTRIBUTE_PRINTF (2, 3);
 
 extern void vprintf_unfiltered (const char *, va_list) ATTRIBUTE_PRINTF (1, 0);
 
@@ -432,6 +488,20 @@ extern void fprintf_styled (struct ui_file *stream,
 			    ...)
   ATTRIBUTE_PRINTF (3, 4);
 
+extern void vfprintf_styled (struct ui_file *stream,
+			     const ui_file_style &style,
+			     const char *fmt,
+			     va_list args)
+  ATTRIBUTE_PRINTF (3, 0);
+
+/* Like vfprintf_styled, but do not process gdb-specific format
+   specifiers.  */
+extern void vfprintf_styled_no_gdbfmt (struct ui_file *stream,
+				       const ui_file_style &style,
+				       bool filter,
+				       const char *fmt, va_list args)
+  ATTRIBUTE_PRINTF (4, 0);
+
 /* Like fputs_filtered, but styles the output according to STYLE, when
    appropriate.  */
 
@@ -439,13 +509,21 @@ extern void fputs_styled (const char *linebuffer,
 			  const ui_file_style &style,
 			  struct ui_file *stream);
 
+/* Unfiltered variant of fputs_styled.  */
+
+extern void fputs_styled_unfiltered (const char *linebuffer,
+				     const ui_file_style &style,
+				     struct ui_file *stream);
+
+/* Like fputs_styled, but uses highlight_style to highlight the
+   parts of STR that match HIGHLIGHT.  */
+
+extern void fputs_highlighted (const char *str, const compiled_regex &highlight,
+			       struct ui_file *stream);
+
 /* Reset the terminal style to the default, if needed.  */
 
 extern void reset_terminal_style (struct ui_file *stream);
-
-/* Return true if ANSI escapes can be used on STREAM.  */
-
-extern bool can_emit_style_escape (struct ui_file *stream);
 
 /* Display the host ADDR on STREAM formatted as ``0x%x''.  */
 extern void gdb_print_host_address_1 (const void *addr, struct ui_file *stream);
@@ -514,6 +592,13 @@ extern pid_t wait_to_die_with_timeout (pid_t pid, int *status, int timeout);
 
 extern int myread (int, char *, int);
 
+/* Integer exponentiation: Return V1**V2, where both arguments
+   are integers.
+
+   Requires V1 != 0 if V2 < 0.
+   Returns 1 for 0 ** 0.  */
+extern ULONGEST uinteger_pow (ULONGEST v1, LONGEST v2);
+
 /* Resource limits used by getrlimit and setrlimit.  */
 
 enum resource_limit_kind
@@ -538,11 +623,6 @@ extern void warn_cant_dump_core (const char *reason);
 
 extern void dump_core (void);
 
-/* Return the hex string form of LENGTH bytes of DATA.
-   Space for the result is malloc'd, caller must free.  */
-
-extern char *make_hex_string (const gdb_byte *data, size_t length);
-
 /* Copy NBITS bits from SOURCE to DEST starting at the given bit
    offsets.  Use the bit order as specified by BITS_BIG_ENDIAN.
    Source and destination buffers must not overlap.  */
@@ -550,5 +630,20 @@ extern char *make_hex_string (const gdb_byte *data, size_t length);
 extern void copy_bitwise (gdb_byte *dest, ULONGEST dest_offset,
 			  const gdb_byte *source, ULONGEST source_offset,
 			  ULONGEST nbits, int bits_big_endian);
+
+/* A fast hashing function.  This can be used to hash data in a fast way
+   when the length is known.  If no fast hashing library is available, falls
+   back to iterative_hash from libiberty.  START_VALUE can be set to
+   continue hashing from a previous value.  */
+
+static inline unsigned int
+fast_hash (const void *ptr, size_t len, unsigned int start_value = 0)
+{
+#ifdef HAVE_LIBXXHASH
+  return XXH64 (ptr, len, start_value);
+#else
+  return iterative_hash (ptr, len, start_value);
+#endif
+}
 
 #endif /* UTILS_H */

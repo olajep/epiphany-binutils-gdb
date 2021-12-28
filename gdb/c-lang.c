@@ -1,6 +1,6 @@
 /* C language support routines for GDB, the GNU debugger.
 
-   Copyright (C) 1992-2019 Free Software Foundation, Inc.
+   Copyright (C) 1992-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -35,6 +35,9 @@
 #include "gdb_obstack.h"
 #include <ctype.h>
 #include "gdbcore.h"
+#include "gdbarch.h"
+
+class compile_instance;
 
 /* Given a C string type, STR_TYPE, return the corresponding target
    character set name.  */
@@ -83,9 +86,9 @@ classify_type (struct type *elttype, struct gdbarch *gdbarch,
      that would do the wrong thing.  */
   while (elttype)
     {
-      const char *name = TYPE_NAME (elttype);
+      const char *name = elttype->name ();
 
-      if (TYPE_CODE (elttype) == TYPE_CODE_CHAR || !name)
+      if (elttype->code () == TYPE_CODE_CHAR || !name)
 	{
 	  result = C_CHAR;
 	  goto done;
@@ -109,7 +112,7 @@ classify_type (struct type *elttype, struct gdbarch *gdbarch,
 	  goto done;
 	}
 
-      if (TYPE_CODE (elttype) != TYPE_CODE_TYPEDEF)
+      if (elttype->code () != TYPE_CODE_TYPEDEF)
 	break;
 
       /* Call for side effects.  */
@@ -150,8 +153,11 @@ c_emit_char (int c, struct type *type,
   generic_emit_char (c, type, stream, quoter, encoding);
 }
 
+/* See language.h.  */
+
 void
-c_printchar (int c, struct type *type, struct ui_file *stream)
+language_defn::printchar (int c, struct type *type,
+			  struct ui_file * stream) const
 {
   c_string_type str_type;
 
@@ -172,7 +178,7 @@ c_printchar (int c, struct type *type, struct ui_file *stream)
     }
 
   fputc_filtered ('\'', stream);
-  LA_EMIT_CHAR (c, type, stream, '\'');
+  emitchar (c, type, stream, '\'');
   fputc_filtered ('\'', stream);
 }
 
@@ -244,28 +250,28 @@ c_get_string (struct value *value, gdb::unique_xmalloc_ptr<gdb_byte> *buffer,
   struct type *element_type = TYPE_TARGET_TYPE (type);
   int req_length = *length;
   enum bfd_endian byte_order
-    = gdbarch_byte_order (get_type_arch (type));
+    = type_byte_order (type);
 
   if (element_type == NULL)
     goto error;
 
-  if (TYPE_CODE (type) == TYPE_CODE_ARRAY)
+  if (type->code () == TYPE_CODE_ARRAY)
     {
       /* If we know the size of the array, we can use it as a limit on
 	 the number of characters to be fetched.  */
-      if (TYPE_NFIELDS (type) == 1
-	  && TYPE_CODE (TYPE_FIELD_TYPE (type, 0)) == TYPE_CODE_RANGE)
+      if (type->num_fields () == 1
+	  && type->field (0).type ()->code () == TYPE_CODE_RANGE)
 	{
 	  LONGEST low_bound, high_bound;
 
-	  get_discrete_bounds (TYPE_FIELD_TYPE (type, 0),
+	  get_discrete_bounds (type->field (0).type (),
 			       &low_bound, &high_bound);
 	  fetchlimit = high_bound - low_bound + 1;
 	}
       else
 	fetchlimit = UINT_MAX;
     }
-  else if (TYPE_CODE (type) == TYPE_CODE_PTR)
+  else if (type->code () == TYPE_CODE_PTR)
     fetchlimit = UINT_MAX;
   else
     /* We work only with arrays and pointers.  */
@@ -279,10 +285,21 @@ c_get_string (struct value *value, gdb::unique_xmalloc_ptr<gdb_byte> *buffer,
   /* If the string lives in GDB's memory instead of the inferior's,
      then we just need to copy it to BUFFER.  Also, since such strings
      are arrays with known size, FETCHLIMIT will hold the size of the
-     array.  */
+     array.
+
+     An array is assumed to live in GDB's memory, so we take this path
+     here.
+
+     However, it's possible for the caller to request more array
+     elements than apparently exist -- this can happen when using the
+     C struct hack.  So, only do this if either no length was
+     specified, or the length is within the existing bounds.  This
+     avoids running off the end of the value's contents.  */
   if ((VALUE_LVAL (value) == not_lval
-       || VALUE_LVAL (value) == lval_internalvar)
-      && fetchlimit != UINT_MAX)
+       || VALUE_LVAL (value) == lval_internalvar
+       || type->code () == TYPE_CODE_ARRAY)
+      && fetchlimit != UINT_MAX
+      && (*length < 0 || *length <= fetchlimit))
     {
       int i;
       const gdb_byte *contents = value_contents (value);
@@ -291,14 +308,14 @@ c_get_string (struct value *value, gdb::unique_xmalloc_ptr<gdb_byte> *buffer,
       if (*length >= 0)
 	i  = *length;
       else
- 	/* Otherwise, look for a null character.  */
- 	for (i = 0; i < fetchlimit; i++)
+	/* Otherwise, look for a null character.  */
+	for (i = 0; i < fetchlimit; i++)
 	  if (extract_unsigned_integer (contents + i * width,
 					width, byte_order) == 0)
- 	    break;
+	    break;
   
       /* I is now either a user-defined length, the number of non-null
- 	 characters, or FETCHLIMIT.  */
+	 characters, or FETCHLIMIT.  */
       *length = i * width;
       buffer->reset ((gdb_byte *) xmalloc (*length));
       memcpy (buffer->get (), contents, *length);
@@ -306,7 +323,19 @@ c_get_string (struct value *value, gdb::unique_xmalloc_ptr<gdb_byte> *buffer,
     }
   else
     {
-      CORE_ADDR addr = value_as_address (value);
+      /* value_as_address does not return an address for an array when
+	 c_style_arrays is false, so we handle that specially
+	 here.  */
+      CORE_ADDR addr;
+      if (type->code () == TYPE_CODE_ARRAY)
+	{
+	  if (VALUE_LVAL (value) != lval_memory)
+	    error (_("Attempt to take address of value "
+		     "not located in memory."));
+	  addr = value_address (value);
+	}
+      else
+	addr = value_as_address (value);
 
       /* Prior to the fix for PR 16196 read_string would ignore fetchlimit
 	 if length > 0.  The old "broken" behaviour is the behaviour we want:
@@ -372,8 +401,8 @@ c_get_string (struct value *value, gdb::unique_xmalloc_ptr<gdb_byte> *buffer,
    OUTPUT.  LENGTH is the maximum length of the UCN, either 4 or 8.
    Returns a pointer to just after the final digit of the UCN.  */
 
-static char *
-convert_ucn (char *p, char *limit, const char *dest_charset,
+static const char *
+convert_ucn (const char *p, const char *limit, const char *dest_charset,
 	     struct obstack *output, int length)
 {
   unsigned long result = 0;
@@ -414,9 +443,9 @@ emit_numeric_character (struct type *type, unsigned long value,
    farther than LIMIT.  The result is written to OUTPUT.  Returns a
    pointer to just after the final digit of the escape sequence.  */
 
-static char *
-convert_octal (struct type *type, char *p, 
-	       char *limit, struct obstack *output)
+static const char *
+convert_octal (struct type *type, const char *p,
+	       const char *limit, struct obstack *output)
 {
   int i;
   unsigned long value = 0;
@@ -439,9 +468,9 @@ convert_octal (struct type *type, char *p,
    than LIMIT.  The result is written to OUTPUT.  Returns a pointer to
    just after the final digit of the escape sequence.  */
 
-static char *
-convert_hex (struct type *type, char *p,
-	     char *limit, struct obstack *output)
+static const char *
+convert_hex (struct type *type, const char *p,
+	     const char *limit, struct obstack *output)
 {
   unsigned long value = 0;
 
@@ -470,9 +499,9 @@ convert_hex (struct type *type, char *p,
    written to OUTPUT.  Returns a pointer to just past the final
    character of the escape sequence.  */
 
-static char *
+static const char *
 convert_escape (struct type *type, const char *dest_charset,
-		char *p, char *limit, struct obstack *output)
+		const char *p, const char *limit, struct obstack *output)
 {
   /* Skip the backslash.  */
   ADVANCE;
@@ -524,16 +553,16 @@ convert_escape (struct type *type, const char *dest_charset,
    and TYPE is the type of target character to use.  */
 
 static void
-parse_one_string (struct obstack *output, char *data, int len,
+parse_one_string (struct obstack *output, const char *data, int len,
 		  const char *dest_charset, struct type *type)
 {
-  char *limit;
+  const char *limit;
 
   limit = data + len;
 
   while (data < limit)
     {
-      char *p = data;
+      const char *p = data;
 
       /* Look for next escape, or the end of the input.  */
       while (p < limit && *p != '\\')
@@ -541,7 +570,7 @@ parse_one_string (struct obstack *output, char *data, int len,
       /* If we saw a run of characters, convert them all.  */
       if (p > data)
 	convert_between_encodings (host_charset (), dest_charset,
-				   (gdb_byte *) data, p - data, 1,
+				   (const gdb_byte *) data, p - data, 1,
 				   output, translit_none);
       /* If we saw an escape, convert it.  */
       if (p < limit)
@@ -587,16 +616,13 @@ evaluate_subexp_c (struct type *expect_type, struct expression *exp,
 					      exp->gdbarch);
 	    break;
 	  case C_WIDE_STRING:
-	    type = lookup_typename (exp->language_defn, exp->gdbarch,
-				    "wchar_t", NULL, 0);
+	    type = lookup_typename (exp->language_defn, "wchar_t", NULL, 0);
 	    break;
 	  case C_STRING_16:
-	    type = lookup_typename (exp->language_defn, exp->gdbarch,
-				    "char16_t", NULL, 0);
+	    type = lookup_typename (exp->language_defn, "char16_t", NULL, 0);
 	    break;
 	  case C_STRING_32:
-	    type = lookup_typename (exp->language_defn, exp->gdbarch,
-				    "char32_t", NULL, 0);
+	    type = lookup_typename (exp->language_defn, "char32_t", NULL, 0);
 	    break;
 	  default:
 	    internal_error (__FILE__, __LINE__, _("unhandled c_string_type"));
@@ -608,13 +634,13 @@ evaluate_subexp_c (struct type *expect_type, struct expression *exp,
 	/* If the caller expects an array of some integral type,
 	   satisfy them.  If something odder is expected, rely on the
 	   caller to cast.  */
-	if (expect_type && TYPE_CODE (expect_type) == TYPE_CODE_ARRAY)
+	if (expect_type && expect_type->code () == TYPE_CODE_ARRAY)
 	  {
 	    struct type *element_type
 	      = check_typedef (TYPE_TARGET_TYPE (expect_type));
 
-	    if (TYPE_CODE (element_type) == TYPE_CODE_INT
-		|| TYPE_CODE (element_type) == TYPE_CODE_CHAR)
+	    if (element_type->code () == TYPE_CODE_INT
+		|| element_type->code () == TYPE_CODE_CHAR)
 	      {
 		type = element_type;
 		satisfy_expected = 1;
@@ -675,8 +701,8 @@ evaluate_subexp_c (struct type *expect_type, struct expression *exp,
 		LONGEST low_bound, high_bound;
 		int element_size = TYPE_LENGTH (type);
 
-		if (get_discrete_bounds (TYPE_INDEX_TYPE (expect_type),
-					 &low_bound, &high_bound) < 0)
+		if (!get_discrete_bounds (expect_type->index_type (),
+					  &low_bound, &high_bound))
 		  {
 		    low_bound = 0;
 		    high_bound = (TYPE_LENGTH (expect_type) / element_size) - 1;
@@ -704,15 +730,40 @@ evaluate_subexp_c (struct type *expect_type, struct expression *exp,
   return evaluate_subexp_standard (expect_type, exp, pos, noside);
 }
 
-/* la_watch_location_expression for C.  */
+/* See c-lang.h.  */
 
-gdb::unique_xmalloc_ptr<char>
-c_watch_location_expression (struct type *type, CORE_ADDR addr)
+bool
+c_is_string_type_p (struct type *type)
 {
-  type = check_typedef (TYPE_TARGET_TYPE (check_typedef (type)));
-  std::string name = type_to_string (type);
-  return gdb::unique_xmalloc_ptr<char>
-    (xstrprintf ("* (%s *) %s", name.c_str (), core_addr_to_string (addr)));
+  type = check_typedef (type);
+  while (type->code () == TYPE_CODE_REF)
+    {
+      type = TYPE_TARGET_TYPE (type);
+      type = check_typedef (type);
+    }
+
+  switch (type->code ())
+    {
+    case TYPE_CODE_ARRAY:
+      {
+	/* See if target type looks like a string.  */
+	struct type *array_target_type = TYPE_TARGET_TYPE (type);
+	return (TYPE_LENGTH (type) > 0
+		&& TYPE_LENGTH (array_target_type) > 0
+		&& c_textual_element_type (array_target_type, 0));
+      }
+    case TYPE_CODE_STRING:
+      return true;
+    case TYPE_CODE_PTR:
+      {
+	struct type *element_type = TYPE_TARGET_TYPE (type);
+	return c_textual_element_type (element_type, 0);
+      }
+    default:
+      break;
+    }
+
+  return false;
 }
 
 
@@ -755,29 +806,6 @@ const struct op_print c_op_print_tab[] =
   {NULL, OP_NULL, PREC_PREFIX, 0}
 };
 
-enum c_primitive_types {
-  c_primitive_type_int,
-  c_primitive_type_long,
-  c_primitive_type_short,
-  c_primitive_type_char,
-  c_primitive_type_float,
-  c_primitive_type_double,
-  c_primitive_type_void,
-  c_primitive_type_long_long,
-  c_primitive_type_signed_char,
-  c_primitive_type_unsigned_char,
-  c_primitive_type_unsigned_short,
-  c_primitive_type_unsigned_int,
-  c_primitive_type_unsigned_long,
-  c_primitive_type_unsigned_long_long,
-  c_primitive_type_long_double,
-  c_primitive_type_complex,
-  c_primitive_type_double_complex,
-  c_primitive_type_decfloat,
-  c_primitive_type_decdouble,
-  c_primitive_type_declong,
-  nr_c_primitive_types
-};
 
 void
 c_language_arch_info (struct gdbarch *gdbarch,
@@ -785,32 +813,35 @@ c_language_arch_info (struct gdbarch *gdbarch,
 {
   const struct builtin_type *builtin = builtin_type (gdbarch);
 
-  lai->string_char_type = builtin->builtin_char;
-  lai->primitive_type_vector
-    = GDBARCH_OBSTACK_CALLOC (gdbarch, nr_c_primitive_types + 1,
-			      struct type *);
-  lai->primitive_type_vector [c_primitive_type_int] = builtin->builtin_int;
-  lai->primitive_type_vector [c_primitive_type_long] = builtin->builtin_long;
-  lai->primitive_type_vector [c_primitive_type_short] = builtin->builtin_short;
-  lai->primitive_type_vector [c_primitive_type_char] = builtin->builtin_char;
-  lai->primitive_type_vector [c_primitive_type_float] = builtin->builtin_float;
-  lai->primitive_type_vector [c_primitive_type_double] = builtin->builtin_double;
-  lai->primitive_type_vector [c_primitive_type_void] = builtin->builtin_void;
-  lai->primitive_type_vector [c_primitive_type_long_long] = builtin->builtin_long_long;
-  lai->primitive_type_vector [c_primitive_type_signed_char] = builtin->builtin_signed_char;
-  lai->primitive_type_vector [c_primitive_type_unsigned_char] = builtin->builtin_unsigned_char;
-  lai->primitive_type_vector [c_primitive_type_unsigned_short] = builtin->builtin_unsigned_short;
-  lai->primitive_type_vector [c_primitive_type_unsigned_int] = builtin->builtin_unsigned_int;
-  lai->primitive_type_vector [c_primitive_type_unsigned_long] = builtin->builtin_unsigned_long;
-  lai->primitive_type_vector [c_primitive_type_unsigned_long_long] = builtin->builtin_unsigned_long_long;
-  lai->primitive_type_vector [c_primitive_type_long_double] = builtin->builtin_long_double;
-  lai->primitive_type_vector [c_primitive_type_complex] = builtin->builtin_complex;
-  lai->primitive_type_vector [c_primitive_type_double_complex] = builtin->builtin_double_complex;
-  lai->primitive_type_vector [c_primitive_type_decfloat] = builtin->builtin_decfloat;
-  lai->primitive_type_vector [c_primitive_type_decdouble] = builtin->builtin_decdouble;
-  lai->primitive_type_vector [c_primitive_type_declong] = builtin->builtin_declong;
+  /* Helper function to allow shorter lines below.  */
+  auto add  = [&] (struct type * t)
+  {
+    lai->add_primitive_type (t);
+  };
 
-  lai->bool_type_default = builtin->builtin_int;
+  add (builtin->builtin_int);
+  add (builtin->builtin_long);
+  add (builtin->builtin_short);
+  add (builtin->builtin_char);
+  add (builtin->builtin_float);
+  add (builtin->builtin_double);
+  add (builtin->builtin_void);
+  add (builtin->builtin_long_long);
+  add (builtin->builtin_signed_char);
+  add (builtin->builtin_unsigned_char);
+  add (builtin->builtin_unsigned_short);
+  add (builtin->builtin_unsigned_int);
+  add (builtin->builtin_unsigned_long);
+  add (builtin->builtin_unsigned_long_long);
+  add (builtin->builtin_long_double);
+  add (builtin->builtin_complex);
+  add (builtin->builtin_double_complex);
+  add (builtin->builtin_decfloat);
+  add (builtin->builtin_decdouble);
+  add (builtin->builtin_declong);
+
+  lai->set_string_char_type (builtin->builtin_char);
+  lai->set_bool_type (builtin->builtin_int);
 }
 
 const struct exp_descriptor exp_descriptor_c = 
@@ -818,314 +849,415 @@ const struct exp_descriptor exp_descriptor_c =
   print_subexp_standard,
   operator_length_standard,
   operator_check_standard,
-  op_name_standard,
   dump_subexp_body_standard,
   evaluate_subexp_c
 };
 
-static const char *c_extensions[] =
+/* Class representing the C language.  */
+
+class c_language : public language_defn
 {
-  ".c", NULL
+public:
+  c_language ()
+    : language_defn (language_c)
+  { /* Nothing.  */ }
+
+  /* See language.h.  */
+
+  const char *name () const override
+  { return "c"; }
+
+  /* See language.h.  */
+
+  const char *natural_name () const override
+  { return "C"; }
+
+  /* See language.h.  */
+
+  const std::vector<const char *> &filename_extensions () const override
+  {
+    static const std::vector<const char *> extensions = { ".c" };
+    return extensions;
+  }
+
+  /* See language.h.  */
+  void language_arch_info (struct gdbarch *gdbarch,
+			   struct language_arch_info *lai) const override
+  {
+    c_language_arch_info (gdbarch, lai);
+  }
+
+  /* See language.h.  */
+  compile_instance *get_compile_instance () const override
+  {
+    return c_get_compile_context ();
+  }
+
+  /* See language.h.  */
+  std::string compute_program (compile_instance *inst,
+			       const char *input,
+			       struct gdbarch *gdbarch,
+			       const struct block *expr_block,
+			       CORE_ADDR expr_pc) const override
+  {
+    return c_compute_program (inst, input, gdbarch, expr_block, expr_pc);
+  }
+
+  /* See language.h.  */
+
+  void print_type (struct type *type, const char *varstring,
+		   struct ui_file *stream, int show, int level,
+		   const struct type_print_options *flags) const override
+  {
+    c_print_type (type, varstring, stream, show, level, flags);
+  }
+
+  /* See language.h.  */
+
+  bool store_sym_names_in_linkage_form_p () const override
+  { return true; }
+
+  /* See language.h.  */
+
+  enum macro_expansion macro_expansion () const override
+  { return macro_expansion_c; }
+
+  /* See language.h.  */
+
+  const struct exp_descriptor *expression_ops () const override
+  { return &exp_descriptor_c; }
+
+  /* See language.h.  */
+
+  const struct op_print *opcode_print_table () const override
+  { return c_op_print_tab; }
 };
 
-extern const struct language_defn c_language_defn =
+/* Single instance of the C language class.  */
+
+static c_language c_language_defn;
+
+/* A class for the C++ language.  */
+
+class cplus_language : public language_defn
 {
-  "c",				/* Language name */
-  "C",
-  language_c,
-  range_check_off,
-  case_sensitive_on,
-  array_row_major,
-  macro_expansion_c,
-  c_extensions,
-  &exp_descriptor_c,
-  c_parse,
-  null_post_parser,
-  c_printchar,			/* Print a character constant */
-  c_printstr,			/* Function to print string constant */
-  c_emit_char,			/* Print a single char */
-  c_print_type,			/* Print a type using appropriate syntax */
-  c_print_typedef,		/* Print a typedef using appropriate syntax */
-  c_val_print,			/* Print a value using appropriate syntax */
-  c_value_print,		/* Print a top-level value */
-  default_read_var_value,	/* la_read_var_value */
-  NULL,				/* Language specific skip_trampoline */
-  NULL,				/* name_of_this */
-  true,				/* la_store_sym_names_in_linkage_form_p */
-  basic_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
-  basic_lookup_transparent_type,/* lookup_transparent_type */
-  NULL,				/* Language specific symbol demangler */
-  NULL,
-  NULL,				/* Language specific
-				   class_name_from_physname */
-  c_op_print_tab,		/* expression operators for printing */
-  1,				/* c-style arrays */
-  0,				/* String lower bound */
-  default_word_break_characters,
-  default_collect_symbol_completion_matches,
-  c_language_arch_info,
-  default_print_array_index,
-  default_pass_by_reference,
-  c_get_string,
-  c_watch_location_expression,
-  NULL,				/* la_get_symbol_name_matcher */
-  iterate_over_symbols,
-  default_search_name_hash,
-  &c_varobj_ops,
-  c_get_compile_context,
-  c_compute_program,
-  LANG_MAGIC
+public:
+  cplus_language ()
+    : language_defn (language_cplus)
+  { /* Nothing.  */ }
+
+  /* See language.h.  */
+
+  const char *name () const override
+  { return "c++"; }
+
+  /* See language.h.  */
+
+  const char *natural_name () const override
+  { return "C++"; }
+
+  /* See language.h.  */
+
+  const std::vector<const char *> &filename_extensions () const override
+  {
+    static const std::vector<const char *> extensions
+      = { ".C", ".cc", ".cp", ".cpp", ".cxx", ".c++" };
+    return extensions;
+  }
+
+  /* See language.h.  */
+
+  struct language_pass_by_ref_info pass_by_reference_info
+	(struct type *type) const override
+  {
+    return cp_pass_by_reference (type);
+  }
+
+  /* See language.h.  */
+  void language_arch_info (struct gdbarch *gdbarch,
+			   struct language_arch_info *lai) const override
+  {
+    const struct builtin_type *builtin = builtin_type (gdbarch);
+
+    /* Helper function to allow shorter lines below.  */
+    auto add  = [&] (struct type * t)
+    {
+      lai->add_primitive_type (t);
+    };
+
+    add (builtin->builtin_int);
+    add (builtin->builtin_long);
+    add (builtin->builtin_short);
+    add (builtin->builtin_char);
+    add (builtin->builtin_float);
+    add (builtin->builtin_double);
+    add (builtin->builtin_void);
+    add (builtin->builtin_long_long);
+    add (builtin->builtin_signed_char);
+    add (builtin->builtin_unsigned_char);
+    add (builtin->builtin_unsigned_short);
+    add (builtin->builtin_unsigned_int);
+    add (builtin->builtin_unsigned_long);
+    add (builtin->builtin_unsigned_long_long);
+    add (builtin->builtin_long_double);
+    add (builtin->builtin_complex);
+    add (builtin->builtin_double_complex);
+    add (builtin->builtin_bool);
+    add (builtin->builtin_decfloat);
+    add (builtin->builtin_decdouble);
+    add (builtin->builtin_declong);
+    add (builtin->builtin_char16);
+    add (builtin->builtin_char32);
+    add (builtin->builtin_wchar);
+
+    lai->set_string_char_type (builtin->builtin_char);
+    lai->set_bool_type (builtin->builtin_bool, "bool");
+  }
+
+  /* See language.h.  */
+  struct type *lookup_transparent_type (const char *name) const override
+  {
+    return cp_lookup_transparent_type (name);
+  }
+
+  /* See language.h.  */
+  compile_instance *get_compile_instance () const override
+  {
+    return cplus_get_compile_context ();
+  }
+
+  /* See language.h.  */
+  std::string compute_program (compile_instance *inst,
+			       const char *input,
+			       struct gdbarch *gdbarch,
+			       const struct block *expr_block,
+			       CORE_ADDR expr_pc) const override
+  {
+    return cplus_compute_program (inst, input, gdbarch, expr_block, expr_pc);
+  }
+
+  /* See language.h.  */
+  unsigned int search_name_hash (const char *name) const override
+  {
+    return cp_search_name_hash (name);
+  }
+
+  /* See language.h.  */
+  bool sniff_from_mangled_name (const char *mangled,
+				char **demangled) const override
+  {
+    *demangled = gdb_demangle (mangled, DMGL_PARAMS | DMGL_ANSI);
+    return *demangled != NULL;
+  }
+
+  /* See language.h.  */
+
+  char *demangle_symbol (const char *mangled, int options) const override
+  {
+    return gdb_demangle (mangled, options);
+  }
+
+  /* See language.h.  */
+
+  void print_type (struct type *type, const char *varstring,
+		   struct ui_file *stream, int show, int level,
+		   const struct type_print_options *flags) const override
+  {
+    c_print_type (type, varstring, stream, show, level, flags);
+  }
+
+  /* See language.h.  */
+
+  CORE_ADDR skip_trampoline (struct frame_info *fi,
+			     CORE_ADDR pc) const override
+  {
+    return cplus_skip_trampoline (fi, pc);
+  }
+
+  /* See language.h.  */
+
+  char *class_name_from_physname (const char *physname) const override
+  {
+    return cp_class_name_from_physname (physname);
+  }
+
+  /* See language.h.  */
+
+  struct block_symbol lookup_symbol_nonlocal
+	(const char *name, const struct block *block,
+	 const domain_enum domain) const override
+  {
+    return cp_lookup_symbol_nonlocal (this, name, block, domain);
+  }
+
+  /* See language.h.  */
+
+  const char *name_of_this () const override
+  { return "this"; }
+
+  /* See language.h.  */
+
+  enum macro_expansion macro_expansion () const override
+  { return macro_expansion_c; }
+
+  /* See language.h.  */
+
+  const struct lang_varobj_ops *varobj_ops () const override
+  { return &cplus_varobj_ops; }
+
+  /* See language.h.  */
+
+  const struct exp_descriptor *expression_ops () const override
+  { return &exp_descriptor_c; }
+
+  /* See language.h.  */
+
+  const struct op_print *opcode_print_table () const override
+  { return c_op_print_tab; }
+
+protected:
+
+  /* See language.h.  */
+
+  symbol_name_matcher_ftype *get_symbol_name_matcher_inner
+	(const lookup_name_info &lookup_name) const override
+  {
+    return cp_get_symbol_name_matcher (lookup_name);
+  }
 };
 
-enum cplus_primitive_types {
-  cplus_primitive_type_int,
-  cplus_primitive_type_long,
-  cplus_primitive_type_short,
-  cplus_primitive_type_char,
-  cplus_primitive_type_float,
-  cplus_primitive_type_double,
-  cplus_primitive_type_void,
-  cplus_primitive_type_long_long,
-  cplus_primitive_type_signed_char,
-  cplus_primitive_type_unsigned_char,
-  cplus_primitive_type_unsigned_short,
-  cplus_primitive_type_unsigned_int,
-  cplus_primitive_type_unsigned_long,
-  cplus_primitive_type_unsigned_long_long,
-  cplus_primitive_type_long_double,
-  cplus_primitive_type_complex,
-  cplus_primitive_type_double_complex,
-  cplus_primitive_type_bool,
-  cplus_primitive_type_decfloat,
-  cplus_primitive_type_decdouble,
-  cplus_primitive_type_declong,
-  cplus_primitive_type_char16_t,
-  cplus_primitive_type_char32_t,
-  cplus_primitive_type_wchar_t,
-  nr_cplus_primitive_types
+/* The single instance of the C++ language class.  */
+
+static cplus_language cplus_language_defn;
+
+/* A class for the ASM language.  */
+
+class asm_language : public language_defn
+{
+public:
+  asm_language ()
+    : language_defn (language_asm)
+  { /* Nothing.  */ }
+
+  /* See language.h.  */
+
+  const char *name () const override
+  { return "asm"; }
+
+  /* See language.h.  */
+
+  const char *natural_name () const override
+  { return "Assembly"; }
+
+  /* See language.h.  */
+
+  const std::vector<const char *> &filename_extensions () const override
+  {
+    static const std::vector<const char *> extensions
+      = { ".s", ".sx", ".S" };
+    return extensions;
+  }
+
+  /* See language.h.
+
+     FIXME: Should this have its own arch info method?  */
+  void language_arch_info (struct gdbarch *gdbarch,
+			   struct language_arch_info *lai) const override
+  {
+    c_language_arch_info (gdbarch, lai);
+  }
+
+  /* See language.h.  */
+
+  void print_type (struct type *type, const char *varstring,
+		   struct ui_file *stream, int show, int level,
+		   const struct type_print_options *flags) const override
+  {
+    c_print_type (type, varstring, stream, show, level, flags);
+  }
+
+  /* See language.h.  */
+
+  bool store_sym_names_in_linkage_form_p () const override
+  { return true; }
+
+  /* See language.h.  */
+
+  enum macro_expansion macro_expansion () const override
+  { return macro_expansion_c; }
+
+  /* See language.h.  */
+
+  const struct exp_descriptor *expression_ops () const override
+  { return &exp_descriptor_c; }
+
+  /* See language.h.  */
+
+  const struct op_print *opcode_print_table () const override
+  { return c_op_print_tab; }
 };
 
-static void
-cplus_language_arch_info (struct gdbarch *gdbarch,
-			  struct language_arch_info *lai)
-{
-  const struct builtin_type *builtin = builtin_type (gdbarch);
+/* The single instance of the ASM language class.  */
+static asm_language asm_language_defn;
 
-  lai->string_char_type = builtin->builtin_char;
-  lai->primitive_type_vector
-    = GDBARCH_OBSTACK_CALLOC (gdbarch, nr_cplus_primitive_types + 1,
-			      struct type *);
-  lai->primitive_type_vector [cplus_primitive_type_int]
-    = builtin->builtin_int;
-  lai->primitive_type_vector [cplus_primitive_type_long]
-    = builtin->builtin_long;
-  lai->primitive_type_vector [cplus_primitive_type_short]
-    = builtin->builtin_short;
-  lai->primitive_type_vector [cplus_primitive_type_char]
-    = builtin->builtin_char;
-  lai->primitive_type_vector [cplus_primitive_type_float]
-    = builtin->builtin_float;
-  lai->primitive_type_vector [cplus_primitive_type_double]
-    = builtin->builtin_double;
-  lai->primitive_type_vector [cplus_primitive_type_void]
-    = builtin->builtin_void;
-  lai->primitive_type_vector [cplus_primitive_type_long_long]
-    = builtin->builtin_long_long;
-  lai->primitive_type_vector [cplus_primitive_type_signed_char]
-    = builtin->builtin_signed_char;
-  lai->primitive_type_vector [cplus_primitive_type_unsigned_char]
-    = builtin->builtin_unsigned_char;
-  lai->primitive_type_vector [cplus_primitive_type_unsigned_short]
-    = builtin->builtin_unsigned_short;
-  lai->primitive_type_vector [cplus_primitive_type_unsigned_int]
-    = builtin->builtin_unsigned_int;
-  lai->primitive_type_vector [cplus_primitive_type_unsigned_long]
-    = builtin->builtin_unsigned_long;
-  lai->primitive_type_vector [cplus_primitive_type_unsigned_long_long]
-    = builtin->builtin_unsigned_long_long;
-  lai->primitive_type_vector [cplus_primitive_type_long_double]
-    = builtin->builtin_long_double;
-  lai->primitive_type_vector [cplus_primitive_type_complex]
-    = builtin->builtin_complex;
-  lai->primitive_type_vector [cplus_primitive_type_double_complex]
-    = builtin->builtin_double_complex;
-  lai->primitive_type_vector [cplus_primitive_type_bool]
-    = builtin->builtin_bool;
-  lai->primitive_type_vector [cplus_primitive_type_decfloat]
-    = builtin->builtin_decfloat;
-  lai->primitive_type_vector [cplus_primitive_type_decdouble]
-    = builtin->builtin_decdouble;
-  lai->primitive_type_vector [cplus_primitive_type_declong]
-    = builtin->builtin_declong;
-  lai->primitive_type_vector [cplus_primitive_type_char16_t]
-    = builtin->builtin_char16;
-  lai->primitive_type_vector [cplus_primitive_type_char32_t]
-    = builtin->builtin_char32;
-  lai->primitive_type_vector [cplus_primitive_type_wchar_t]
-    = builtin->builtin_wchar;
-
-  lai->bool_type_symbol = "bool";
-  lai->bool_type_default = builtin->builtin_bool;
-}
-
-static const char *cplus_extensions[] =
-{
-  ".C", ".cc", ".cp", ".cpp", ".cxx", ".c++", NULL
-};
-
-extern const struct language_defn cplus_language_defn =
-{
-  "c++",			/* Language name */
-  "C++",
-  language_cplus,
-  range_check_off,
-  case_sensitive_on,
-  array_row_major,
-  macro_expansion_c,
-  cplus_extensions,
-  &exp_descriptor_c,
-  c_parse,
-  null_post_parser,
-  c_printchar,			/* Print a character constant */
-  c_printstr,			/* Function to print string constant */
-  c_emit_char,			/* Print a single char */
-  c_print_type,			/* Print a type using appropriate syntax */
-  c_print_typedef,		/* Print a typedef using appropriate syntax */
-  c_val_print,			/* Print a value using appropriate syntax */
-  c_value_print,		/* Print a top-level value */
-  default_read_var_value,	/* la_read_var_value */
-  cplus_skip_trampoline,	/* Language specific skip_trampoline */
-  "this",                       /* name_of_this */
-  false,			/* la_store_sym_names_in_linkage_form_p */
-  cp_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
-  cp_lookup_transparent_type,   /* lookup_transparent_type */
-  gdb_demangle,			/* Language specific symbol demangler */
-  gdb_sniff_from_mangled_name,
-  cp_class_name_from_physname,  /* Language specific
-				   class_name_from_physname */
-  c_op_print_tab,		/* expression operators for printing */
-  1,				/* c-style arrays */
-  0,				/* String lower bound */
-  default_word_break_characters,
-  default_collect_symbol_completion_matches,
-  cplus_language_arch_info,
-  default_print_array_index,
-  cp_pass_by_reference,
-  c_get_string,
-  c_watch_location_expression,
-  cp_get_symbol_name_matcher,
-  iterate_over_symbols,
-  cp_search_name_hash,
-  &cplus_varobj_ops,
-  cplus_get_compile_context,
-  cplus_compute_program,
-  LANG_MAGIC
-};
-
-static const char *asm_extensions[] =
-{
-  ".s", ".sx", ".S", NULL
-};
-
-extern const struct language_defn asm_language_defn =
-{
-  "asm",			/* Language name */
-  "assembly",
-  language_asm,
-  range_check_off,
-  case_sensitive_on,
-  array_row_major,
-  macro_expansion_c,
-  asm_extensions,
-  &exp_descriptor_c,
-  c_parse,
-  null_post_parser,
-  c_printchar,			/* Print a character constant */
-  c_printstr,			/* Function to print string constant */
-  c_emit_char,			/* Print a single char */
-  c_print_type,			/* Print a type using appropriate syntax */
-  c_print_typedef,		/* Print a typedef using appropriate syntax */
-  c_val_print,			/* Print a value using appropriate syntax */
-  c_value_print,		/* Print a top-level value */
-  default_read_var_value,	/* la_read_var_value */
-  NULL,				/* Language specific skip_trampoline */
-  NULL,				/* name_of_this */
-  true,				/* la_store_sym_names_in_linkage_form_p */
-  basic_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
-  basic_lookup_transparent_type,/* lookup_transparent_type */
-  NULL,				/* Language specific symbol demangler */
-  NULL,
-  NULL,				/* Language specific
-				   class_name_from_physname */
-  c_op_print_tab,		/* expression operators for printing */
-  1,				/* c-style arrays */
-  0,				/* String lower bound */
-  default_word_break_characters,
-  default_collect_symbol_completion_matches,
-  c_language_arch_info, 	/* FIXME: la_language_arch_info.  */
-  default_print_array_index,
-  default_pass_by_reference,
-  c_get_string,
-  c_watch_location_expression,
-  NULL,				/* la_get_symbol_name_matcher */
-  iterate_over_symbols,
-  default_search_name_hash,
-  &default_varobj_ops,
-  NULL,
-  NULL,
-  LANG_MAGIC
-};
-
-/* The following language_defn does not represent a real language.
-   It just provides a minimal support a-la-C that should allow users
-   to do some simple operations when debugging applications that use
+/* A class for the minimal language.  This does not represent a real
+   language.  It just provides a minimal support a-la-C that should allow
+   users to do some simple operations when debugging applications that use
    a language currently not supported by GDB.  */
 
-extern const struct language_defn minimal_language_defn =
+class minimal_language : public language_defn
 {
-  "minimal",			/* Language name */
-  "Minimal",
-  language_minimal,
-  range_check_off,
-  case_sensitive_on,
-  array_row_major,
-  macro_expansion_c,
-  NULL,
-  &exp_descriptor_c,
-  c_parse,
-  null_post_parser,
-  c_printchar,			/* Print a character constant */
-  c_printstr,			/* Function to print string constant */
-  c_emit_char,			/* Print a single char */
-  c_print_type,			/* Print a type using appropriate syntax */
-  c_print_typedef,		/* Print a typedef using appropriate syntax */
-  c_val_print,			/* Print a value using appropriate syntax */
-  c_value_print,		/* Print a top-level value */
-  default_read_var_value,	/* la_read_var_value */
-  NULL,				/* Language specific skip_trampoline */
-  NULL,				/* name_of_this */
-  true,				/* la_store_sym_names_in_linkage_form_p */
-  basic_lookup_symbol_nonlocal,	/* lookup_symbol_nonlocal */
-  basic_lookup_transparent_type,/* lookup_transparent_type */
-  NULL,				/* Language specific symbol demangler */
-  NULL,
-  NULL,				/* Language specific
-				   class_name_from_physname */
-  c_op_print_tab,		/* expression operators for printing */
-  1,				/* c-style arrays */
-  0,				/* String lower bound */
-  default_word_break_characters,
-  default_collect_symbol_completion_matches,
-  c_language_arch_info,
-  default_print_array_index,
-  default_pass_by_reference,
-  c_get_string,
-  c_watch_location_expression,
-  NULL,				/* la_get_symbol_name_matcher */
-  iterate_over_symbols,
-  default_search_name_hash,
-  &default_varobj_ops,
-  NULL,
-  NULL,
-  LANG_MAGIC
+public:
+  minimal_language ()
+    : language_defn (language_minimal)
+  { /* Nothing.  */ }
+
+  /* See language.h.  */
+
+  const char *name () const override
+  { return "minimal"; }
+
+  /* See language.h.  */
+
+  const char *natural_name () const override
+  { return "Minimal"; }
+
+  /* See language.h.  */
+  void language_arch_info (struct gdbarch *gdbarch,
+			   struct language_arch_info *lai) const override
+  {
+    c_language_arch_info (gdbarch, lai);
+  }
+
+  /* See language.h.  */
+
+  void print_type (struct type *type, const char *varstring,
+		   struct ui_file *stream, int show, int level,
+		   const struct type_print_options *flags) const override
+  {
+    c_print_type (type, varstring, stream, show, level, flags);
+  }
+
+  /* See language.h.  */
+
+  bool store_sym_names_in_linkage_form_p () const override
+  { return true; }
+
+  /* See language.h.  */
+
+  enum macro_expansion macro_expansion () const override
+  { return macro_expansion_c; }
+
+  /* See language.h.  */
+
+  const struct exp_descriptor *expression_ops () const override
+  { return &exp_descriptor_c; }
+
+  /* See language.h.  */
+
+  const struct op_print *opcode_print_table () const override
+  { return c_op_print_tab; }
 };
+
+/* The single instance of the minimal language class.  */
+static minimal_language minimal_language_defn;

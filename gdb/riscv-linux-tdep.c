@@ -1,5 +1,5 @@
 /* Target-dependent code for GNU/Linux on RISC-V processors.
-   Copyright (C) 2018-2019 Free Software Foundation, Inc.
+   Copyright (C) 2018-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -25,6 +25,7 @@
 #include "regset.h"
 #include "tramp-frame.h"
 #include "trad-frame.h"
+#include "gdbarch.h"
 
 /* Define the general register mapping.  The kernel puts the PC at offset 0,
    gdb puts it at offset 32.  Register x0 is always 0 and can be ignored.
@@ -37,6 +38,16 @@ static const struct regcache_map_entry riscv_linux_gregmap[] =
   { 0 }
 };
 
+/* Define the FP register mapping.  The kernel puts the 32 FP regs first, and
+   then FCSR.  */
+
+static const struct regcache_map_entry riscv_linux_fregmap[] =
+{
+  { 32, RISCV_FIRST_FP_REGNUM, 0 },
+  { 1, RISCV_CSR_FCSR_REGNUM, 0 },
+  { 0 }
+};
+
 /* Define the general register regset.  */
 
 static const struct regset riscv_linux_gregset =
@@ -44,18 +55,27 @@ static const struct regset riscv_linux_gregset =
   riscv_linux_gregmap, regcache_supply_regset, regcache_collect_regset
 };
 
+/* Define the FP register regset.  */
+
+static const struct regset riscv_linux_fregset =
+{
+  riscv_linux_fregmap, regcache_supply_regset, regcache_collect_regset
+};
+
 /* Define hook for core file support.  */
 
 static void
 riscv_linux_iterate_over_regset_sections (struct gdbarch *gdbarch,
-                                          iterate_over_regset_sections_cb *cb,
-                                          void *cb_data,
-                                          const struct regcache *regcache)
+					  iterate_over_regset_sections_cb *cb,
+					  void *cb_data,
+					  const struct regcache *regcache)
 {
   cb (".reg", (32 * riscv_isa_xlen (gdbarch)), (32 * riscv_isa_xlen (gdbarch)),
       &riscv_linux_gregset, NULL, cb_data);
-
-  /* TODO: Add FP register support.  */
+  /* The kernel is adding 8 bytes for FCSR.  */
+  cb (".reg2", (32 * riscv_isa_flen (gdbarch)) + 8,
+      (32 * riscv_isa_flen (gdbarch)) + 8,
+      &riscv_linux_fregset, NULL, cb_data);
 }
 
 /* Signal trampoline support.  */
@@ -139,7 +159,7 @@ riscv_linux_sigframe_init (const struct tramp_frame *self,
 static void
 riscv_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 {
-  linux_init_abi (info, gdbarch);
+  linux_init_abi (info, gdbarch, 0);
 
   set_gdbarch_software_single_step (gdbarch, riscv_software_single_step);
 
@@ -156,7 +176,7 @@ riscv_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 
   /* Enable TLS support.  */
   set_gdbarch_fetch_tls_load_module_address (gdbarch,
-                                             svr4_fetch_objfile_link_map);
+					     svr4_fetch_objfile_link_map);
 
   set_gdbarch_iterate_over_regset_sections
     (gdbarch, riscv_linux_iterate_over_regset_sections);
@@ -166,8 +186,9 @@ riscv_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 
 /* Initialize RISC-V Linux target support.  */
 
+void _initialize_riscv_linux_tdep ();
 void
-_initialize_riscv_linux_tdep (void)
+_initialize_riscv_linux_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_riscv, 0, GDB_OSABI_LINUX,
 			  riscv_linux_init_abi);

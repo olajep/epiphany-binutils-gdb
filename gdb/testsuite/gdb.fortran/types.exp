@@ -1,4 +1,4 @@
-# Copyright 1994-2019 Free Software Foundation, Inc.
+# Copyright 1994-2021 Free Software Foundation, Inc.
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -45,10 +45,13 @@ proc test_integer_literal_types_rejected {} {
 proc test_logical_literal_types_accepted {} {
     global gdb_prompt
 
-    # Test the only possible values for a logical, TRUE and FALSE.
+    # Test the only possible values for a logical, TRUE and FALSE (and
+    # also true and false).
 
     gdb_test "pt .TRUE." "type = logical\\*2"
     gdb_test "pt .FALSE." "type = logical\\*2"
+    gdb_test "pt .true." "type = logical\\*2"
+    gdb_test "pt .false." "type = logical\\*2"
 }
 
 proc test_float_literal_types_accepted {} {
@@ -63,13 +66,19 @@ proc test_float_literal_types_accepted {} {
     gdb_test "pt .44" "type = real\\*\[0-9\]+"
     gdb_test "pt 44.0" "type = real\\*\[0-9\]+"
     gdb_test "pt 10D20" "type = real\\*\[0-9\]+"
-    gdb_test "pt 10D20" "type = real\\*\[0-9\]+"
-    gdb_test "pt 10d20" "type = real\\*\[0-9\]+"
     gdb_test "pt 10d20" "type = real\\*\[0-9\]+"
     gdb_test "pt 10E20" "type = real\\*\[0-9\]+"
-    gdb_test "pt 10E20" "type = real\\*\[0-9\]+"
     gdb_test "pt 10e20" "type = real\\*\[0-9\]+"
-    gdb_test "pt 10e20" "type = real\\*\[0-9\]+"
+}
+
+# Test the the primitive Fortran types, those that GDB should always
+# know, even if the program does not define them, are in fact, known.
+proc test_primitive_types_known {} {
+    foreach type {void character logical*1 integer*2 integer*8 \
+		      logical*2 logical*8 integer logical*4 real \
+		      real*8 real*16} {
+	gdb_test "ptype $type" [string_to_regexp "type = $type"]
+    }
 }
 
 # Start with a fresh gdb.
@@ -81,6 +90,7 @@ gdb_reinitialize_dir $srcdir/$subdir
 gdb_test "set print sevenbit-strings" ""
 
 if [set_lang_fortran] then {
+    test_primitive_types_known
     test_integer_literal_types_accepted
     test_integer_literal_types_rejected
     test_logical_literal_types_accepted

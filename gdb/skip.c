@@ -1,6 +1,6 @@
 /* Skipping uninteresting files and functions while stepping.
 
-   Copyright (C) 2011-2019 Free Software Foundation, Inc.
+   Copyright (C) 2011-2021 Free Software Foundation, Inc.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -34,12 +34,13 @@
 #include "filenames.h"
 #include "fnmatch.h"
 #include "gdb_regex.h"
-#include "common/gdb_optional.h"
+#include "gdbsupport/gdb_optional.h"
 #include <list>
+#include "cli/cli-style.h"
 
 /* True if we want to print debug printouts related to file/function
    skipping. */
-static int debug_skip = 0;
+static bool debug_skip = false;
 
 class skiplist_entry
 {
@@ -138,14 +139,8 @@ skiplist_entry::skiplist_entry (bool file_is_glob,
   if (m_function_is_regexp)
     {
       gdb_assert (!m_function.empty ());
-
-      int flags = REG_NOSUB;
-#ifdef REG_EXTENDED
-      flags |= REG_EXTENDED;
-#endif
-
-      gdb_assert (!m_function.empty ());
-      m_compiled_function_regexp.emplace (m_function.c_str (), flags,
+      m_compiled_function_regexp.emplace (m_function.c_str (),
+					  REG_NOSUB | REG_EXTENDED,
 					  _("regexp"));
     }
 }
@@ -178,7 +173,7 @@ skip_file_command (const char *arg, int from_tty)
       if (symtab == NULL)
 	error (_("No default file now."));
 
-      /* It is not a typo, symtab_to_filename_for_display woule be needlessly
+      /* It is not a typo, symtab_to_filename_for_display would be needlessly
 	 ambiguous.  */
       filename = symtab_to_fullname (symtab);
     }
@@ -208,18 +203,15 @@ skip_function_command (const char *arg, int from_tty)
   /* Default to the current function if no argument is given.  */
   if (arg == NULL)
     {
+      frame_info *fi = get_selected_frame (_("No default function now."));
+      struct symbol *sym = get_frame_function (fi);
       const char *name = NULL;
-      CORE_ADDR pc;
 
-      if (!last_displayed_sal_is_valid ())
-	error (_("No default function now."));
-
-      pc = get_last_displayed_addr ();
-      if (!find_pc_partial_function (pc, &name, NULL, NULL))
-	{
-	  error (_("No function found containing current program point %s."),
-		  paddress (get_current_arch (), pc));
-	}
+      if (sym != NULL)
+	name = sym->print_name ();
+      else
+	error (_("No function found containing current program point %s."),
+	       paddress (get_current_arch (), get_frame_pc (fi)));
       skip_function (name);
       return;
     }
@@ -399,7 +391,7 @@ info_skip_command (const char *arg, int from_tty)
 	continue;
 
       ui_out_emit_tuple tuple_emitter (current_uiout, "blklst-entry");
-      current_uiout->field_int ("number", e.number ()); /* 1 */
+      current_uiout->field_signed ("number", e.number ()); /* 1 */
 
       if (e.enabled ())
 	current_uiout->field_string ("enabled", "y"); /* 2 */
@@ -414,7 +406,9 @@ info_skip_command (const char *arg, int from_tty)
       current_uiout->field_string ("file",
 				   e.file ().empty () ? "<none>"
 				   : e.file ().c_str (),
-				   ui_out_style_kind::FILE); /* 4 */
+				   e.file ().empty ()
+				   ? metadata_style.style ()
+				   : file_name_style.style ()); /* 4 */
       if (e.function_is_regexp ())
 	current_uiout->field_string ("regexp", "y"); /* 5 */
       else
@@ -423,7 +417,9 @@ info_skip_command (const char *arg, int from_tty)
       current_uiout->field_string ("function",
 				   e.function ().empty () ? "<none>"
 				   : e.function ().c_str (),
-				   ui_out_style_kind::FUNCTION); /* 6 */
+				   e.function ().empty ()
+				   ? metadata_style.style ()
+				   : function_name_style.style ()); /* 6 */
 
       current_uiout->text ("\n");
     }
@@ -587,7 +583,7 @@ skiplist_entry::skip_function_p (const char *function_name) const
   if (m_function_is_regexp)
     {
       if (debug_skip)
-        fprintf_unfiltered (gdb_stdlog,
+	fprintf_unfiltered (gdb_stdlog,
 			    "skip: checking if function %s matches regex %s...",
 			    function_name, m_function.c_str ());
 
@@ -598,7 +594,7 @@ skiplist_entry::skip_function_p (const char *function_name) const
   else
     {
       if (debug_skip)
-        fprintf_unfiltered (gdb_stdlog,
+	fprintf_unfiltered (gdb_stdlog,
 			    ("skip: checking if function %s matches non-regex "
 			     "%s..."),
 			    function_name, m_function.c_str ());
@@ -660,8 +656,9 @@ complete_skip_number (cmd_list_element *cmd,
     }
 }
 
+void _initialize_step_skip ();
 void
-_initialize_step_skip (void)
+_initialize_step_skip ()
 {
   static struct cmd_list_element *skiplist = NULL;
   struct cmd_list_element *c;
@@ -679,7 +676,7 @@ FILE-SPEC is one of:\n\
 FUNCTION-SPEC is one of:\n\
        -fu|-function FUNCTION-NAME\n\
        -rfu|-rfunction FUNCTION-NAME-REGULAR-EXPRESSION"),
-                  &skiplist, "skip ", 1, &cmdlist);
+		  &skiplist, "skip ", 1, &cmdlist);
 
   c = add_cmd ("file", class_breakpoint, skip_file_command, _("\
 Ignore a file while stepping.\n\
@@ -696,41 +693,45 @@ If no function name is given, skip the current function."),
   set_cmd_completer (c, location_completer);
 
   c = add_cmd ("enable", class_breakpoint, skip_enable_command, _("\
-Enable skip entries.  You can specify numbers (e.g. \"skip enable 1 3\"), \
+Enable skip entries.\n\
+Usage: skip enable [NUMBER | RANGE]...\n\
+You can specify numbers (e.g. \"skip enable 1 3\"),\n\
 ranges (e.g. \"skip enable 4-8\"), or both (e.g. \"skip enable 1 3 4-8\").\n\n\
-If you don't specify any numbers or ranges, we'll enable all skip entries.\n\n\
-Usage: skip enable [NUMBER | RANGE]..."),
+If you don't specify any numbers or ranges, we'll enable all skip entries."),
 	       &skiplist);
   set_cmd_completer (c, complete_skip_number);
 
   c = add_cmd ("disable", class_breakpoint, skip_disable_command, _("\
-Disable skip entries.  You can specify numbers (e.g. \"skip disable 1 3\"), \
+Disable skip entries.\n\
+Usage: skip disable [NUMBER | RANGE]...\n\
+You can specify numbers (e.g. \"skip disable 1 3\"),\n\
 ranges (e.g. \"skip disable 4-8\"), or both (e.g. \"skip disable 1 3 4-8\").\n\n\
-If you don't specify any numbers or ranges, we'll disable all skip entries.\n\n\
-Usage: skip disable [NUMBER | RANGE]..."),
+If you don't specify any numbers or ranges, we'll disable all skip entries."),
 	       &skiplist);
   set_cmd_completer (c, complete_skip_number);
 
   c = add_cmd ("delete", class_breakpoint, skip_delete_command, _("\
-Delete skip entries.  You can specify numbers (e.g. \"skip delete 1 3\"), \
+Delete skip entries.\n\
+Usage: skip delete [NUMBER | RANGES]...\n\
+You can specify numbers (e.g. \"skip delete 1 3\"),\n\
 ranges (e.g. \"skip delete 4-8\"), or both (e.g. \"skip delete 1 3 4-8\").\n\n\
-If you don't specify any numbers or ranges, we'll delete all skip entries.\n\n\
-Usage: skip delete [NUMBER | RANGES]..."),
+If you don't specify any numbers or ranges, we'll delete all skip entries."),
 	       &skiplist);
   set_cmd_completer (c, complete_skip_number);
 
   add_info ("skip", info_skip_command, _("\
-Display the status of skips.  You can specify numbers (e.g. \"info skip 1 3\"), \
+Display the status of skips.\n\
+Usage: info skip [NUMBER | RANGES]...\n\
+You can specify numbers (e.g. \"info skip 1 3\"), \n\
 ranges (e.g. \"info skip 4-8\"), or both (e.g. \"info skip 1 3 4-8\").\n\n\
-If you don't specify any numbers or ranges, we'll show all skips.\n\n\
-Usage: info skip [NUMBER | RANGES]..."));
+If you don't specify any numbers or ranges, we'll show all skips."));
   set_cmd_completer (c, complete_skip_number);
 
   add_setshow_boolean_cmd ("skip", class_maintenance,
 			   &debug_skip, _("\
 Set whether to print the debug output about skipping files and functions."),
 			   _("\
-Show whether the debug output about skipping files and functions is printed"),
+Show whether the debug output about skipping files and functions is printed."),
 			   _("\
 When non-zero, debug output about skipping files and functions is displayed."),
 			   NULL, NULL,

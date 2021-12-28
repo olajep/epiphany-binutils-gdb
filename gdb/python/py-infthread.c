@@ -1,6 +1,6 @@
 /* Python interface to inferior threads.
 
-   Copyright (C) 2009-2019 Free Software Foundation, Inc.
+   Copyright (C) 2009-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -36,17 +36,17 @@ extern PyTypeObject thread_object_type
       }								\
   } while (0)
 
-thread_object *
+gdbpy_ref<thread_object>
 create_thread_object (struct thread_info *tp)
 {
-  thread_object *thread_obj;
+  gdbpy_ref<thread_object> thread_obj;
 
   gdbpy_ref<inferior_object> inf_obj = inferior_to_inferior_object (tp->inf);
   if (inf_obj == NULL)
     return NULL;
 
-  thread_obj = PyObject_New (thread_object, &thread_object_type);
-  if (!thread_obj)
+  thread_obj.reset (PyObject_New (thread_object, &thread_object_type));
+  if (thread_obj == NULL)
     return NULL;
 
   thread_obj->thread = tp;
@@ -130,7 +130,9 @@ thpy_get_num (PyObject *self, void *closure)
 
   THPY_REQUIRE_VALID (thread_obj);
 
-  return PyLong_FromLong (thread_obj->thread->per_inf_num);
+  gdbpy_ref<> result
+    = gdb_py_object_from_longest (thread_obj->thread->per_inf_num);
+  return result.release ();
 }
 
 /* Getter for InferiorThread.global_num.  */
@@ -142,7 +144,9 @@ thpy_get_global_num (PyObject *self, void *closure)
 
   THPY_REQUIRE_VALID (thread_obj);
 
-  return PyLong_FromLong (thread_obj->thread->global_num);
+  gdbpy_ref<> result
+    = gdb_py_object_from_longest (thread_obj->thread->global_num);
+  return result.release ();
 }
 
 /* Getter for InferiorThread.ptid  -> (pid, lwp, tid).
@@ -181,15 +185,14 @@ thpy_switch (PyObject *self, PyObject *args)
 
   THPY_REQUIRE_VALID (thread_obj);
 
-  TRY
+  try
     {
       switch_to_thread (thread_obj->thread);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
   Py_RETURN_NONE;
 }
@@ -257,6 +260,36 @@ thpy_is_valid (PyObject *self, PyObject *args)
   Py_RETURN_TRUE;
 }
 
+/* Implementation of gdb.InferiorThread.handle (self) -> handle. */
+
+static PyObject *
+thpy_thread_handle (PyObject *self, PyObject *args)
+{
+  thread_object *thread_obj = (thread_object *) self;
+  THPY_REQUIRE_VALID (thread_obj);
+
+  gdb::byte_vector hv;
+  
+  try
+    {
+      hv = target_thread_info_to_thread_handle (thread_obj->thread);
+    }
+  catch (const gdb_exception &except)
+    {
+      GDB_PY_HANDLE_EXCEPTION (except);
+    }
+
+  if (hv.size () == 0)
+    {
+      PyErr_SetString (PyExc_RuntimeError, _("Thread handle not found."));
+      return NULL;
+    }
+
+  PyObject *object = PyBytes_FromStringAndSize ((const char *) hv.data (),
+						hv.size());
+  return object;
+}
+
 /* Return a reference to a new Python object representing a ptid_t.
    The object is a tuple containing (pid, lwp, tid). */
 PyObject *
@@ -274,10 +307,21 @@ gdbpy_create_ptid_object (ptid_t ptid)
   lwp = ptid.lwp ();
   tid = ptid.tid ();
 
-  PyTuple_SET_ITEM (ret, 0, PyInt_FromLong (pid));
-  PyTuple_SET_ITEM (ret, 1, PyInt_FromLong (lwp));
-  PyTuple_SET_ITEM (ret, 2, PyInt_FromLong (tid));
- 
+  gdbpy_ref<> pid_obj = gdb_py_object_from_longest (pid);
+  if (pid_obj == nullptr)
+    return nullptr;
+  gdbpy_ref<> lwp_obj = gdb_py_object_from_longest (lwp);
+  if (lwp_obj == nullptr)
+    return nullptr;
+  gdbpy_ref<> tid_obj = gdb_py_object_from_longest (tid);
+  if (tid_obj == nullptr)
+    return nullptr;
+
+  /* Note that these steal references, hence the use of 'release'.  */
+  PyTuple_SET_ITEM (ret, 0, pid_obj.release ());
+  PyTuple_SET_ITEM (ret, 1, lwp_obj.release ());
+  PyTuple_SET_ITEM (ret, 2, tid_obj.release ());
+
   return ret;
 }
 
@@ -336,6 +380,9 @@ Return whether the thread is running." },
   { "is_exited", thpy_is_exited, METH_NOARGS,
     "is_exited () -> Boolean\n\
 Return whether the thread is exited." },
+  { "handle", thpy_thread_handle, METH_NOARGS,
+    "handle  () -> handle\n\
+Return thread library specific handle for thread." },
 
   { NULL }
 };

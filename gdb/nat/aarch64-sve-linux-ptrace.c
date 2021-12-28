@@ -1,6 +1,6 @@
 /* Common target dependent for AArch64 systems.
 
-   Copyright (C) 2018-2019 Free Software Foundation, Inc.
+   Copyright (C) 2018-2021 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,15 +19,14 @@
 
 #include <sys/utsname.h>
 #include <sys/uio.h>
-#include "common-defs.h"
+#include "gdbsupport/common-defs.h"
 #include "elf/external.h"
 #include "elf/common.h"
 #include "aarch64-sve-linux-ptrace.h"
 #include "arch/aarch64.h"
-#include "common-regcache.h"
-#include "common/byte-vector.h"
-
-static bool vq_change_warned = false;
+#include "gdbsupport/common-regcache.h"
+#include "gdbsupport/byte-vector.h"
+#include <endian.h>
 
 /* See nat/aarch64-sve-linux-ptrace.h.  */
 
@@ -63,6 +62,63 @@ aarch64_sve_get_vq (int tid)
 
 /* See nat/aarch64-sve-linux-ptrace.h.  */
 
+bool
+aarch64_sve_set_vq (int tid, uint64_t vq)
+{
+  struct iovec iovec;
+  struct user_sve_header header;
+
+  iovec.iov_len = sizeof (header);
+  iovec.iov_base = &header;
+
+  if (ptrace (PTRACE_GETREGSET, tid, NT_ARM_SVE, &iovec) < 0)
+    {
+      /* SVE is not supported.  */
+      return false;
+    }
+
+  header.vl = sve_vl_from_vq (vq);
+
+  if (ptrace (PTRACE_SETREGSET, tid, NT_ARM_SVE, &iovec) < 0)
+    {
+      /* Vector length change failed.  */
+      return false;
+    }
+
+  return true;
+}
+
+/* See nat/aarch64-sve-linux-ptrace.h.  */
+
+bool
+aarch64_sve_set_vq (int tid, struct reg_buffer_common *reg_buf)
+{
+  uint64_t reg_vg = 0;
+
+  /* The VG register may not be valid if we've not collected any value yet.
+     This can happen, for example,  if we're restoring the regcache after an
+     inferior function call, and the VG register comes after the Z
+     registers.  */
+  if (reg_buf->get_register_status (AARCH64_SVE_VG_REGNUM) != REG_VALID)
+  {
+    /* If vg is not available yet, fetch it from ptrace.  The VG value from
+       ptrace is likely the correct one.  */
+    uint64_t vq = aarch64_sve_get_vq (tid);
+
+    /* If something went wrong, just bail out.  */
+    if (vq == 0)
+      return false;
+
+    reg_vg = sve_vg_from_vq (vq);
+  }
+  else
+    reg_buf->raw_collect (AARCH64_SVE_VG_REGNUM, &reg_vg);
+
+  return aarch64_sve_set_vq (tid, sve_vq_from_vg (reg_vg));
+}
+
+/* See nat/aarch64-sve-linux-ptrace.h.  */
+
 std::unique_ptr<gdb_byte[]>
 aarch64_sve_get_sveregs (int tid)
 {
@@ -87,6 +143,24 @@ aarch64_sve_get_sveregs (int tid)
   return buf;
 }
 
+/* If we are running in BE mode, byteswap the contents
+   of SRC to DST for SIZE bytes.  Other, just copy the contents
+   from SRC to DST.  */
+
+static void
+aarch64_maybe_swab128 (gdb_byte *dst, const gdb_byte *src, size_t size)
+{
+  gdb_assert (src != nullptr && dst != nullptr);
+  gdb_assert (size > 1);
+
+#if (__BYTE_ORDER == __BIG_ENDIAN)
+  for (int i = 0; i < size - 1; i++)
+    dst[i] = src[size - i];
+#else
+  memcpy (dst, src, size);
+#endif
+}
+
 /* See nat/aarch64-sve-linux-ptrace.h.  */
 
 void
@@ -95,37 +169,18 @@ aarch64_sve_regs_copy_to_reg_buf (struct reg_buffer_common *reg_buf,
 {
   char *base = (char *) buf;
   struct user_sve_header *header = (struct user_sve_header *) buf;
-  uint64_t vq, vg_reg_buf = 0;
 
-  vq = sve_vq_from_vl (header->vl);
+  uint64_t vq = sve_vq_from_vl (header->vl);
+  uint64_t vg = sve_vg_from_vl (header->vl);
 
   /* Sanity check the data in the header.  */
   if (!sve_vl_valid (header->vl)
       || SVE_PT_SIZE (vq, header->flags) != header->size)
     error (_("Invalid SVE header from kernel."));
 
-  if (REG_VALID == reg_buf->get_register_status (AARCH64_SVE_VG_REGNUM))
-    reg_buf->raw_collect (AARCH64_SVE_VG_REGNUM, &vg_reg_buf);
-
-  if (vg_reg_buf == 0)
-    {
-      /* VG has not been set.  */
-      vg_reg_buf = sve_vg_from_vl (header->vl);
-      reg_buf->raw_supply (AARCH64_SVE_VG_REGNUM, &vg_reg_buf);
-    }
-  else if (vg_reg_buf != sve_vg_from_vl (header->vl) && !vq_change_warned)
-    {
-      /* Vector length on the running process has changed.  GDB currently does
-	 not support this and will result in GDB showing incorrect partially
-	 incorrect data for the vector registers.  Warn once and continue.  We
-	 do not expect many programs to exhibit this behaviour.  To fix this
-	 we need to spot the change earlier and generate a new target
-	 descriptor.  */
-      warning (_("SVE Vector length has changed (%ld to %d). "
-		 "Vector registers may show incorrect data."),
-	       vg_reg_buf, sve_vg_from_vl (header->vl));
-      vq_change_warned = true;
-    }
+  /* Update VG.  Note, the registers in the regcache will already be of the
+     correct length.  */
+  reg_buf->raw_supply (AARCH64_SVE_VG_REGNUM, &vg);
 
   if (HAS_SVE_STATE (*header))
     {
@@ -148,34 +203,50 @@ aarch64_sve_regs_copy_to_reg_buf (struct reg_buffer_common *reg_buf,
     }
   else
     {
+      /* WARNING: SIMD state is laid out in memory in target-endian format,
+	 while SVE state is laid out in an endianness-independent format (LE).
+
+	 So we have a couple cases to consider:
+
+	 1 - If the target is big endian, then SIMD state is big endian,
+	 requiring a byteswap.
+
+	 2 - If the target is little endian, then SIMD state is little endian,
+	 which matches the SVE format, so no byteswap is needed. */
+
       /* There is no SVE state yet - the register dump contains a fpsimd
 	 structure instead.  These registers still exist in the hardware, but
 	 the kernel has not yet initialised them, and so they will be null.  */
 
-      char *zero_reg = (char *) alloca (SVE_PT_SVE_ZREG_SIZE (vq));
+      gdb_byte *reg = (gdb_byte *) alloca (SVE_PT_SVE_ZREG_SIZE (vq));
       struct user_fpsimd_state *fpsimd
 	= (struct user_fpsimd_state *)(base + SVE_PT_FPSIMD_OFFSET);
+
+      /* Make sure we have a zeroed register buffer.  We will need the zero
+	 padding below.  */
+      memset (reg, 0, SVE_PT_SVE_ZREG_SIZE (vq));
 
       /* Copy across the V registers from fpsimd structure to the Z registers,
 	 ensuring the non overlapping state is set to null.  */
 
-      memset (zero_reg, 0, SVE_PT_SVE_ZREG_SIZE (vq));
-
       for (int i = 0; i < AARCH64_SVE_Z_REGS_NUM; i++)
 	{
-	  memcpy (zero_reg, &fpsimd->vregs[i], sizeof (__int128_t));
-	  reg_buf->raw_supply (AARCH64_SVE_Z0_REGNUM + i, zero_reg);
+	  /* Handle big endian/little endian SIMD/SVE conversion.  */
+	  aarch64_maybe_swab128 (reg, (const gdb_byte *) &fpsimd->vregs[i],
+				 V_REGISTER_SIZE);
+	  reg_buf->raw_supply (AARCH64_SVE_Z0_REGNUM + i, reg);
 	}
 
       reg_buf->raw_supply (AARCH64_FPSR_REGNUM, &fpsimd->fpsr);
       reg_buf->raw_supply (AARCH64_FPCR_REGNUM, &fpsimd->fpcr);
 
       /* Clear the SVE only registers.  */
+      memset (reg, 0, SVE_PT_SVE_ZREG_SIZE (vq));
 
       for (int i = 0; i < AARCH64_SVE_P_REGS_NUM; i++)
-	reg_buf->raw_supply (AARCH64_SVE_P0_REGNUM + i, zero_reg);
+	reg_buf->raw_supply (AARCH64_SVE_P0_REGNUM + i, reg);
 
-      reg_buf->raw_supply (AARCH64_SVE_FFR_REGNUM, zero_reg);
+      reg_buf->raw_supply (AARCH64_SVE_FFR_REGNUM, reg);
     }
 }
 
@@ -187,29 +258,12 @@ aarch64_sve_regs_copy_from_reg_buf (const struct reg_buffer_common *reg_buf,
 {
   struct user_sve_header *header = (struct user_sve_header *) buf;
   char *base = (char *) buf;
-  uint64_t vq, vg_reg_buf = 0;
-
-  vq = sve_vq_from_vl (header->vl);
+  uint64_t vq = sve_vq_from_vl (header->vl);
 
   /* Sanity check the data in the header.  */
   if (!sve_vl_valid (header->vl)
       || SVE_PT_SIZE (vq, header->flags) != header->size)
     error (_("Invalid SVE header from kernel."));
-
-  if (REG_VALID == reg_buf->get_register_status (AARCH64_SVE_VG_REGNUM))
-    reg_buf->raw_collect (AARCH64_SVE_VG_REGNUM, &vg_reg_buf);
-
-  if (vg_reg_buf != 0 && vg_reg_buf != sve_vg_from_vl (header->vl))
-    {
-      /* Vector length on the running process has changed.  GDB currently does
-	 not support this and will result in GDB writing invalid data back to
-	 the vector registers.  Error and exit.  We do not expect many programs
-	 to exhibit this behaviour.  To fix this we need to spot the change
-	 earlier and generate a new target descriptor.  */
-      error (_("SVE Vector length has changed (%ld to %d). "
-	       "Cannot write back registers."),
-	     vg_reg_buf, sve_vg_from_vl (header->vl));
-    }
 
   if (!HAS_SVE_STATE (*header))
     {
@@ -221,11 +275,11 @@ aarch64_sve_regs_copy_from_reg_buf (const struct reg_buffer_common *reg_buf,
 	 kernel, which is why we try to avoid it.  */
 
       bool has_sve_state = false;
-      char *zero_reg = (char *) alloca (SVE_PT_SVE_ZREG_SIZE (vq));
+      gdb_byte *reg = (gdb_byte *) alloca (SVE_PT_SVE_ZREG_SIZE (vq));
       struct user_fpsimd_state *fpsimd
 	= (struct user_fpsimd_state *)(base + SVE_PT_FPSIMD_OFFSET);
 
-      memset (zero_reg, 0, SVE_PT_SVE_ZREG_SIZE (vq));
+      memset (reg, 0, SVE_PT_SVE_ZREG_SIZE (vq));
 
       /* Check in the reg_buf if any of the Z registers are set after the
 	 first 128 bits, or if any of the other SVE registers are set.  */
@@ -233,7 +287,7 @@ aarch64_sve_regs_copy_from_reg_buf (const struct reg_buffer_common *reg_buf,
       for (int i = 0; i < AARCH64_SVE_Z_REGS_NUM; i++)
 	{
 	  has_sve_state |= reg_buf->raw_compare (AARCH64_SVE_Z0_REGNUM + i,
-						 zero_reg, sizeof (__int128_t));
+						 reg, sizeof (__int128_t));
 	  if (has_sve_state)
 	    break;
 	}
@@ -242,19 +296,31 @@ aarch64_sve_regs_copy_from_reg_buf (const struct reg_buffer_common *reg_buf,
 	for (int i = 0; i < AARCH64_SVE_P_REGS_NUM; i++)
 	  {
 	    has_sve_state |= reg_buf->raw_compare (AARCH64_SVE_P0_REGNUM + i,
-						   zero_reg, 0);
+						   reg, 0);
 	    if (has_sve_state)
 	      break;
 	  }
 
       if (!has_sve_state)
 	  has_sve_state |= reg_buf->raw_compare (AARCH64_SVE_FFR_REGNUM,
-						 zero_reg, 0);
+						 reg, 0);
 
       /* If no SVE state exists, then use the existing fpsimd structure to
 	 write out state and return.  */
       if (!has_sve_state)
 	{
+	  /* WARNING: SIMD state is laid out in memory in target-endian format,
+	     while SVE state is laid out in an endianness-independent format
+	     (LE).
+
+	     So we have a couple cases to consider:
+
+	     1 - If the target is big endian, then SIMD state is big endian,
+	     requiring a byteswap.
+
+	     2 - If the target is little endian, then SIMD state is little
+	     endian, which matches the SVE format, so no byteswap is needed. */
+
 	  /* The collects of the Z registers will overflow the size of a vreg.
 	     There is enough space in the structure to allow for this, but we
 	     cannot overflow into the next register as we might not be
@@ -265,8 +331,10 @@ aarch64_sve_regs_copy_from_reg_buf (const struct reg_buffer_common *reg_buf,
 	      if (REG_VALID
 		  == reg_buf->get_register_status (AARCH64_SVE_Z0_REGNUM + i))
 		{
-		  reg_buf->raw_collect (AARCH64_SVE_Z0_REGNUM + i, zero_reg);
-		  memcpy (&fpsimd->vregs[i], zero_reg, sizeof (__int128_t));
+		  reg_buf->raw_collect (AARCH64_SVE_Z0_REGNUM + i, reg);
+		  /* Handle big endian/little endian SIMD/SVE conversion.  */
+		  aarch64_maybe_swab128 ((gdb_byte *) &fpsimd->vregs[i], reg,
+					 V_REGISTER_SIZE);
 		}
 	    }
 
