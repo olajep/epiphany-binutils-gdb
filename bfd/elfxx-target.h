@@ -1,5 +1,5 @@
 /* Target definitions for NN-bit ELF
-   Copyright (C) 1993-2021 Free Software Foundation, Inc.
+   Copyright (C) 1993-2022 Free Software Foundation, Inc.
 
    This file is part of BFD, the Binary File Descriptor library.
 
@@ -130,13 +130,13 @@
 #define elf_backend_extern_protected_data 0
 #endif
 #ifndef elf_backend_always_renumber_dynsyms
-#define elf_backend_always_renumber_dynsyms FALSE
+#define elf_backend_always_renumber_dynsyms false
 #endif
 #ifndef elf_backend_linux_prpsinfo32_ugid16
-#define elf_backend_linux_prpsinfo32_ugid16 FALSE
+#define elf_backend_linux_prpsinfo32_ugid16 false
 #endif
 #ifndef elf_backend_linux_prpsinfo64_ugid16
-#define elf_backend_linux_prpsinfo64_ugid16 FALSE
+#define elf_backend_linux_prpsinfo64_ugid16 false
 #endif
 #ifndef elf_backend_stack_align
 #define elf_backend_stack_align 16
@@ -400,6 +400,10 @@
 # error ELF_MINPAGESIZE > ELF_RELROPAGESIZE
 #endif
 
+#ifndef ELF_P_ALIGN
+#define ELF_P_ALIGN 0
+#endif
+
 #ifndef ELF_DYNAMIC_SEC_FLAGS
 /* Note that we set the SEC_IN_MEMORY flag for these sections.  */
 #define ELF_DYNAMIC_SEC_FLAGS			\
@@ -408,10 +412,10 @@
 #endif
 
 #ifndef elf_backend_collect
-#define elf_backend_collect FALSE
+#define elf_backend_collect false
 #endif
 #ifndef elf_backend_type_change_ok
-#define elf_backend_type_change_ok FALSE
+#define elf_backend_type_change_ok false
 #endif
 
 #ifndef elf_backend_sym_is_global
@@ -473,6 +477,12 @@
 #endif
 #ifndef elf_backend_check_relocs
 #define elf_backend_check_relocs	0
+#endif
+#ifndef elf_backend_size_relative_relocs
+#define elf_backend_size_relative_relocs 0
+#endif
+#ifndef elf_backend_finish_relative_relocs
+#define elf_backend_finish_relative_relocs 0
 #endif
 #ifndef elf_backend_check_directives
 #define elf_backend_check_directives	0
@@ -813,6 +823,7 @@ static const struct elf_backend_data elfNN_bed =
   ELF_MINPAGESIZE,		/* minpagesize */
   ELF_COMMONPAGESIZE,		/* commonpagesize */
   ELF_RELROPAGESIZE,		/* commonpagesize to use with -z relro */
+  ELF_P_ALIGN,			/* p_align */
   ELF_DYNAMIC_SEC_FLAGS,	/* dynamic_sec_flags */
   elf_backend_arch_data,
   elf_info_to_howto,
@@ -837,6 +848,8 @@ static const struct elf_backend_data elfNN_bed =
   elf_backend_omit_section_dynsym,
   elf_backend_relocs_compatible,
   elf_backend_check_relocs,
+  elf_backend_size_relative_relocs,
+  elf_backend_finish_relative_relocs,
   elf_backend_check_directives,
   elf_backend_notice_as_needed,
   elf_backend_adjust_dynamic_symbol,

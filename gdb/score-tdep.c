@@ -1,7 +1,7 @@
 /* Target-dependent code for the S+core architecture, for GDB,
    the GNU Debugger.
 
-   Copyright (C) 2006-2021 Free Software Foundation, Inc.
+   Copyright (C) 2006-2022 Free Software Foundation, Inc.
 
    Contributed by Qinwei (qinwei@sunnorth.com.cn)
    Contributed by Ching-Peng Lin (cplin@sunplus.com)
@@ -530,7 +530,7 @@ score_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       struct value *arg = args[argnum];
       struct type *arg_type = check_typedef (value_type (arg));
       enum type_code typecode = arg_type->code ();
-      const gdb_byte *val = value_contents (arg);
+      const gdb_byte *val = value_contents (arg).data ();
       int downward_offset = 0;
       int arg_last_part_p = 0;
 
@@ -1019,7 +1019,9 @@ score7_analyze_prologue (CORE_ADDR startaddr, CORE_ADDR pc,
   /* Save RA.  */
   if (ra_offset_p == 1)
     {
-      if (this_cache->saved_regs[SCORE_PC_REGNUM].is_realreg ())
+      if (this_cache->saved_regs[SCORE_PC_REGNUM].is_realreg ()
+	  && this_cache->saved_regs[SCORE_PC_REGNUM].realreg ()
+	     == SCORE_PC_REGNUM)
 	this_cache->saved_regs[SCORE_PC_REGNUM].set_addr (sp + sp_offset
 							  - ra_offset);
     }
@@ -1032,7 +1034,9 @@ score7_analyze_prologue (CORE_ADDR startaddr, CORE_ADDR pc,
   /* Save FP.  */
   if (fp_offset_p == 1)
     {
-      if (this_cache->saved_regs[SCORE_FP_REGNUM].is_realreg ())
+      if (this_cache->saved_regs[SCORE_FP_REGNUM].is_realreg ()
+	  && this_cache->saved_regs[SCORE_FP_REGNUM].realreg ()
+	     == SCORE_FP_REGNUM)
 	this_cache->saved_regs[SCORE_FP_REGNUM].set_addr (sp + sp_offset
 							  - fp_offset);
     }
@@ -1265,7 +1269,9 @@ score3_analyze_prologue (CORE_ADDR startaddr, CORE_ADDR pc,
   /* Save RA.  */
   if (ra_offset_p == 1)
     {
-      if (this_cache->saved_regs[SCORE_PC_REGNUM].is_realreg ())
+      if (this_cache->saved_regs[SCORE_PC_REGNUM].is_realreg ()
+	  && this_cache->saved_regs[SCORE_PC_REGNUM].realreg ()
+	     == SCORE_PC_REGNUM)
 	this_cache->saved_regs[SCORE_PC_REGNUM].set_addr (sp + sp_offset
 							  - ra_offset);
     }
@@ -1278,7 +1284,9 @@ score3_analyze_prologue (CORE_ADDR startaddr, CORE_ADDR pc,
   /* Save FP.  */
   if (fp_offset_p == 1)
     {
-      if (this_cache->saved_regs[SCORE_FP_REGNUM].is_realreg ())
+      if (this_cache->saved_regs[SCORE_FP_REGNUM].is_realreg ()
+	  && this_cache->saved_regs[SCORE_FP_REGNUM].realreg ()
+	     == SCORE_FP_REGNUM)
 	this_cache->saved_regs[SCORE_FP_REGNUM].set_addr (sp + sp_offset
 							  - fp_offset);
     }
@@ -1318,7 +1326,7 @@ score_make_prologue_cache (struct frame_info *this_frame, void **this_cache)
   }
 
   /* Save SP.  */
-  trad_frame_set_value (cache->saved_regs, SCORE_SP_REGNUM, cache->base);
+  cache->saved_regs[SCORE_SP_REGNUM].set_value (cache->base);
 
   return (struct score_frame_cache *) (*this_cache);
 }
@@ -1343,6 +1351,7 @@ score_prologue_prev_register (struct frame_info *this_frame,
 
 static const struct frame_unwind score_prologue_unwind =
 {
+  "score prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   score_prologue_this_id,

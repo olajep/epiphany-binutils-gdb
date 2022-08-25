@@ -1,6 +1,6 @@
 /* Common target-dependent functionality for AArch64.
 
-   Copyright (C) 2017-2021 Free Software Foundation, Inc.
+   Copyright (C) 2017-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -22,12 +22,24 @@
 
 #include "gdbsupport/tdesc.h"
 
+/* Holds information on what architectural features are available.  This is
+   used to select register sets.  */
+struct aarch64_features
+{
+  bool sve = false;
+  bool pauth = false;
+  bool mte = false;
+};
+
 /* Create the aarch64 target description.  A non zero VQ value indicates both
    the presence of SVE and the Vector Quotient - the number of 128bit chunks in
    an SVE Z register.  HAS_PAUTH_P indicates the presence of the PAUTH
-   feature.  */
+   feature.
 
-target_desc *aarch64_create_target_description (uint64_t vq, bool has_pauth_p);
+   MTE_P indicates the presence of the Memory Tagging Extension feature.  */
+
+target_desc *aarch64_create_target_description (uint64_t vq, bool has_pauth_p,
+						bool mte_p);
 
 /* Register numbers of various important registers.
    Note that on SVE, the Z registers reuse the V register numbers and the V

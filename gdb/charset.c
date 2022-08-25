@@ -1,6 +1,6 @@
 /* Character set conversion support for GDB.
 
-   Copyright (C) 2001-2021 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,7 +20,7 @@
 #include "defs.h"
 #include "charset.h"
 #include "gdbcmd.h"
-#include "gdb_obstack.h"
+#include "gdbsupport/gdb_obstack.h"
 #include "gdbsupport/gdb_wait.h"
 #include "charset-list.h"
 #include "gdbsupport/environ.h"
@@ -960,35 +960,31 @@ intermediate_encoding (void)
 {
   iconv_t desc;
   static const char *stored_result = NULL;
-  char *result;
+  gdb::unique_xmalloc_ptr<char> result;
 
   if (stored_result)
     return stored_result;
   result = xstrprintf ("UTF-%d%s", (int) (sizeof (gdb_wchar_t) * 8),
 		       ENDIAN_SUFFIX);
   /* Check that the name is supported by iconv_open.  */
-  desc = iconv_open (result, host_charset ());
+  desc = iconv_open (result.get (), host_charset ());
   if (desc != (iconv_t) -1)
     {
       iconv_close (desc);
-      stored_result = result;
-      return result;
+      stored_result = result.release ();
+      return stored_result;
     }
-  /* Not valid, free the allocated memory.  */
-  xfree (result);
   /* Second try, with UCS-2 type.  */
   result = xstrprintf ("UCS-%d%s", (int) sizeof (gdb_wchar_t),
 		       ENDIAN_SUFFIX);
   /* Check that the name is supported by iconv_open.  */
-  desc = iconv_open (result, host_charset ());
+  desc = iconv_open (result.get (), host_charset ());
   if (desc != (iconv_t) -1)
     {
       iconv_close (desc);
-      stored_result = result;
-      return result;
+      stored_result = result.release ();
+      return stored_result;
     }
-  /* Not valid, free the allocated memory.  */
-  xfree (result);
   /* No valid charset found, generate error here.  */
   error (_("Unable to find a valid charset for string conversions"));
 }

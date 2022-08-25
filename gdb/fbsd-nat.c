@@ -1,6 +1,6 @@
 /* Native-dependent code for FreeBSD.
 
-   Copyright (C) 2002-2021 Free Software Foundation, Inc.
+   Copyright (C) 2002-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -26,9 +26,13 @@
 #include "gdbarch.h"
 #include "gdbcmd.h"
 #include "gdbthread.h"
+#include "gdbsupport/buildargv.h"
 #include "gdbsupport/gdb_wait.h"
 #include "inf-ptrace.h"
 #include <sys/types.h>
+#ifdef HAVE_SYS_PROCCTL_H
+#include <sys/procctl.h>
+#endif
 #include <sys/procfs.h>
 #include <sys/ptrace.h>
 #include <sys/signal.h>
@@ -362,7 +366,7 @@ fbsd_nat_target::info_proc (const char *args, enum info_proc_what what)
 	  printf_filtered ("Parent process: %d\n", kp.ki_ppid);
 	  printf_filtered ("Process group: %d\n", kp.ki_pgid);
 	  printf_filtered ("Session id: %d\n", kp.ki_sid);
-	  printf_filtered ("TTY: %ju\n", (uintmax_t) kp.ki_tdev);
+	  printf_filtered ("TTY: %s\n", pulongest (kp.ki_tdev));
 	  printf_filtered ("TTY owner process group: %d\n", kp.ki_tpgid);
 	  printf_filtered ("User IDs (real, effective, saved): %d %d %d\n",
 			   kp.ki_ruid, kp.ki_uid, kp.ki_svuid);
@@ -380,34 +384,35 @@ fbsd_nat_target::info_proc (const char *args, enum info_proc_what what)
 			   kp.ki_rusage.ru_majflt);
 	  printf_filtered ("Major faults, children: %ld\n",
 			   kp.ki_rusage_ch.ru_majflt);
-	  printf_filtered ("utime: %jd.%06ld\n",
-			   (intmax_t) kp.ki_rusage.ru_utime.tv_sec,
+	  printf_filtered ("utime: %s.%06ld\n",
+			   plongest (kp.ki_rusage.ru_utime.tv_sec),
 			   kp.ki_rusage.ru_utime.tv_usec);
-	  printf_filtered ("stime: %jd.%06ld\n",
-			   (intmax_t) kp.ki_rusage.ru_stime.tv_sec,
+	  printf_filtered ("stime: %s.%06ld\n",
+			   plongest (kp.ki_rusage.ru_stime.tv_sec),
 			   kp.ki_rusage.ru_stime.tv_usec);
-	  printf_filtered ("utime, children: %jd.%06ld\n",
-			   (intmax_t) kp.ki_rusage_ch.ru_utime.tv_sec,
+	  printf_filtered ("utime, children: %s.%06ld\n",
+			   plongest (kp.ki_rusage_ch.ru_utime.tv_sec),
 			   kp.ki_rusage_ch.ru_utime.tv_usec);
-	  printf_filtered ("stime, children: %jd.%06ld\n",
-			   (intmax_t) kp.ki_rusage_ch.ru_stime.tv_sec,
+	  printf_filtered ("stime, children: %s.%06ld\n",
+			   plongest (kp.ki_rusage_ch.ru_stime.tv_sec),
 			   kp.ki_rusage_ch.ru_stime.tv_usec);
 	  printf_filtered ("'nice' value: %d\n", kp.ki_nice);
-	  printf_filtered ("Start time: %jd.%06ld\n", kp.ki_start.tv_sec,
+	  printf_filtered ("Start time: %s.%06ld\n",
+			   plongest (kp.ki_start.tv_sec),
 			   kp.ki_start.tv_usec);
 	  pgtok = getpagesize () / 1024;
-	  printf_filtered ("Virtual memory size: %ju kB\n",
-			   (uintmax_t) kp.ki_size / 1024);
-	  printf_filtered ("Data size: %ju kB\n",
-			   (uintmax_t) kp.ki_dsize * pgtok);
-	  printf_filtered ("Stack size: %ju kB\n",
-			   (uintmax_t) kp.ki_ssize * pgtok);
-	  printf_filtered ("Text size: %ju kB\n",
-			   (uintmax_t) kp.ki_tsize * pgtok);
-	  printf_filtered ("Resident set size: %ju kB\n",
-			   (uintmax_t) kp.ki_rssize * pgtok);
-	  printf_filtered ("Maximum RSS: %ju kB\n",
-			   (uintmax_t) kp.ki_rusage.ru_maxrss);
+	  printf_filtered ("Virtual memory size: %s kB\n",
+			   pulongest (kp.ki_size / 1024));
+	  printf_filtered ("Data size: %s kB\n",
+			   pulongest (kp.ki_dsize * pgtok));
+	  printf_filtered ("Stack size: %s kB\n",
+			   pulongest (kp.ki_ssize * pgtok));
+	  printf_filtered ("Text size: %s kB\n",
+			   pulongest (kp.ki_tsize * pgtok));
+	  printf_filtered ("Resident set size: %s kB\n",
+			   pulongest (kp.ki_rssize * pgtok));
+	  printf_filtered ("Maximum RSS: %s kB\n",
+			   pulongest (kp.ki_rusage.ru_maxrss));
 	  printf_filtered ("Pending Signals: ");
 	  for (int i = 0; i < _SIG_WORDS; i++)
 	    printf_filtered ("%08x ", kp.ki_siglist.__bits[i]);
@@ -721,6 +726,13 @@ show_fbsd_nat_debug (struct ui_file *file, int from_tty,
 		    value);
 }
 
+#define fbsd_lwp_debug_printf(fmt, ...) \
+  debug_prefixed_printf_cond (debug_fbsd_lwp, "fbsd-lwp", fmt, ##__VA_ARGS__)
+
+#define fbsd_nat_debug_printf(fmt, ...) \
+  debug_prefixed_printf_cond (debug_fbsd_nat, "fbsd-nat", fmt, ##__VA_ARGS__)
+
+
 /*
   FreeBSD's first thread support was via a "reentrant" version of libc
   (libc_r) that first shipped in 2.2.7.  This library multiplexed all
@@ -879,7 +891,7 @@ fbsd_add_threads (fbsd_nat_target *target, pid_t pid)
 
   for (i = 0; i < nlwps; i++)
     {
-      ptid_t ptid = ptid_t (pid, lwps[i], 0);
+      ptid_t ptid = ptid_t (pid, lwps[i]);
 
       if (!in_thread_list (target, ptid))
 	{
@@ -893,10 +905,7 @@ fbsd_add_threads (fbsd_nat_target *target, pid_t pid)
 	  if (pl.pl_flags & PL_FLAG_EXITED)
 	    continue;
 #endif
-	  if (debug_fbsd_lwp)
-	    fprintf_unfiltered (gdb_stdlog,
-				"FLWP: adding thread for LWP %u\n",
-				lwps[i]);
+	  fbsd_lwp_debug_printf ("adding thread for LWP %u", lwps[i]);
 	  add_thread (target, ptid);
 	}
     }
@@ -1037,11 +1046,8 @@ fbsd_nat_target::resume (ptid_t ptid, int step, enum gdb_signal signo)
     return;
 #endif
 
-  if (debug_fbsd_lwp)
-    fprintf_unfiltered (gdb_stdlog,
-			"FLWP: fbsd_resume for ptid (%d, %ld, %ld)\n",
-			ptid.pid (), ptid.lwp (),
-			ptid.tid ());
+  fbsd_lwp_debug_printf ("ptid (%d, %ld, %s)", ptid.pid (), ptid.lwp (),
+			 pulongest (ptid.tid ()));
   if (ptid.lwp_p ())
     {
       /* If ptid is a specific LWP, suspend all other LWPs in the process.  */
@@ -1129,9 +1135,7 @@ fbsd_handle_debug_trap (fbsd_nat_target *target, ptid_t ptid,
      breakpoint.  */
   if (pl.pl_siginfo.si_code == TRAP_TRACE)
     {
-      if (debug_fbsd_nat)
-	fprintf_unfiltered (gdb_stdlog,
-			    "FNAT: trace trap for LWP %ld\n", ptid.lwp ());
+      fbsd_nat_debug_printf ("trace trap for LWP %ld", ptid.lwp ());
       return true;
     }
 
@@ -1142,10 +1146,7 @@ fbsd_handle_debug_trap (fbsd_nat_target *target, ptid_t ptid,
       struct gdbarch *gdbarch = regcache->arch ();
       int decr_pc = gdbarch_decr_pc_after_break (gdbarch);
 
-      if (debug_fbsd_nat)
-	fprintf_unfiltered (gdb_stdlog,
-			    "FNAT: sw breakpoint trap for LWP %ld\n",
-			    ptid.lwp ());
+      fbsd_nat_debug_printf ("sw breakpoint trap for LWP %ld", ptid.lwp ());
       if (decr_pc != 0)
 	{
 	  CORE_ADDR pc;
@@ -1181,7 +1182,7 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	}
 #endif
       wptid = inf_ptrace_target::wait (ptid, ourstatus, target_options);
-      if (ourstatus->kind == TARGET_WAITKIND_STOPPED)
+      if (ourstatus->kind () == TARGET_WAITKIND_STOPPED)
 	{
 	  struct ptrace_lwpinfo pl;
 	  pid_t pid;
@@ -1191,18 +1192,16 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	  if (ptrace (PT_LWPINFO, pid, (caddr_t) &pl, sizeof pl) == -1)
 	    perror_with_name (("ptrace"));
 
-	  wptid = ptid_t (pid, pl.pl_lwpid, 0);
+	  wptid = ptid_t (pid, pl.pl_lwpid);
 
 	  if (debug_fbsd_nat)
 	    {
-	      fprintf_unfiltered (gdb_stdlog,
-				  "FNAT: stop for LWP %u event %d flags %#x\n",
-				  pl.pl_lwpid, pl.pl_event, pl.pl_flags);
+	      fbsd_nat_debug_printf ("stop for LWP %u event %d flags %#x",
+				     pl.pl_lwpid, pl.pl_event, pl.pl_flags);
 	      if (pl.pl_flags & PL_FLAG_SI)
-		fprintf_unfiltered (gdb_stdlog,
-				    "FNAT: si_signo %u si_code %u\n",
-				    pl.pl_siginfo.si_signo,
-				    pl.pl_siginfo.si_code);
+		fbsd_nat_debug_printf ("si_signo %u si_code %u",
+				       pl.pl_siginfo.si_signo,
+				       pl.pl_siginfo.si_code);
 	    }
 
 #ifdef PT_LWP_EVENTS
@@ -1215,10 +1214,8 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	      thread_info *thr = find_thread_ptid (this, wptid);
 	      if (thr != nullptr)
 		{
-		  if (debug_fbsd_lwp)
-		    fprintf_unfiltered (gdb_stdlog,
-					"FLWP: deleting thread for LWP %u\n",
-					pl.pl_lwpid);
+		  fbsd_lwp_debug_printf ("deleting thread for LWP %u",
+					 pl.pl_lwpid);
 		  if (print_thread_events)
 		    printf_unfiltered (_("[%s exited]\n"),
 				       target_pid_to_str (wptid).c_str ());
@@ -1238,10 +1235,8 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	     event.  */
 	  if (in_thread_list (this, ptid_t (pid)))
 	    {
-	      if (debug_fbsd_lwp)
-		fprintf_unfiltered (gdb_stdlog,
-				    "FLWP: using LWP %u for first thread\n",
-				    pl.pl_lwpid);
+	      fbsd_lwp_debug_printf ("using LWP %u for first thread",
+				     pl.pl_lwpid);
 	      thread_change_ptid (this, ptid_t (pid), wptid);
 	    }
 
@@ -1254,13 +1249,11 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 		 BORN events for an already-known LWP.  */
 	      if (!in_thread_list (this, wptid))
 		{
-		  if (debug_fbsd_lwp)
-		    fprintf_unfiltered (gdb_stdlog,
-					"FLWP: adding thread for LWP %u\n",
-					pl.pl_lwpid);
+		  fbsd_lwp_debug_printf ("adding thread for LWP %u",
+					 pl.pl_lwpid);
 		  add_thread (this, wptid);
 		}
-	      ourstatus->kind = TARGET_WAITKIND_SPURIOUS;
+	      ourstatus->set_spurious ();
 	      return wptid;
 	    }
 #endif
@@ -1271,14 +1264,14 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 #ifndef PTRACE_VFORK
 	      struct kinfo_proc kp;
 #endif
+	      bool is_vfork = false;
 	      ptid_t child_ptid;
 	      pid_t child;
 
 	      child = pl.pl_child_pid;
-	      ourstatus->kind = TARGET_WAITKIND_FORKED;
 #ifdef PTRACE_VFORK
 	      if (pl.pl_flags & PL_FLAG_VFORKED)
-		ourstatus->kind = TARGET_WAITKIND_VFORKED;
+		is_vfork = true;
 #endif
 
 	      /* Make sure the other end of the fork is stopped too.  */
@@ -1295,7 +1288,7 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 		    perror_with_name (("ptrace"));
 
 		  gdb_assert (pl.pl_flags & PL_FLAG_CHILD);
-		  child_ptid = ptid_t (child, pl.pl_lwpid, 0);
+		  child_ptid = ptid_t (child, pl.pl_lwpid);
 		}
 
 	      /* Enable additional events on the child process.  */
@@ -1307,12 +1300,16 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	      if (fbsd_fetch_kinfo_proc (child, &kp))
 		{
 		  if (kp.ki_flag & P_PPWAIT)
-		    ourstatus->kind = TARGET_WAITKIND_VFORKED;
+		    is_vfork = true;
 		}
 	      else
 		warning (_("Failed to fetch process information"));
 #endif
-	      ourstatus->value.related_pid = child_ptid;
+
+	      if (is_vfork)
+		ourstatus->set_vforked (child_ptid);
+	      else
+		ourstatus->set_forked (child_ptid);
 
 	      return wptid;
 	    }
@@ -1329,7 +1326,7 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 #ifdef PTRACE_VFORK
 	  if (pl.pl_flags & PL_FLAG_VFORK_DONE)
 	    {
-	      ourstatus->kind = TARGET_WAITKIND_VFORK_DONE;
+	      ourstatus->set_vfork_done ();
 	      return wptid;
 	    }
 #endif
@@ -1337,9 +1334,8 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 
 	  if (pl.pl_flags & PL_FLAG_EXEC)
 	    {
-	      ourstatus->kind = TARGET_WAITKIND_EXECD;
-	      ourstatus->value.execd_pathname
-		= xstrdup (pid_to_exec_file (pid));
+	      ourstatus->set_execd
+		(make_unique_xstrdup (pid_to_exec_file (pid)));
 	      return wptid;
 	    }
 
@@ -1356,7 +1352,7 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 	     SIGTRAP, so only treat SIGTRAP events as system call
 	     entry/exit events.  */
 	  if (pl.pl_flags & (PL_FLAG_SCE | PL_FLAG_SCX)
-	      && ourstatus->value.sig == SIGTRAP)
+	      && ourstatus->sig () == SIGTRAP)
 	    {
 #ifdef HAVE_STRUCT_PTRACE_LWPINFO_PL_SYSCALL_CODE
 	      if (catch_syscall_enabled ())
@@ -1364,10 +1360,10 @@ fbsd_nat_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 		  if (catching_syscall_number (pl.pl_syscall_code))
 		    {
 		      if (pl.pl_flags & PL_FLAG_SCE)
-			ourstatus->kind = TARGET_WAITKIND_SYSCALL_ENTRY;
+			ourstatus->set_syscall_entry (pl.pl_syscall_code);
 		      else
-			ourstatus->kind = TARGET_WAITKIND_SYSCALL_RETURN;
-		      ourstatus->value.syscall_number = pl.pl_syscall_code;
+			ourstatus->set_syscall_return (pl.pl_syscall_code);
+
 		      return wptid;
 		    }
 		}
@@ -1413,17 +1409,83 @@ fbsd_nat_target::supports_stopped_by_sw_breakpoint ()
 }
 #endif
 
+#ifdef PROC_ASLR_CTL
+class maybe_disable_address_space_randomization
+{
+public:
+  explicit maybe_disable_address_space_randomization (bool disable_randomization)
+  {
+    if (disable_randomization)
+      {
+	if (procctl (P_PID, getpid (), PROC_ASLR_STATUS, &m_aslr_ctl) == -1)
+	  {
+	    warning (_("Failed to fetch current address space randomization "
+		       "status: %s"), safe_strerror (errno));
+	    return;
+	  }
+
+	m_aslr_ctl &= ~PROC_ASLR_ACTIVE;
+	if (m_aslr_ctl == PROC_ASLR_FORCE_DISABLE)
+	  return;
+
+	int ctl = PROC_ASLR_FORCE_DISABLE;
+	if (procctl (P_PID, getpid (), PROC_ASLR_CTL, &ctl) == -1)
+	  {
+	    warning (_("Error disabling address space randomization: %s"),
+		     safe_strerror (errno));
+	    return;
+	  }
+
+	m_aslr_ctl_set = true;
+      }
+  }
+
+  ~maybe_disable_address_space_randomization ()
+  {
+    if (m_aslr_ctl_set)
+      {
+	if (procctl (P_PID, getpid (), PROC_ASLR_CTL, &m_aslr_ctl) == -1)
+	  warning (_("Error restoring address space randomization: %s"),
+		   safe_strerror (errno));
+      }
+  }
+
+  DISABLE_COPY_AND_ASSIGN (maybe_disable_address_space_randomization);
+
+private:
+  bool m_aslr_ctl_set = false;
+  int m_aslr_ctl = 0;
+};
+#endif
+
+void
+fbsd_nat_target::create_inferior (const char *exec_file,
+				  const std::string &allargs,
+				  char **env, int from_tty)
+{
+#ifdef PROC_ASLR_CTL
+  maybe_disable_address_space_randomization restore_aslr_ctl
+    (disable_randomization);
+#endif
+
+  inf_ptrace_target::create_inferior (exec_file, allargs, env, from_tty);
+}
+
 #ifdef TDP_RFPPWAIT
 /* Target hook for follow_fork.  On entry and at return inferior_ptid is
    the ptid of the followed inferior.  */
 
-bool
-fbsd_nat_target::follow_fork (bool follow_child, bool detach_fork)
+void
+fbsd_nat_target::follow_fork (inferior *child_inf, ptid_t child_ptid,
+			      target_waitkind fork_kind, bool follow_child,
+			      bool detach_fork)
 {
+  inf_ptrace_target::follow_fork (child_inf, child_ptid, fork_kind,
+				  follow_child, detach_fork);
+
   if (!follow_child && detach_fork)
     {
-      struct thread_info *tp = inferior_thread ();
-      pid_t child_pid = tp->pending_follow.value.related_pid.pid ();
+      pid_t child_pid = child_ptid.pid ();
 
       /* Breakpoints have already been detached from the child by
 	 infrun.c.  */
@@ -1432,7 +1494,7 @@ fbsd_nat_target::follow_fork (bool follow_child, bool detach_fork)
 	perror_with_name (("ptrace"));
 
 #ifndef PTRACE_VFORK
-      if (tp->pending_follow.kind == TARGET_WAITKIND_VFORKED)
+      if (fork_kind () == TARGET_WAITKIND_VFORKED)
 	{
 	  /* We can't insert breakpoints until the child process has
 	     finished with the shared memory region.  The parent
@@ -1460,8 +1522,6 @@ fbsd_nat_target::follow_fork (bool follow_child, bool detach_fork)
 	}
 #endif
     }
-
-  return false;
 }
 
 int
@@ -1489,7 +1549,7 @@ fbsd_nat_target::remove_vfork_catchpoint (int pid)
 }
 #endif
 
-/* Implement the "post_startup_inferior" target_ops method.  */
+/* Implement the virtual inf_ptrace_target::post_startup_inferior method.  */
 
 void
 fbsd_nat_target::post_startup_inferior (ptid_t pid)
@@ -1538,6 +1598,62 @@ bool
 fbsd_nat_target::supports_multi_process ()
 {
   return true;
+}
+
+bool
+fbsd_nat_target::supports_disable_randomization ()
+{
+#ifdef PROC_ASLR_CTL
+  return true;
+#else
+  return false;
+#endif
+}
+
+/* See fbsd-nat.h.  */
+
+void
+fbsd_nat_target::fetch_register_set (struct regcache *regcache, int regnum,
+				     int fetch_op, const struct regset *regset,
+				     void *regs, size_t size)
+{
+  const struct regcache_map_entry *map
+    = (const struct regcache_map_entry *) regset->regmap;
+  pid_t pid = get_ptrace_pid (regcache->ptid ());
+
+  if (regnum == -1 || regcache_map_supplies (map, regnum, regcache->arch(),
+					     size))
+    {
+      if (ptrace (fetch_op, pid, (PTRACE_TYPE_ARG3) regs, 0) == -1)
+	perror_with_name (_("Couldn't get registers"));
+
+      regcache->supply_regset (regset, regnum, regs, size);
+    }
+}
+
+/* See fbsd-nat.h.  */
+
+void
+fbsd_nat_target::store_register_set (struct regcache *regcache, int regnum,
+				     int fetch_op, int store_op,
+				     const struct regset *regset, void *regs,
+				     size_t size)
+{
+  const struct regcache_map_entry *map
+    = (const struct regcache_map_entry *) regset->regmap;
+  pid_t pid = get_ptrace_pid (regcache->ptid ());
+
+  if (regnum == -1 || regcache_map_supplies (map, regnum, regcache->arch(),
+					     size))
+    {
+      if (ptrace (fetch_op, pid, (PTRACE_TYPE_ARG3) regs, 0) == -1)
+	perror_with_name (_("Couldn't get registers"));
+
+      regcache->collect_regset (regset, regnum, regs, size);
+
+      if (ptrace (store_op, pid, (PTRACE_TYPE_ARG3) regs, 0) == -1)
+	perror_with_name (_("Couldn't write registers"));
+    }
 }
 
 void _initialize_fbsd_nat ();

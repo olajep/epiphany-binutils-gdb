@@ -1,7 +1,7 @@
 /* Abstraction of GNU v3 abi.
    Contributed by Jim Blandy <jimb@redhat.com>
 
-   Copyright (C) 2001-2021 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -31,6 +31,7 @@
 #include <algorithm>
 #include "cli/cli-style.h"
 #include "dwarf2/loc.h"
+#include "inferior.h"
 
 static struct cp_abi_ops gnu_v3_abi_ops;
 
@@ -134,30 +135,30 @@ build_gdb_vtable_type (struct gdbarch *arch)
   offset = 0;
 
   /* ptrdiff_t vcall_and_vbase_offsets[0]; */
-  FIELD_NAME (*field) = "vcall_and_vbase_offsets";
+  field->set_name ("vcall_and_vbase_offsets");
   field->set_type (lookup_array_range_type (ptrdiff_type, 0, -1));
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
   /* ptrdiff_t offset_to_top; */
-  FIELD_NAME (*field) = "offset_to_top";
+  field->set_name ("offset_to_top");
   field->set_type (ptrdiff_type);
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
   /* void *type_info; */
-  FIELD_NAME (*field) = "type_info";
+  field->set_name ("type_info");
   field->set_type (void_ptr_type);
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
   /* void (*virtual_functions[0]) (); */
-  FIELD_NAME (*field) = "virtual_functions";
+  field->set_name ("virtual_functions");
   field->set_type (lookup_array_range_type (ptr_to_void_fn_type, 0, -1));
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
@@ -194,7 +195,7 @@ vtable_address_point_offset (struct gdbarch *gdbarch)
   struct type *vtable_type
     = (struct type *) gdbarch_data (gdbarch, vtable_type_gdbarch_data);
 
-  return (TYPE_FIELD_BITPOS (vtable_type, vtable_field_virtual_functions)
+  return (vtable_type->field (vtable_field_virtual_functions).loc_bitpos ()
 	  / TARGET_CHAR_BIT);
 }
 
@@ -308,7 +309,7 @@ gnuv3_rtti_type (struct value *value,
     return NULL;
 
   /* Determine architecture.  */
-  gdbarch = get_type_arch (values_type);
+  gdbarch = values_type->arch ();
 
   if (using_enc_p)
     *using_enc_p = 0;
@@ -422,7 +423,7 @@ gnuv3_virtual_fn_field (struct value **value_p,
     error (_("Only classes can have virtual functions."));
 
   /* Determine architecture.  */
-  gdbarch = get_type_arch (values_type);
+  gdbarch = values_type->arch ();
 
   /* Cast our value to the base class which defines this virtual
      function.  This takes care of any necessary `this'
@@ -454,7 +455,7 @@ gnuv3_baseclass_offset (struct type *type, int index,
   long int cur_base_offset, base_offset;
 
   /* Determine architecture.  */
-  gdbarch = get_type_arch (type);
+  gdbarch = type->arch ();
   ptr_type = builtin_type (gdbarch)->builtin_data_ptr;
 
   /* If it isn't a virtual base, this is easy.  The offset is in the
@@ -463,12 +464,12 @@ gnuv3_baseclass_offset (struct type *type, int index,
     return TYPE_BASECLASS_BITPOS (type, index) / 8;
 
   /* If we have a DWARF expression for the offset, evaluate it.  */
-  if (TYPE_FIELD_LOC_KIND (type, index) == FIELD_LOC_KIND_DWARF_BLOCK)
+  if (type->field (index).loc_kind () == FIELD_LOC_KIND_DWARF_BLOCK)
     {
       struct dwarf2_property_baton baton;
       baton.property_type
 	= lookup_pointer_type (type->field (index).type ());
-      baton.locexpr = *TYPE_FIELD_DWARF_BLOCK (type, index);
+      baton.locexpr = *type->field (index).loc_dwarf_block ();
 
       struct dynamic_prop prop;
       prop.set_locexpr (&baton);
@@ -611,7 +612,7 @@ gnuv3_print_method_ptr (const gdb_byte *contents,
 			struct ui_file *stream)
 {
   struct type *self_type = TYPE_SELF_TYPE (type);
-  struct gdbarch *gdbarch = get_type_arch (self_type);
+  struct gdbarch *gdbarch = self_type->arch ();
   CORE_ADDR ptr_value;
   LONGEST adjustment;
   int vbit;
@@ -643,17 +644,14 @@ gnuv3_print_method_ptr (const gdb_byte *contents,
 	 possible paths to the method based on the adjustment.  */
       if (physname)
 	{
-	  char *demangled_name = gdb_demangle (physname,
-					       DMGL_ANSI | DMGL_PARAMS);
+	  gdb::unique_xmalloc_ptr<char> demangled_name
+	    = gdb_demangle (physname, DMGL_ANSI | DMGL_PARAMS);
 
 	  fprintf_filtered (stream, "&virtual ");
 	  if (demangled_name == NULL)
 	    fputs_filtered (physname, stream);
 	  else
-	    {
-	      fputs_filtered (demangled_name, stream);
-	      xfree (demangled_name);
-	    }
+	    fputs_filtered (demangled_name.get (), stream);
 	  return;
 	}
     }
@@ -691,9 +689,7 @@ gnuv3_print_method_ptr (const gdb_byte *contents,
 static int
 gnuv3_method_ptr_size (struct type *type)
 {
-  struct gdbarch *gdbarch = get_type_arch (type);
-
-  return 2 * TYPE_LENGTH (builtin_type (gdbarch)->builtin_data_ptr);
+  return 2 * TYPE_LENGTH (builtin_type (type->arch ())->builtin_data_ptr);
 }
 
 /* GNU v3 implementation of cplus_make_method_ptr.  */
@@ -702,7 +698,7 @@ static void
 gnuv3_make_method_ptr (struct type *type, gdb_byte *contents,
 		       CORE_ADDR value, int is_virtual)
 {
-  struct gdbarch *gdbarch = get_type_arch (type);
+  struct gdbarch *gdbarch = type->arch ();
   int size = TYPE_LENGTH (builtin_type (gdbarch)->builtin_data_ptr);
   enum bfd_endian byte_order = type_byte_order (type);
 
@@ -733,7 +729,7 @@ static struct value *
 gnuv3_method_ptr_to_value (struct value **this_p, struct value *method_ptr)
 {
   struct gdbarch *gdbarch;
-  const gdb_byte *contents = value_contents (method_ptr);
+  const gdb_byte *contents = value_contents (method_ptr).data ();
   CORE_ADDR ptr_value;
   struct type *self_type, *final_type, *method_type;
   LONGEST adjustment;
@@ -745,7 +741,7 @@ gnuv3_method_ptr_to_value (struct value **this_p, struct value *method_ptr)
   method_type = TYPE_TARGET_TYPE (check_typedef (value_type (method_ptr)));
 
   /* Extract the pointer to member.  */
-  gdbarch = get_type_arch (self_type);
+  gdbarch = self_type->arch ();
   vbit = gnuv3_decode_method_ptr (gdbarch, contents, &ptr_value, &adjustment);
 
   /* First convert THIS to match the containing type of the pointer to
@@ -978,7 +974,7 @@ gnuv3_print_vtable (struct value *value)
       type = check_typedef (value_type (value));
     }
 
-  gdbarch = get_type_arch (type);
+  gdbarch = type->arch ();
 
   vtable = NULL;
   if (type->code () == TYPE_CODE_STRUCT)
@@ -1037,16 +1033,16 @@ build_std_type_info_type (struct gdbarch *arch)
   offset = 0;
 
   /* The vtable.  */
-  FIELD_NAME (*field) = "_vptr.type_info";
+  field->set_name ("_vptr.type_info");
   field->set_type (void_ptr_type);
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
   /* The name.  */
-  FIELD_NAME (*field) = "__name";
+  field->set_name ("__name");
   field->set_type (char_ptr_type);
-  SET_FIELD_BITPOS (*field, offset * TARGET_CHAR_BIT);
+  field->set_loc_bitpos (offset * TARGET_CHAR_BIT);
   offset += TYPE_LENGTH (field->type ());
   field++;
 
@@ -1107,7 +1103,7 @@ gnuv3_get_typeid (struct value *value)
 
   /* Ignore top-level cv-qualifiers.  */
   type = make_cv_type (0, 0, type, NULL);
-  gdbarch = get_type_arch (type);
+  gdbarch = type->arch ();
 
   type_name = type_to_string (type);
   if (type_name.empty ())
@@ -1161,7 +1157,7 @@ gnuv3_get_typeid (struct value *value)
 static std::string
 gnuv3_get_typename_from_type_info (struct value *type_info_ptr)
 {
-  struct gdbarch *gdbarch = get_type_arch (value_type (type_info_ptr));
+  struct gdbarch *gdbarch = value_type (type_info_ptr)->arch ();
   struct bound_minimal_symbol typeinfo_sym;
   CORE_ADDR addr;
   const char *symname;
@@ -1245,8 +1241,8 @@ gnuv3_skip_trampoline (struct frame_info *frame, CORE_ADDR stop_pc)
      (powerpc 64 for example).  Make sure to retrieve the address
      of the real function from the function descriptor before passing on
      the address to other layers of GDB.  */
-  func_addr = gdbarch_convert_from_func_ptr_addr (gdbarch, method_stop_pc,
-						  current_top_target ());
+  func_addr = gdbarch_convert_from_func_ptr_addr
+    (gdbarch, method_stop_pc, current_inferior ()->top_target ());
   if (func_addr != 0)
     method_stop_pc = func_addr;
 

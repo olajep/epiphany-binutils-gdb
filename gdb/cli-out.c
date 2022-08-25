@@ -1,6 +1,6 @@
 /* Output generating routines for GDB CLI.
 
-   Copyright (C) 1999-2021 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
 
    Contributed by Cygnus Solutions.
    Written by Fernando Nasser for Cygnus.
@@ -206,7 +206,7 @@ cli_ui_out::do_spaces (int numspaces)
     return;
 
   if (test_flags (unfiltered_output))
-    print_spaces (numspaces, m_streams.back ());
+    fprintf_unfiltered (m_streams.back (), "%*s", numspaces, "");
   else
     print_spaces_filtered (numspaces, m_streams.back ());
 }

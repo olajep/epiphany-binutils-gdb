@@ -1,6 +1,6 @@
 /* Source-language-related definitions for GDB.
 
-   Copyright (C) 1991-2021 Free Software Foundation, Inc.
+   Copyright (C) 1991-2022 Free Software Foundation, Inc.
 
    Contributed by the Department of Computer Science at the State University
    of New York at Buffalo.
@@ -327,6 +327,14 @@ struct language_defn
     return {};
   }
 
+  /* Return true if SYMBOL represents an entity that is not
+     supposed to be seen by the user.  To be used to filter symbols
+     during printing.  */
+  virtual bool symbol_printing_suppressed (struct symbol *symbol) const
+  {
+    return false;
+  }
+
   /* The per-architecture (OS/ABI) language information.  */
 
   virtual void language_arch_info (struct gdbarch *,
@@ -374,18 +382,14 @@ struct language_defn
   symbol_name_matcher_ftype *get_symbol_name_matcher
 	(const lookup_name_info &lookup_name) const;
 
-  /* If this language allows compilation from the gdb command line, then
-     this method will return an instance of struct gcc_context appropriate
-     to the language.  If compilation for this language is generally
-     supported, but something goes wrong then an exception is thrown.  The
-     returned compiler instance is owned by its caller and must be
-     deallocated by the caller.  If compilation is not supported for this
-     language then this method returns NULL.  */
+  /* If this language allows compilation from the gdb command line,
+     then this method will return an instance of struct gcc_context
+     appropriate to the language.  If compilation for this language is
+     generally supported, but something goes wrong then an exception
+     is thrown.  If compilation is not supported for this language
+     then this method returns NULL.  */
 
-  virtual compile_instance *get_compile_instance () const
-  {
-    return nullptr;
-  }
+  virtual std::unique_ptr<compile_instance> get_compile_instance () const;
 
   /* This method must be overridden if 'get_compile_instance' is
      overridden.
@@ -426,15 +430,16 @@ struct language_defn
 
      The resulting string should be of the form that will be
      installed into a symbol.  */
-  virtual bool sniff_from_mangled_name (const char *mangled,
-					char **demangled) const
+  virtual bool sniff_from_mangled_name
+       (const char *mangled, gdb::unique_xmalloc_ptr<char> *demangled) const
   {
     *demangled = nullptr;
     return false;
   }
 
   /* Return demangled language symbol version of MANGLED, or NULL.  */
-  virtual char *demangle_symbol (const char *mangled, int options) const
+  virtual gdb::unique_xmalloc_ptr<char> demangle_symbol (const char *mangled,
+							 int options) const
   {
     return nullptr;
   }
@@ -519,17 +524,6 @@ struct language_defn
 
   virtual int parser (struct parser_state *ps) const;
 
-  /* Given an expression *EXPP created by prefixifying the result of
-     la_parser, perform any remaining processing necessary to complete its
-     translation.  *EXPP may change; la_post_parser is responsible for
-     releasing its previous contents, if necessary.  */
-
-  virtual void post_parser (expression_up *expp, struct parser_state *ps)
-    const
-  {
-    /* By default the post-parser does nothing.  */
-  }
-
   /* Print the character CH (of type CHTYPE) on STREAM as part of the
      contents of a literal string whose delimiter is QUOTER.  */
 
@@ -581,7 +575,7 @@ struct language_defn
   /* Return false if the language has first-class arrays.  Return true if
      there are no array values, and array objects decay to pointers, as in
      C.  The default is true as currently most supported languages behave
-     in this manor.  */
+     in this manner.  */
 
   virtual bool c_style_arrays_p () const
   { return true; }
@@ -645,15 +639,6 @@ struct language_defn
      for this language.  */
 
   virtual const struct lang_varobj_ops *varobj_ops () const;
-
-  /* Definitions related to expression printing, prefixifying, and
-     dumping.  */
-
-  virtual const struct exp_descriptor *expression_ops () const;
-
-  /* Table for printing expressions.  */
-
-  virtual const struct op_print *opcode_print_table () const = 0;
 
 protected:
 
@@ -757,7 +742,10 @@ struct symbol *
 				  (LANG)->la_language == language_cplus || \
 				  (LANG)->la_language == language_objc)
 
-extern void language_info (int);
+/* Print out the current language settings: language, range and
+   type checking.  */
+
+extern void language_info ();
 
 extern enum language set_language (enum language);
 
@@ -787,17 +775,9 @@ extern enum language set_language (enum language);
    && ((c) < 0x7F || (c) >= 0xA0)	\
    && (!sevenbit_strings || (c) < 0x80))
 
-/* Type predicates */
-
-extern int pointer_type (struct type *);
-
 /* Error messages */
 
 extern void range_error (const char *, ...) ATTRIBUTE_PRINTF (1, 2);
-
-/* Data:  Does this value represent "truth" to the current language?  */
-
-extern int value_true (struct value *);
 
 /* Misc:  The string representing a particular enum language.  */
 
@@ -812,8 +792,9 @@ extern const char *language_str (enum language);
 extern CORE_ADDR skip_language_trampoline (struct frame_info *, CORE_ADDR pc);
 
 /* Return demangled language symbol, or NULL.  */
-extern char *language_demangle (const struct language_defn *current_language, 
-				const char *mangled, int options);
+extern gdb::unique_xmalloc_ptr<char> language_demangle
+     (const struct language_defn *current_language,
+      const char *mangled, int options);
 
 /* Return information about whether TYPE should be passed
    (and returned) by reference at the language level.  */

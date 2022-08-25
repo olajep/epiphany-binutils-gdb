@@ -1,6 +1,6 @@
 /* Everything about catch/throw catchpoints, for GDB.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -27,15 +27,16 @@
 #include "valprint.h"
 #include "cli/cli-utils.h"
 #include "completer.h"
-#include "gdb_obstack.h"
+#include "gdbsupport/gdb_obstack.h"
 #include "mi/mi-common.h"
 #include "linespec.h"
 #include "probe.h"
 #include "objfiles.h"
 #include "cp-abi.h"
-#include "gdb_regex.h"
+#include "gdbsupport/gdb_regex.h"
 #include "cp-support.h"
 #include "location.h"
+#include "cli/cli-decode.h"
 
 /* Each spot where we may place an exception-related catchpoint has
    two names: the SDT probe point and the function name.  This
@@ -143,7 +144,7 @@ classify_exception_breakpoint (struct breakpoint *b)
 /* Implement the 'check_status' method.  */
 
 static void
-check_status_exception_catchpoint (struct bpstats *bs)
+check_status_exception_catchpoint (struct bpstat *bs)
 {
   struct exception_catchpoint *self
     = (struct exception_catchpoint *) bs->breakpoint_at;
@@ -226,7 +227,7 @@ re_set_exception_catchpoint (struct breakpoint *self)
 }
 
 static enum print_stop_action
-print_it_exception_catchpoint (bpstat bs)
+print_it_exception_catchpoint (bpstat *bs)
 {
   struct ui_out *uiout = current_uiout;
   struct breakpoint *b = bs->breakpoint_at;
@@ -300,7 +301,7 @@ print_one_detail_exception_catchpoint (const struct breakpoint *b,
   if (!cp->exception_rx.empty ())
     {
       uiout->text (_("\tmatching: "));
-      uiout->field_string ("regexp", cp->exception_rx.c_str ());
+      uiout->field_string ("regexp", cp->exception_rx);
       uiout->text ("\n");
     }
 }
@@ -456,7 +457,7 @@ static void
 catch_catch_command (const char *arg, int from_tty,
 		     struct cmd_list_element *command)
 {
-  bool tempflag = get_cmd_context (command) == CATCH_TEMPORARY;
+  bool tempflag = command->context () == CATCH_TEMPORARY;
 
   catch_exception_event (EX_EVENT_CATCH, arg, tempflag, from_tty);
 }
@@ -467,7 +468,7 @@ static void
 catch_throw_command (const char *arg, int from_tty,
 		     struct cmd_list_element *command)
 {
-  bool tempflag = get_cmd_context (command) == CATCH_TEMPORARY;
+  bool tempflag = command->context () == CATCH_TEMPORARY;
 
   catch_exception_event (EX_EVENT_THROW, arg, tempflag, from_tty);
 }
@@ -478,7 +479,7 @@ static void
 catch_rethrow_command (const char *arg, int from_tty,
 		       struct cmd_list_element *command)
 {
-  bool tempflag = get_cmd_context (command) == CATCH_TEMPORARY;
+  bool tempflag = command->context () == CATCH_TEMPORARY;
 
   catch_exception_event (EX_EVENT_RETHROW, arg, tempflag, from_tty);
 }

@@ -1,6 +1,6 @@
 /* Implementation of the GDB variable objects API.
 
-   Copyright (C) 1999-2021 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@
 #include "gdbcmd.h"
 #include "block.h"
 #include "valprint.h"
-#include "gdb_regex.h"
+#include "gdbsupport/gdb_regex.h"
 
 #include "varobj.h"
 #include "gdbthread.h"
@@ -661,8 +661,7 @@ varobj_get_iterator (struct varobj *var)
     return py_varobj_get_iterator (var, var->dynamic->pretty_printer);
 #endif
 
-  gdb_assert_not_reached (_("\
-requested an iterator from a non-dynamic varobj"));
+  gdb_assert_not_reached ("requested an iterator from a non-dynamic varobj");
 }
 
 static bool
@@ -1844,10 +1843,12 @@ varobj::~varobj ()
     }
 #endif
 
+  /* This must be deleted before the root object, because Python-based
+     destructors need access to some components.  */
+  delete var->dynamic;
+
   if (is_root_p (var))
     delete var->root;
-
-  delete var->dynamic;
 }
 
 /* Return the type of the value that's stored in VAR,
@@ -2207,7 +2208,7 @@ varobj_value_get_print_value (struct value *value,
 
 			  thevalue = std::string (s.get ());
 			  len = thevalue.size ();
-			  gdbarch = get_type_arch (value_type (value));
+			  gdbarch = value_type (value)->arch ();
 			  type = builtin_type (gdbarch)->builtin_char;
 
 			  if (!string_print)

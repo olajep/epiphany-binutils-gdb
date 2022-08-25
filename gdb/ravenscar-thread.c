@@ -1,6 +1,6 @@
 /* Ada Ravenscar thread support.
 
-   Copyright (C) 2004-2021 Free Software Foundation, Inc.
+   Copyright (C) 2004-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -118,7 +118,7 @@ struct ravenscar_thread_target final : public target_ops
 
   std::string pid_to_str (ptid_t) override;
 
-  ptid_t get_ada_task_ptid (long lwp, long thread) override;
+  ptid_t get_ada_task_ptid (long lwp, ULONGEST thread) override;
 
   struct btrace_target_info *enable_btrace (ptid_t ptid,
 					    const struct btrace_config *conf)
@@ -164,7 +164,7 @@ private:
      needed because sometimes the runtime will report an active task
      that hasn't yet been put on the list of tasks that is read by
      ada-tasks.c.  */
-  std::unordered_map<long, int> m_cpu_map;
+  std::unordered_map<ULONGEST, int> m_cpu_map;
 };
 
 /* Return true iff PTID corresponds to a ravenscar task.  */
@@ -251,7 +251,7 @@ ravenscar_thread_target::get_base_thread_from_ravenscar_task (ptid_t ptid)
     return ptid;
 
   base_cpu = get_thread_base_cpu (ptid);
-  return ptid_t (ptid.pid (), base_cpu, 0);
+  return ptid_t (ptid.pid (), base_cpu);
 }
 
 /* Fetch the ravenscar running thread from target memory, make sure
@@ -401,8 +401,8 @@ ravenscar_thread_target::wait (ptid_t ptid,
      this causes problems when debugging through the remote protocol,
      because we might try switching threads (and thus sending packets)
      after the remote has disconnected.  */
-  if (status->kind != TARGET_WAITKIND_EXITED
-      && status->kind != TARGET_WAITKIND_SIGNALLED
+  if (status->kind () != TARGET_WAITKIND_EXITED
+      && status->kind () != TARGET_WAITKIND_SIGNALLED
       && runtime_initialized ())
     {
       m_base_ptid = event_ptid;
@@ -469,7 +469,8 @@ ravenscar_thread_target::pid_to_str (ptid_t ptid)
   if (!is_ravenscar_task (ptid))
     return beneath ()->pid_to_str (ptid);
 
-  return string_printf ("Ravenscar Thread %#x", (int) ptid.tid ());
+  return string_printf ("Ravenscar Thread 0x%s",
+			phex_nz (ptid.tid (), sizeof (ULONGEST)));
 }
 
 /* Temporarily set the ptid of a regcache to some other value.  When
@@ -620,7 +621,7 @@ ravenscar_thread_target::mourn_inferior ()
 {
   m_base_ptid = null_ptid;
   target_ops *beneath = this->beneath ();
-  unpush_target (this);
+  current_inferior ()->unpush_target (this);
   beneath->mourn_inferior ();
 }
 
@@ -674,14 +675,14 @@ ravenscar_inferior_created (inferior *inf)
     }
 
   ravenscar_thread_target *rtarget = new ravenscar_thread_target ();
-  push_target (target_ops_up (rtarget));
+  inf->push_target (target_ops_up (rtarget));
   thread_info *thr = rtarget->add_active_thread ();
   if (thr != nullptr)
     switch_to_thread (thr);
 }
 
 ptid_t
-ravenscar_thread_target::get_ada_task_ptid (long lwp, long thread)
+ravenscar_thread_target::get_ada_task_ptid (long lwp, ULONGEST thread)
 {
   return ptid_t (m_base_ptid.pid (), 0, thread);
 }
@@ -714,15 +715,15 @@ _initialize_ravenscar ()
 {
   /* Notice when the inferior is created in order to push the
      ravenscar ops if needed.  */
-  gdb::observers::inferior_created.attach (ravenscar_inferior_created);
+  gdb::observers::inferior_created.attach (ravenscar_inferior_created,
+					   "ravenscar-thread");
 
-  add_basic_prefix_cmd ("ravenscar", no_class,
-			_("Prefix command for changing Ravenscar-specific settings."),
-			&set_ravenscar_list, "set ravenscar ", 0, &setlist);
-
-  add_show_prefix_cmd ("ravenscar", no_class,
-		       _("Prefix command for showing Ravenscar-specific settings."),
-		       &show_ravenscar_list, "show ravenscar ", 0, &showlist);
+  add_setshow_prefix_cmd
+    ("ravenscar", no_class,
+     _("Prefix command for changing Ravenscar-specific settings."),
+     _("Prefix command for showing Ravenscar-specific settings."),
+     &set_ravenscar_list, &show_ravenscar_list,
+     &setlist, &showlist);
 
   add_setshow_boolean_cmd ("task-switching", class_obscure,
 			   &ravenscar_task_support, _("\

@@ -1,6 +1,6 @@
 /* Python interface to record targets.
 
-   Copyright 2016-2021 Free Software Foundation, Inc.
+   Copyright 2016-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -45,7 +45,7 @@ PyTypeObject recpy_func_type = {
 
 /* Python RecordGap type.  */
 
-PyTypeObject recpy_gap_type = {
+static PyTypeObject recpy_gap_type = {
   PyVarObject_HEAD_INIT (NULL, 0)
 };
 

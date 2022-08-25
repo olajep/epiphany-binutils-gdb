@@ -1,5 +1,5 @@
 /* Handle FR-V (FDPIC) shared libraries for GDB, the GNU Debugger.
-   Copyright (C) 2004-2021 Free Software Foundation, Inc.
+   Copyright (C) 2004-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -797,7 +797,7 @@ frv_relocate_main_executable (void)
       osect_idx = osect - objf->sections;
 
       /* Current address of section.  */
-      addr = obj_section_addr (osect);
+      addr = osect->addr ();
       /* Offset from where this section started.  */
       offset = objf->section_offsets[osect_idx];
       /* Original address prior to any past relocations.  */

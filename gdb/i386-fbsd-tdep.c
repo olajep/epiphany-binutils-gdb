@@ -1,6 +1,6 @@
 /* Target-dependent code for FreeBSD/i386.
 
-   Copyright (C) 2003-2021 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -135,8 +135,8 @@ i386fbsd_sigtramp_p (struct frame_info *this_frame)
   const gdb_byte *middle, *end;
 
   /* Look for a matching start.  */
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_start))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_start}))
     return 0;
   if (memcmp (buf, i386fbsd_sigtramp_start, sizeof i386fbsd_sigtramp_start)
       == 0)
@@ -162,23 +162,23 @@ i386fbsd_sigtramp_p (struct frame_info *this_frame)
   /* Since the end is shorter than the middle, check for a matching end
      next.  */
   pc += sizeof i386fbsd_sigtramp_start;
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_end))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_end}))
     return 0;
   if (memcmp (buf, end, sizeof i386fbsd_sigtramp_end) == 0)
     return 1;
 
   /* If the end didn't match, check for a matching middle.  */
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_middle))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_middle}))
     return 0;
   if (memcmp (buf, middle, sizeof i386fbsd_sigtramp_middle) != 0)
     return 0;
 
   /* The middle matched, check for a matching end.  */
   pc += sizeof i386fbsd_sigtramp_middle;
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_end))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_end}))
     return 0;
   if (memcmp (buf, end, sizeof i386fbsd_sigtramp_end) != 0)
     return 0;
@@ -308,7 +308,7 @@ i386fbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,
 				       void *cb_data,
 				       const struct regcache *regcache)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   cb (".reg", tdep->sizeof_gregset, tdep->sizeof_gregset, &i386_gregset, NULL,
       cb_data);
@@ -327,7 +327,7 @@ static CORE_ADDR
 i386fbsd_get_thread_local_address (struct gdbarch *gdbarch, ptid_t ptid,
 				   CORE_ADDR lm_addr, CORE_ADDR offset)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
   struct regcache *regcache;
 
   if (tdep->fsbase_regnum == -1)
@@ -349,7 +349,7 @@ i386fbsd_get_thread_local_address (struct gdbarch *gdbarch, ptid_t ptid,
 static void
 i386fbsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   /* Obviously FreeBSD is BSD-based.  */
   i386bsd_init_abi (info, gdbarch);
@@ -418,7 +418,7 @@ int i386fbsd4_sc_reg_offset[] =
 static void
 i386fbsd4_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   /* Generic FreeBSD support. */
   fbsd_init_abi (info, gdbarch);

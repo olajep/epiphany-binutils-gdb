@@ -1,4 +1,4 @@
-# Copyright 1999-2021 Free Software Foundation, Inc.
+# Copyright 1999-2022 Free Software Foundation, Inc.
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -60,8 +60,6 @@ proc mi_uncatched_gdb_exit {} {
     global gdb_prompt
     global mi_gdb_prompt
     global MIFLAGS
-
-    gdb_stop_suppressing_tests
 
     if { [info procs sid_exit] != "" } {
 	sid_exit
@@ -232,7 +230,6 @@ proc default_mi_gdb_start { args } {
 	return [eval mi_gdb_start_separate_mi_tty $args]
     }
 
-    gdb_stop_suppressing_tests
     set inferior_pty no-tty
 
     # Set the default value, it may be overriden later by specific testfile.
@@ -389,11 +386,6 @@ proc mi_delete_breakpoints {} {
 proc mi_gdb_reinitialize_dir { subdir } {
     global mi_gdb_prompt
     global MIFLAGS
-
-    global suppress_flag
-    if { $suppress_flag } {
-	return
-    }
 
     if [is_remote host] {
 	return ""
@@ -671,16 +663,46 @@ proc mi_gdb_load { arg } {
     return 0
 }
 
-# mi_gdb_test COMMAND PATTERN MESSAGE [IPATTERN] -- send a command to gdb; 
+# Return 1 if symbols were read in using -readnow.  Otherwise, return 0.
+# Based on readnow from lib/gdb.exp.
+
+proc mi_readnow { args } {
+    global mi_gdb_prompt
+
+    if { [llength $args] == 1 } {
+	set re [lindex $args 0]
+    } else {
+	set re ""
+    }
+
+    set readnow_p 0
+    set cmd "maint print objfiles $re"
+    send_gdb "$cmd\n"
+    gdb_expect {
+	-re ".gdb_index: faked for ..readnow.." {
+	    # Record that we've seen the above pattern.
+	    set readnow_p 1
+	    exp_continue
+	}
+	-re "\\^done\r\n$mi_gdb_prompt$" {
+	}
+    }
+
+    return $readnow_p
+}
+
+# mi_gdb_test COMMAND [PATTERN [MESSAGE [IPATTERN]]] -- send a command to gdb;
 #   test the result.
 #
 # COMMAND is the command to execute, send to GDB with send_gdb.  If
 #   this is the null string no command is sent.
 # PATTERN is the pattern to match for a PASS, and must NOT include
 #   the \r\n sequence immediately before the gdb prompt.
+#   If not specified, .* is used.
 # MESSAGE is the message to be printed.  (If this is the empty string,
 #   then sometimes we don't call pass or fail at all; I don't
 #   understand this at all.)
+#   If not specified, COMMAND is used.
 # IPATTERN is the pattern to match for the inferior's output.  This parameter
 #   is optional.  If present, it will produce a PASS if the match is
 #   successful, and a FAIL if unsuccessful.
@@ -697,9 +719,23 @@ proc mi_gdb_test { args } {
     global inferior_exited_re async
     upvar timeout timeout
 
-    set command [lindex $args 0]
-    set pattern [lindex $args 1]
-    set message [lindex $args 2]
+    if { [llength $args] >= 1 } then {
+	set command [lindex $args 0]
+    } else {
+	error "Not enough arguments in mi_gdb_test"
+    }
+
+    if { [llength $args] >= 2 } then {
+	set pattern [lindex $args 1]
+    } else {
+	set pattern ".*"
+    }
+
+    if { [llength $args] >= 3 } then {
+	set message [lindex $args 2]
+    } else {
+	set message $command
+    }
 
     if [llength $args]==4 {
 	set ipattern [lindex $args 3]
@@ -710,6 +746,10 @@ proc mi_gdb_test { args } {
 	set response_string [lindex $args 4]
     } else {
 	set question_string "^FOOBAR$"
+    }
+
+    if { [llength $args] >= 6 } {
+	error "Too many arguments in mi_gdb_test"
     }
 
     if $verbose>2 then {
@@ -729,13 +769,7 @@ proc mi_gdb_test { args } {
 	    if { $foo < [expr $len - 1] } {
 		set str [string range "$string" 0 $foo]
 		if { [send_gdb "$str"] != "" } {
-		    global suppress_flag
-
-		    if { ! $suppress_flag } {
-			perror "Couldn't send $command to GDB."
-		    }
-		    fail "$message"
-		    return $result
+		    perror "Couldn't send $command to GDB."
 		}
 		gdb_expect 2 {
 		    -re "\[\r\n\]" { }
@@ -748,13 +782,7 @@ proc mi_gdb_test { args } {
 	}
 	if { "$string" != "" } {
 	    if { [send_gdb "$string"] != "" } {
-		global suppress_flag
-
-		if { ! $suppress_flag } {
-		    perror "Couldn't send $command to GDB."
-		}
-		fail "$message"
-		return $result
+		perror "Couldn't send $command to GDB."
 	    }
 	}
     }
@@ -780,7 +808,6 @@ proc mi_gdb_test { args } {
 	     if { $message != "" } {
 		 fail "$message"
 	     }
-	     gdb_suppress_entire_file "GDB died"
 	     return -1
 	 }
 	 -re "Ending remote debugging.*$mi_gdb_prompt\[ \]*$" {
@@ -940,10 +967,6 @@ proc mi_gdb_expect_cli_output {until message} {
 # If USE_MI_COMMAND is false, they are effectively arguments passed
 # to the test program.  If the global USE_GDB_STUB is true, ARGS is not used.
 proc mi_run_cmd_full {use_mi_command args} {
-    global suppress_flag
-    if { $suppress_flag } {
-	return -1
-    }
     global mi_gdb_prompt use_gdb_stub
     global thread_selected_re
     global library_loaded_re
@@ -1077,7 +1100,7 @@ proc mi_clean_restart { args } {
 #
 # FUNC is the linespec of the place to stop (it inserts a breakpoint here).
 # It returns:
-#   -1  if test suppressed, failed, timedout
+#   -1  if failed, timedout
 #    0  if test passed
 #
 # Supported options:
@@ -1085,11 +1108,6 @@ proc mi_clean_restart { args } {
 #  -qualified -- pass --qualified to -break-insert
 
 proc mi_runto_helper {func run_or_continue args} {
-  global suppress_flag
-  if { $suppress_flag } {
-    return -1
-  }
-
   global mi_gdb_prompt expect_out
   global hex decimal fullname_syntax
 
@@ -1359,11 +1377,6 @@ proc mi_expect_interrupt { test } {
 # after the first prompt is printed.
 
 proc mi_execute_to { cmd reason func args file line extra test } {
-    global suppress_flag
-    if { $suppress_flag } {
-	return -1
-    }
-
     mi_send_resuming_command "$cmd" "$test"
     set r [mi_expect_stop $reason $func $args $file $line $extra $test]
     return $r
@@ -1942,7 +1955,9 @@ proc mi_run_inline_test { testcase } {
 	if {$first==1} {
 	    # Start the program afresh.
 	    mi_tbreak "$mi_autotest_source:$line"
-	    mi_run_cmd
+	    if { [mi_run_cmd] < 0 } {
+		return -1
+	    }
 	    set line_now [mi_get_stop_line "$testcase: step to $line"]
 	    set first 0
 	} elseif {$line_now!=$line} {
@@ -1969,6 +1984,8 @@ proc mi_run_inline_test { testcase } {
 	# will need more experience to be sure.
 	eval $statements
     }
+
+    return 0
 }
 
 proc get_mi_thread_list {name} {

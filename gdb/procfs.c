@@ -1,6 +1,6 @@
 /* Machine independent support for Solaris /proc (process file system) for GDB.
 
-   Copyright (C) 1999-2021 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
 
    Written by Michael Snyder at Cygnus Solutions.
    Based on work by Fred Fish, Stu Grossman, Geoff Noer, and others.
@@ -40,7 +40,6 @@
 #include <signal.h>
 #include <ctype.h>
 #include "gdb_bfd.h"
-#include "inflow.h"
 #include "auxv.h"
 #include "procfs.h"
 #include "observable.h"
@@ -1312,8 +1311,8 @@ proc_set_current_signal (procinfo *pi, int signo)
   get_last_target_status (&wait_target, &wait_ptid, &wait_status);
   if (wait_target == &the_procfs_target
       && wait_ptid == inferior_ptid
-      && wait_status.kind == TARGET_WAITKIND_STOPPED
-      && wait_status.value.sig == gdb_signal_from_host (signo)
+      && wait_status.kind () == TARGET_WAITKIND_STOPPED
+      && wait_status.sig () == gdb_signal_from_host (signo)
       && proc_get_status (pi)
       && pi->prstatus.pr_lwp.pr_info.si_signo == signo
       )
@@ -1767,40 +1766,27 @@ procfs_target::attach (const char *args, int from_tty)
   if (pid == getpid ())
     error (_("Attaching GDB to itself is not a good idea..."));
 
-  if (from_tty)
+  /* Push the target if needed, ensure it gets un-pushed it if attach fails.  */
+  inferior *inf = current_inferior ();
+  target_unpush_up unpusher;
+  if (!inf->target_is_pushed (this))
     {
-      const char *exec_file = get_exec_file (0);
-
-      if (exec_file)
-	printf_filtered (_("Attaching to program `%s', %s\n"),
-			 exec_file, target_pid_to_str (ptid_t (pid)).c_str ());
-      else
-	printf_filtered (_("Attaching to %s\n"),
-			 target_pid_to_str (ptid_t (pid)).c_str ());
-
-      fflush (stdout);
+      inf->push_target (this);
+      unpusher.reset (this);
     }
+
+  target_announce_attach (from_tty, pid);
+
   do_attach (ptid_t (pid));
-  if (!target_is_pushed (this))
-    push_target (this);
+
+  /* Everything went fine, keep the target pushed.  */
+  unpusher.release ();
 }
 
 void
 procfs_target::detach (inferior *inf, int from_tty)
 {
-  int pid = inferior_ptid.pid ();
-
-  if (from_tty)
-    {
-      const char *exec_file;
-
-      exec_file = get_exec_file (0);
-      if (exec_file == NULL)
-	exec_file = "";
-
-      printf_filtered (_("Detaching from program: %s, %s\n"), exec_file,
-		       target_pid_to_str (ptid_t (pid)).c_str ());
-    }
+  target_announce_detach (from_tty);
 
   do_detach ();
 
@@ -2246,7 +2232,7 @@ wait_again:
 		      printf_unfiltered (_("[%s exited]\n"),
 					 target_pid_to_str (retval).c_str ());
 		    delete_thread (find_thread_ptid (this, retval));
-		    status->kind = TARGET_WAITKIND_SPURIOUS;
+		    status->set_spurious ();
 		    return retval;
 		  }
 		else
@@ -2296,8 +2282,7 @@ wait_again:
 		    if (!in_thread_list (this, temp_ptid))
 		      add_thread (this, temp_ptid);
 
-		    status->kind = TARGET_WAITKIND_STOPPED;
-		    status->value.sig = GDB_SIGNAL_0;
+		    status->set_stopped (GDB_SIGNAL_0);
 		    return retval;
 		  }
 #endif
@@ -2344,7 +2329,7 @@ wait_again:
 	}
 
       if (status)
-	store_waitstatus (status, wstat);
+	*status = host_status_to_waitstatus (wstat);
     }
 
   return retval;
@@ -2852,8 +2837,9 @@ procfs_target::create_inferior (const char *exec_file,
       shell_file = tryname;
     }
 
-  if (!target_is_pushed (this))
-    push_target (this);
+  inferior *inf = current_inferior ();
+  if (!inf->target_is_pushed (this))
+    inf->push_target (this);
 
   pid = fork_inferior (exec_file, allargs, env, procfs_set_exec_trap,
 		       NULL, procfs_pre_trace, shell_file, NULL);
@@ -3565,7 +3551,7 @@ procfs_corefile_thread_callback (procinfo *pi, procinfo *thread, void *data)
 static int
 find_signalled_thread (struct thread_info *info, void *data)
 {
-  if (info->suspend.stop_signal != GDB_SIGNAL_0
+  if (info->stop_signal () != GDB_SIGNAL_0
       && info->ptid.pid () == inferior_ptid.pid ())
     return 1;
 
@@ -3579,7 +3565,7 @@ find_stop_signal (void)
     iterate_over_threads (find_signalled_thread, NULL);
 
   if (info)
-    return info->suspend.stop_signal;
+    return info->stop_signal ();
   else
     return GDB_SIGNAL_0;
 }
@@ -3592,7 +3578,6 @@ procfs_target::make_corefile_notes (bfd *obfd, int *note_size)
   char psargs[80] = {'\0'};
   procinfo *pi = find_procinfo_or_die (inferior_ptid.pid (), 0);
   gdb::unique_xmalloc_ptr<char> note_data;
-  const char *inf_args;
   enum gdb_signal stop_signal;
 
   if (get_exec_file (0))
@@ -3602,14 +3587,13 @@ procfs_target::make_corefile_notes (bfd *obfd, int *note_size)
       strncpy (psargs, get_exec_file (0), sizeof (psargs));
       psargs[sizeof (psargs) - 1] = 0;
 
-      inf_args = get_inferior_args ();
-      if (inf_args && *inf_args
-	  && (strlen (inf_args)
-	      < ((int) sizeof (psargs) - (int) strlen (psargs))))
+      const std::string &inf_args = current_inferior ()->args ();
+      if (!inf_args.empty () &&
+	  inf_args.length () < ((int) sizeof (psargs) - (int) strlen (psargs)))
 	{
 	  strncat (psargs, " ",
 		   sizeof (psargs) - strlen (psargs));
-	  strncat (psargs, inf_args,
+	  strncat (psargs, inf_args.c_str (),
 		   sizeof (psargs) - strlen (psargs));
 	}
     }
@@ -3633,7 +3617,8 @@ procfs_target::make_corefile_notes (bfd *obfd, int *note_size)
 			     &thread_args);
 
   gdb::optional<gdb::byte_vector> auxv =
-    target_read_alloc (current_top_target (), TARGET_OBJECT_AUXV, NULL);
+    target_read_alloc (current_inferior ()->top_target (),
+		       TARGET_OBJECT_AUXV, NULL);
   if (auxv && !auxv->empty ())
     note_data.reset (elfcore_write_note (obfd, note_data.release (), note_size,
 					 "CORE", NT_AUXV, auxv->data (),

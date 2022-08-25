@@ -1,13 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_INIT(Makefile.in)
-sinclude(../common/acinclude.m4)
-
-SIM_AC_COMMON
-
-dnl Options available in this module
-SIM_AC_OPTION_ALIGNMENT(NONSTRICT_ALIGNMENT)
-SIM_AC_OPTION_WARNINGS
-SIM_AC_OPTION_RESERVED_BITS(1)
+AC_CONFIG_MACRO_DIRS([../m4 ../.. ../../config])
 
 # DEPRECATED
 #
@@ -29,28 +22,8 @@ AC_SUBST(SIM_SUBTARGET)
 
 
 #
-# Select the byte order of the target
-#
-mips_endian=
-default_endian=
-case "${target}" in
-  mips64el*-*-*)        mips_endian=LITTLE ;;
-  mips64vr*el-*-*)      default_endian=LITTLE ;;
-  mips64*-*-*)          default_endian=BIG ;;
-  mips16*-*-*)          default_endian=BIG ;;
-  mipsisa32*-*-*)       default_endian=BIG ;;
-  mipsisa64*-*-*)       default_endian=BIG ;;
-  mips*-*-*)            default_endian=BIG ;;
-  *)                    default_endian=BIG ;;
-esac
-SIM_AC_OPTION_ENDIAN($mips_endian,$default_endian)
-
-
-
-#
 # Select the bitsize of the target
 #
-mips_addr_bitsize=
 case "${target}" in
   mips*-sde-elf*)       mips_bitsize=64 ; mips_msb=63 ;;
   mips*-mti-elf*)       mips_bitsize=64 ; mips_msb=63 ;;
@@ -61,7 +34,7 @@ case "${target}" in
   mips*-*-*)            mips_bitsize=32 ; mips_msb=31 ;;
   *)                    mips_bitsize=64 ; mips_msb=63 ;;
 esac
-SIM_AC_OPTION_BITSIZE($mips_bitsize,$mips_msb,$mips_addr_bitsize)
+SIM_AC_OPTION_BITSIZE($mips_bitsize,$mips_msb)
 
 
 
@@ -221,7 +194,7 @@ if test ${sim_gen} = MULTI; then
 
   cat << __EOF__ > multi-run.c
 /* Main entry point for MULTI simulators.
-   Copyright (C) 2003-2021 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -423,34 +396,5 @@ AC_SUBST(sim_multi_flags)
 AC_SUBST(sim_multi_igen_configs)
 AC_SUBST(sim_multi_src)
 AC_SUBST(sim_multi_obj)
-#
-# Add simulated hardware devices
-#
-hw_enabled=no
-case "${target}" in
-  mips*tx39*)
-	hw_enabled=yes
-	hw_extra_devices="tx3904cpu tx3904irc tx3904tmr tx3904sio" 
-	;;
-  *)
-	;;
-esac
-SIM_AC_OPTION_HARDWARE($hw_enabled,$hw_devices,$hw_extra_devices)
-
-
-# Choose simulator engine
-case "${target}" in
-  *)    mips_igen_engine="engine.o"
-	;;
-esac
-AC_SUBST(mips_igen_engine)
-
-
-AC_PATH_X
-mips_extra_libs=""
-AC_SUBST(mips_extra_libs)
-
-AC_CHECK_LIB(m, fabs)
-AC_CHECK_FUNCS(aint anint sqrt)
 
 SIM_AC_OUTPUT

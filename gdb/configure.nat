@@ -1,5 +1,5 @@
 # ; -*- mode: sh ; -*-
-# Copyright (C) 2013-2021 Free Software Foundation, Inc.
+# Copyright (C) 2013-2022 Free Software Foundation, Inc.
 #
 # This file is part of GDB.
 #
@@ -103,7 +103,7 @@ case ${gdb_host} in
 		# Host: IBM PowerPC running AIX aix-thread.o is not
 		# listed in NATDEPFILES as it is pulled in by
 		# configure.
-		NATDEPFILES="${NATDEPFILES} rs6000-nat.o"
+		NATDEPFILES="${NATDEPFILES} rs6000-aix-nat.o"
 
 		# When compiled with cc, for debugging, this argument
 		# should be passed.  We have no idea who our current
@@ -236,7 +236,8 @@ case ${gdb_host} in
 		NATDEPFILES="${NATDEPFILES} aarch64-linux-nat.o \
 		aarch32-linux-nat.o nat/aarch64-linux-hw-point.o \
 		nat/aarch64-linux.o \
-		nat/aarch64-sve-linux-ptrace.o"
+		nat/aarch64-sve-linux-ptrace.o \
+		nat/aarch64-mte-linux-ptrace.o"
 		;;
 	    arc)
 		# Host: ARC based machine running GNU/Linux
@@ -269,6 +270,10 @@ case ${gdb_host} in
 		# Host: Linux/MIPS
 		NATDEPFILES="${NATDEPFILES} linux-nat-trad.o \
 		mips-linux-nat.o nat/mips-linux-watch.o"
+		;;
+	    or1k)
+		# Host: Linux/OpenRISC
+		NATDEPFILES="${NATDEPFILES} or1k-linux-nat.o"
 		;;
 	    pa)
 		# Host: Hewlett-Packard PA-RISC machine, running Linux
@@ -450,9 +455,8 @@ case ${gdb_host} in
 	case ${gdb_host_cpu} in
 	    i386)
 		# Host: OpenBSD/amd64
-		NATDEPFILES="${NATDEPFILES} obsd-nat.o amd64-nat.o x86-nat.o \
-		x86-bsd-nat.o amd64-bsd-nat.o amd64-obsd-nat.o bsd-kvm.o \
-		nat/x86-dregs.o"
+		NATDEPFILES="${NATDEPFILES} obsd-nat.o amd64-nat.o \
+		x86-bsd-nat.o amd64-bsd-nat.o amd64-obsd-nat.o bsd-kvm.o"
 		LOADLIBES='-lkvm'
 		;;
 	    mips)

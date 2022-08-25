@@ -1,6 +1,6 @@
 /* Language independent support for printing types for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -18,7 +18,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "defs.h"
-#include "gdb_obstack.h"
+#include "gdbsupport/gdb_obstack.h"
 #include "bfd.h"		/* Binary File Description */
 #include "symtab.h"
 #include "gdbtypes.h"
@@ -44,6 +44,7 @@ const struct type_print_options type_print_raw_options =
   1,				/* print_methods */
   1,				/* print_typedefs */
   0,				/* print_offsets */
+  0,				/* print_in_hex */
   0,				/* print_nested_type_limit  */
   NULL,				/* local_typedefs */
   NULL,				/* global_table */
@@ -58,6 +59,7 @@ static struct type_print_options default_ptype_flags =
   1,				/* print_methods */
   1,				/* print_typedefs */
   0,				/* print_offsets */
+  0,				/* print_in_hex */
   0,				/* print_nested_type_limit  */
   NULL,				/* local_typedefs */
   NULL,				/* global_table */
@@ -68,8 +70,15 @@ static struct type_print_options default_ptype_flags =
 
 /* See typeprint.h.  */
 
-const int print_offset_data::indentation = 23;
+const int print_offset_data::indentation = 27;
 
+/* See typeprint.h.  */
+
+print_offset_data::print_offset_data (const struct type_print_options *flags)
+{
+  if (flags != nullptr)
+    print_in_hex = flags->print_in_hex;
+}
 
 /* See typeprint.h.  */
 
@@ -95,12 +104,18 @@ print_offset_data::maybe_print_hole (struct ui_file *stream,
       unsigned int hole_bit = hole % TARGET_CHAR_BIT;
 
       if (hole_bit > 0)
-	fprintf_filtered (stream, "/* XXX %2u-bit %s   */\n", hole_bit,
-			  for_what);
+	{
+	  fprintf_styled (stream, highlight_style.style (),
+			  "/* XXX %2u-bit %-7s    */", hole_bit, for_what);
+	  fputs_filtered ("\n", stream);
+	}
 
       if (hole_byte > 0)
-	fprintf_filtered (stream, "/* XXX %2u-byte %s  */\n", hole_byte,
-			  for_what);
+	{
+	  fprintf_styled (stream, highlight_style.style (),
+			  "/* XXX %2u-byte %-7s   */", hole_byte, for_what);
+	  fputs_filtered ("\n", stream);
+	}
     }
 }
 
@@ -121,12 +136,14 @@ print_offset_data::update (struct type *type, unsigned int field_idx,
     {
       /* Since union fields don't have the concept of offsets, we just
 	 print their sizes.  */
-      fprintf_filtered (stream, "/*              %4s */",
-			pulongest (TYPE_LENGTH (ftype)));
+      fprintf_filtered (stream, "/*                %6s */",
+			(print_in_hex ?
+			 hex_string_custom (TYPE_LENGTH (ftype), 4) :
+			 pulongest (TYPE_LENGTH (ftype))));
       return;
     }
 
-  unsigned int bitpos = TYPE_FIELD_BITPOS (type, field_idx);
+  unsigned int bitpos = type->field (field_idx).loc_bitpos ();
   unsigned int fieldsize_byte = TYPE_LENGTH (ftype);
   unsigned int fieldsize_bit = fieldsize_byte * TARGET_CHAR_BIT;
 
@@ -140,20 +157,23 @@ print_offset_data::update (struct type *type, unsigned int field_idx,
 
       unsigned real_bitpos = bitpos + offset_bitpos;
 
-      fprintf_filtered (stream, "/* %4u:%2u", real_bitpos / TARGET_CHAR_BIT,
+      fprintf_filtered (stream,
+			(print_in_hex ? "/* 0x%04x: 0x%x" : "/* %6u:%2u  "),
+			real_bitpos / TARGET_CHAR_BIT,
 			real_bitpos % TARGET_CHAR_BIT);
     }
   else
     {
       /* The position of the field, relative to the beginning of the
 	 struct.  */
-      fprintf_filtered (stream, "/* %4u",
+      fprintf_filtered (stream, (print_in_hex ?  "/* 0x%04x" : "/* %6u"),
 			(bitpos + offset_bitpos) / TARGET_CHAR_BIT);
 
-      fprintf_filtered (stream, "   ");
+      fprintf_filtered (stream, "     ");
     }
 
-  fprintf_filtered (stream, "   |  %4u */", fieldsize_byte);
+  fprintf_filtered (stream, (print_in_hex ? " |  0x%04x */" : " |  %6u */"),
+		    fieldsize_byte);
 
   end_bitpos = bitpos + fieldsize_bit;
 }
@@ -468,6 +488,12 @@ whatis_exp (const char *exp, int show)
 		      }
 		    break;
 		  }
+		case 'x':
+		  flags.print_in_hex = 1;
+		  break;
+		case 'd':
+		  flags.print_in_hex = 0;
+		  break;
 		default:
 		  error (_("unrecognized flag '%c'"), *exp);
 		}
@@ -518,7 +544,7 @@ whatis_exp (const char *exp, int show)
   get_user_print_options (&opts);
   if (val != NULL && opts.objectprint)
     {
-      if (((type->code () == TYPE_CODE_PTR) || TYPE_IS_REFERENCE (type))
+      if (type->is_pointer_or_reference ()
 	  && (TYPE_TARGET_TYPE (type)->code () == TYPE_CODE_STRUCT))
 	real_type = value_rtti_indirect_type (val, &full, &top, &using_enc);
       else if (type->code () == TYPE_CODE_STRUCT)
@@ -528,7 +554,7 @@ whatis_exp (const char *exp, int show)
   if (flags.print_offsets
       && (type->code () == TYPE_CODE_STRUCT
 	  || type->code () == TYPE_CODE_UNION))
-    fprintf_filtered (gdb_stdout, "/* offset    |  size */  ");
+    fprintf_filtered (gdb_stdout, "/* offset      |    size */  ");
 
   printf_filtered ("type = ");
 
@@ -600,14 +626,14 @@ print_type_scalar (struct type *type, LONGEST val, struct ui_file *stream)
       len = type->num_fields ();
       for (i = 0; i < len; i++)
 	{
-	  if (TYPE_FIELD_ENUMVAL (type, i) == val)
+	  if (type->field (i).loc_enumval () == val)
 	    {
 	      break;
 	    }
 	}
       if (i < len)
 	{
-	  fputs_filtered (TYPE_FIELD_NAME (type, i), stream);
+	  fputs_filtered (type->field (i).name (), stream);
 	}
       else
 	{
@@ -763,6 +789,35 @@ show_print_type_nested_types  (struct ui_file *file, int from_tty,
     }
 }
 
+/* When printing structs, offsets and sizes of members can be displayed using
+   decimal notation or hexadecimal notation.  By default, Decimal notation is
+   used.  */
+
+static bool print_offsets_and_sizes_in_hex = false;
+
+/* Set the flags that instructs if sizes and offsets of struct members are
+   displayed in hexadecimal or decimal notation.  */
+
+static void
+set_print_offsets_and_sizes_in_hex (const char *args,
+				    int from_tty, struct cmd_list_element *c)
+{
+  default_ptype_flags.print_in_hex = print_offsets_and_sizes_in_hex;
+}
+
+/* Display whether struct members sizes and offsets are printed
+   using decimal or hexadecimal notation.  */
+
+static void
+show_print_offsets_and_sizes_in_hex (struct ui_file *file, int from_tty,
+				     struct cmd_list_element *c,
+				     const char *value)
+{
+  fprintf_filtered (file, _("\
+Display of struct members offsets and sizes in hexadecimal is %s\n"),
+		    value);
+}
+
 void _initialize_typeprint ();
 void
 _initialize_typeprint ()
@@ -784,7 +839,11 @@ Available FLAGS are:\n\
   /M    print methods defined in a class\n\
   /t    do not print typedefs defined in a class\n\
   /T    print typedefs defined in a class\n\
-  /o    print offsets and sizes of fields in a struct (like pahole)"));
+  /o    print offsets and sizes of fields in a struct (like pahole)\n\
+  /x    use hexadecimal notation when displaying sizes and offsets\n\
+        of struct members\n\
+  /d    use decimal notation when displaying sizes and offsets\n\
+        of struct members "));
   set_cmd_completer (c, expression_completer);
 
   c = add_com ("whatis", class_vars, whatis_command,
@@ -792,14 +851,11 @@ Available FLAGS are:\n\
 Only one level of typedefs is unrolled.  See also \"ptype\"."));
   set_cmd_completer (c, expression_completer);
 
-  add_show_prefix_cmd ("type", no_class,
-		       _("Generic command for showing type-printing settings."),
-		       &showprinttypelist, "show print type ", 0,
-		       &showprintlist);
-  add_basic_prefix_cmd ("type", no_class,
-			_("Generic command for setting how types print."),
-			&setprinttypelist, "set print type ", 0,
-			&setprintlist);
+  add_setshow_prefix_cmd ("type", no_class,
+			  _("Generic command for showing type-printing settings."),
+			  _("Generic command for setting how types print."),
+			  &setprinttypelist, &showprinttypelist,
+			  &setprintlist, &showprintlist);
 
   add_setshow_boolean_cmd ("methods", no_class, &print_methods,
 			   _("\
@@ -825,6 +881,14 @@ Show the number of recursive nested type definitions to print."), NULL,
 				       set_print_type_nested_types,
 				       show_print_type_nested_types,
 				       &setprinttypelist, &showprinttypelist);
+
+  add_setshow_boolean_cmd ("hex", no_class, &print_offsets_and_sizes_in_hex,
+			   _("\
+Set printing of struct members sizes and offsets using hex notation."), _("\
+Show whether sizes and offsets of struct members are printed using hex \
+notation."), nullptr, set_print_offsets_and_sizes_in_hex,
+			   show_print_offsets_and_sizes_in_hex,
+			   &setprinttypelist, &showprinttypelist);
 }
 
 /* Print <not allocated> status to stream STREAM.  */

@@ -1,6 +1,6 @@
 /* Python interface to line tables.
 
-   Copyright (C) 2013-2021 Free Software Foundation, Inc.
+   Copyright (C) 2013-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -531,7 +531,7 @@ PyTypeObject ltpy_iterator_object_type = {
   0,				  /*tp_getattro*/
   0,				  /*tp_setattro*/
   0,				  /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER,  /*tp_flags*/
+  Py_TPFLAGS_DEFAULT,		  /*tp_flags*/
   "GDB line table iterator object",	      /*tp_doc */
   0,				  /*tp_traverse */
   0,				  /*tp_clear */

@@ -1,6 +1,6 @@
 /* Perform an inferior function call, for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -251,7 +251,7 @@ find_function_addr (struct value *function,
 		    struct type **function_type)
 {
   struct type *ftype = check_typedef (value_type (function));
-  struct gdbarch *gdbarch = get_type_arch (ftype);
+  struct gdbarch *gdbarch = ftype->arch ();
   struct type *value_type = NULL;
   /* Initialize it just to avoid a GCC false warning.  */
   CORE_ADDR funaddr = 0;
@@ -269,8 +269,8 @@ find_function_addr (struct value *function,
       ftype = check_typedef (TYPE_TARGET_TYPE (ftype));
       if (ftype->code () == TYPE_CODE_FUNC
 	  || ftype->code () == TYPE_CODE_METHOD)
-	funaddr = gdbarch_convert_from_func_ptr_addr (gdbarch, funaddr,
-						      current_top_target ());
+	funaddr = gdbarch_convert_from_func_ptr_addr
+	  (gdbarch, funaddr, current_inferior ()->top_target());
     }
   if (ftype->code () == TYPE_CODE_FUNC
       || ftype->code () == TYPE_CODE_METHOD)
@@ -321,9 +321,8 @@ find_function_addr (struct value *function,
 
 	      funaddr = value_as_address (value_addr (function));
 	      nfunaddr = funaddr;
-	      funaddr
-		= gdbarch_convert_from_func_ptr_addr (gdbarch, funaddr,
-						      current_top_target ());
+	      funaddr = gdbarch_convert_from_func_ptr_addr
+		(gdbarch, funaddr, current_inferior ()->top_target ());
 	      if (funaddr != nfunaddr)
 		found_descriptor = 1;
 	    }
@@ -452,7 +451,7 @@ get_call_return_value (struct call_return_meta_info *ri)
 	{
 	  retval = allocate_value (ri->value_type);
 	  read_value_memory (retval, 0, 1, ri->struct_addr,
-			     value_contents_raw (retval),
+			     value_contents_raw (retval).data (),
 			     TYPE_LENGTH (ri->value_type));
 	}
     }
@@ -461,7 +460,7 @@ get_call_return_value (struct call_return_meta_info *ri)
       retval = allocate_value (ri->value_type);
       gdbarch_return_value (ri->gdbarch, ri->function, ri->value_type,
 			    get_current_regcache (),
-			    value_contents_raw (retval), NULL);
+			    value_contents_raw (retval).data (), NULL);
       if (stack_temporaries && class_or_union_p (ri->value_type))
 	{
 	  /* Values of class type returned in registers are copied onto
@@ -1027,8 +1026,8 @@ call_function_by_hand_dummy (struct value *function,
 	 prototyped.  Can we respect TYPE_VARARGS?  Probably not.  */
       if (ftype->code () == TYPE_CODE_METHOD)
 	prototyped = 1;
-      if (TYPE_TARGET_TYPE (ftype) == NULL && ftype->num_fields () == 0
-	  && default_return_type != NULL)
+      else if (TYPE_TARGET_TYPE (ftype) == NULL && ftype->num_fields () == 0
+	       && default_return_type != NULL)
 	{
 	  /* Calling a no-debug function with the return type
 	     explicitly cast.  Assume the function is prototyped,
@@ -1084,7 +1083,7 @@ call_function_by_hand_dummy (struct value *function,
       if (info.trivially_copy_constructible)
 	{
 	  int length = TYPE_LENGTH (param_type);
-	  write_memory (addr, value_contents (args[i]), length);
+	  write_memory (addr, value_contents (args[i]).data (), length);
 	}
       else
 	{

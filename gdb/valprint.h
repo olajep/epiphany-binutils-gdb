@@ -1,6 +1,6 @@
 /* Declarations for value printing routines for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -64,6 +64,9 @@ struct value_print_options
   /* The current format letter.  This is set locally for a given call,
      e.g. when the user passes a format to "print".  */
   int format;
+
+  /* Print memory tag violations for pointers.  */
+  bool memory_tag_violations;
 
   /* Stop printing at null character?  */
   bool stop_print_at_null;
@@ -252,6 +255,7 @@ struct format_data
     int count;
     char format;
     char size;
+    bool print_tags;
 
     /* True if the value should be printed raw -- that is, bypassing
        python-based formatters.  */

@@ -1,6 +1,6 @@
 /* addrmap.h --- interface to address map data structure.
 
-   Copyright (C) 2007-2021 Free Software Foundation, Inc.
+   Copyright (C) 2007-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,6 +19,8 @@
 
 #ifndef ADDRMAP_H
 #define ADDRMAP_H
+
+#include "gdbsupport/function-view.h"
 
 /* An address map is essentially a table mapping CORE_ADDRs onto GDB
    data structures, like blocks, symtabs, partial symtabs, and so on.
@@ -93,13 +95,19 @@ void addrmap_relocate (struct addrmap *map, CORE_ADDR offset);
 
 /* The type of a function used to iterate over the map.
    OBJ is NULL for unmapped regions.  */
-typedef int (*addrmap_foreach_fn) (void *data, CORE_ADDR start_addr,
-				   void *obj);
+typedef gdb::function_view<int (CORE_ADDR start_addr, void *obj)>
+     addrmap_foreach_fn;
 
-/* Call FN, passing it DATA, for every address in MAP, following an
-   in-order traversal.  If FN ever returns a non-zero value, the
-   iteration ceases immediately, and the value is returned.
-   Otherwise, this function returns 0.  */
-int addrmap_foreach (struct addrmap *map, addrmap_foreach_fn fn, void *data);
+/* Call FN for every address in MAP, following an in-order traversal.
+   If FN ever returns a non-zero value, the iteration ceases
+   immediately, and the value is returned.  Otherwise, this function
+   returns 0.  */
+int addrmap_foreach (struct addrmap *map, addrmap_foreach_fn fn);
+
+/* Dump the addrmap to OUTFILE.  If PAYLOAD is non-NULL, only dump any
+   components that map to PAYLOAD.  (If PAYLOAD is NULL, the entire
+   map is dumped.)  */
+void addrmap_dump (struct addrmap *map, struct ui_file *outfile,
+		   void *payload);
 
 #endif /* ADDRMAP_H */

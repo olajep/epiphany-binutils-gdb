@@ -1,6 +1,6 @@
 /* Support for printing C values for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -144,7 +144,7 @@ print_unpacked_pointer (struct type *type, struct type *elttype,
 			const struct value_print_options *options)
 {
   int want_space = 0;
-  struct gdbarch *gdbarch = get_type_arch (type);
+  struct gdbarch *gdbarch = type->arch ();
 
   if (elttype->code () == TYPE_CODE_FUNC)
     {
@@ -237,7 +237,7 @@ c_value_print_array (struct value *val,
 {
   struct type *type = check_typedef (value_type (val));
   CORE_ADDR address = value_address (val);
-  const gdb_byte *valaddr = value_contents_for_printing (val);
+  const gdb_byte *valaddr = value_contents_for_printing (val).data ();
   struct type *unresolved_elttype = TYPE_TARGET_TYPE (type);
   struct type *elttype = check_typedef (unresolved_elttype);
 
@@ -333,8 +333,7 @@ c_value_print_ptr (struct value *val, struct ui_file *stream, int recurse,
     }
 
   struct type *type = check_typedef (value_type (val));
-  struct gdbarch *arch = get_type_arch (type);
-  const gdb_byte *valaddr = value_contents_for_printing (val);
+  const gdb_byte *valaddr = value_contents_for_printing (val).data ();
 
   if (options->vtblprint && cp_is_vtbl_ptr_type (type))
     {
@@ -344,7 +343,7 @@ c_value_print_ptr (struct value *val, struct ui_file *stream, int recurse,
 	 TYPE_CODE_STRUCT.)  */
       CORE_ADDR addr = extract_typed_address (valaddr, type);
 
-      print_function_pointer_address (options, arch, addr, stream);
+      print_function_pointer_address (options, type->arch (), addr, stream);
     }
   else
     {
@@ -373,13 +372,12 @@ c_value_print_struct (struct value *val, struct ui_file *stream, int recurse,
       /* Print vtable entry - we only get here if NOT using
 	 -fvtable_thunks.  (Otherwise, look under
 	 TYPE_CODE_PTR.)  */
-      struct gdbarch *gdbarch = get_type_arch (type);
-      int offset = TYPE_FIELD_BITPOS (type, VTBL_FNADDR_OFFSET) / 8;
+      int offset = type->field (VTBL_FNADDR_OFFSET).loc_bitpos () / 8;
       struct type *field_type = type->field (VTBL_FNADDR_OFFSET).type ();
-      const gdb_byte *valaddr = value_contents_for_printing (val);
+      const gdb_byte *valaddr = value_contents_for_printing (val).data ();
       CORE_ADDR addr = extract_typed_address (valaddr + offset, field_type);
 
-      print_function_pointer_address (options, gdbarch, addr, stream);
+      print_function_pointer_address (options, type->arch (), addr, stream);
     }
   else
     cp_print_value_fields (val, stream, recurse, options, NULL, 0);
@@ -407,7 +405,7 @@ c_value_print_int (struct value *val, struct ui_file *stream,
 	 intended to be used as an integer or a character, print
 	 the character equivalent as well.  */
       struct type *type = value_type (val);
-      const gdb_byte *valaddr = value_contents_for_printing (val);
+      const gdb_byte *valaddr = value_contents_for_printing (val).data ();
       if (c_textual_element_type (type, options->format))
 	{
 	  fputs_filtered (" ", stream);
@@ -440,6 +438,7 @@ c_value_print_inner (struct value *val, struct ui_file *stream, int recurse,
       c_value_print_struct (val, stream, recurse, options);
       break;
 
+    case TYPE_CODE_CHAR:
     case TYPE_CODE_INT:
       c_value_print_int (val, stream, options);
       break;
@@ -460,7 +459,6 @@ c_value_print_inner (struct value *val, struct ui_file *stream, int recurse,
     case TYPE_CODE_ERROR:
     case TYPE_CODE_UNDEF:
     case TYPE_CODE_COMPLEX:
-    case TYPE_CODE_CHAR:
     default:
       generic_value_print (val, stream, recurse, options, &c_decorations);
       break;
@@ -488,7 +486,7 @@ c_value_print (struct value *val, struct ui_file *stream,
 
   type = check_typedef (value_type (val));
 
-  if (type->code () == TYPE_CODE_PTR || TYPE_IS_REFERENCE (type))
+  if (type->is_pointer_or_reference ())
     {
       struct type *original_type = value_type (val);
 

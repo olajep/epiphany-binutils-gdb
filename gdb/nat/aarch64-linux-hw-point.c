@@ -1,4 +1,4 @@
-/* Copyright (C) 2009-2021 Free Software Foundation, Inc.
+/* Copyright (C) 2009-2022 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of GDB.
@@ -23,8 +23,15 @@
 #include "aarch64-linux-hw-point.h"
 
 #include <sys/uio.h>
-#include <asm/ptrace.h>
+
+/* The order in which <sys/ptrace.h> and <asm/ptrace.h> are included
+   can be important.  <sys/ptrace.h> often declares various PTRACE_*
+   enums.  <asm/ptrace.h> often defines preprocessor constants for
+   these very same symbols.  When that's the case, build errors will
+   result when <asm/ptrace.h> is included before <sys/ptrace.h>.  */
 #include <sys/ptrace.h>
+#include <asm/ptrace.h>
+
 #include <elf.h>
 
 /* Number of hardware breakpoints/watchpoints the target supports.
@@ -762,6 +769,24 @@ aarch64_show_debug_reg_state (struct aarch64_debug_reg_state *state,
 		  state->dr_ctrl_wp[i], state->dr_ref_count_wp[i]);
 }
 
+/* Return true if debug arch level is compatible for hw watchpoints
+   and breakpoints.  */
+
+static bool
+compatible_debug_arch (unsigned int debug_arch)
+{
+  if (debug_arch == AARCH64_DEBUG_ARCH_V8)
+    return true;
+  if (debug_arch == AARCH64_DEBUG_ARCH_V8_1)
+    return true;
+  if (debug_arch == AARCH64_DEBUG_ARCH_V8_2)
+    return true;
+  if (debug_arch == AARCH64_DEBUG_ARCH_V8_4)
+    return true;
+
+  return false;
+}
+
 /* Get the hardware debug register capacity information from the
    process represented by TID.  */
 
@@ -776,9 +801,7 @@ aarch64_linux_get_debug_reg_capacity (int tid)
 
   /* Get hardware watchpoint register info.  */
   if (ptrace (PTRACE_GETREGSET, tid, NT_ARM_HW_WATCH, &iov) == 0
-      && (AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8
-	  || AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8_1
-	  || AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8_2))
+      && compatible_debug_arch (AARCH64_DEBUG_ARCH (dreg_state.dbg_info)))
     {
       aarch64_num_wp_regs = AARCH64_DEBUG_NUM_SLOTS (dreg_state.dbg_info);
       if (aarch64_num_wp_regs > AARCH64_HWP_MAX_NUM)
@@ -798,9 +821,7 @@ aarch64_linux_get_debug_reg_capacity (int tid)
 
   /* Get hardware breakpoint register info.  */
   if (ptrace (PTRACE_GETREGSET, tid, NT_ARM_HW_BREAK, &iov) == 0
-      && (AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8
-	  || AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8_1
-	  || AARCH64_DEBUG_ARCH (dreg_state.dbg_info) == AARCH64_DEBUG_ARCH_V8_2))
+      && compatible_debug_arch (AARCH64_DEBUG_ARCH (dreg_state.dbg_info)))
     {
       aarch64_num_bp_regs = AARCH64_DEBUG_NUM_SLOTS (dreg_state.dbg_info);
       if (aarch64_num_bp_regs > AARCH64_HBP_MAX_NUM)

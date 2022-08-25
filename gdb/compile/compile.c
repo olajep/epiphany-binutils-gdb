@@ -1,6 +1,6 @@
 /* General Compile and inject code
 
-   Copyright (C) 2014-2021 Free Software Foundation, Inc.
+   Copyright (C) 2014-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -43,6 +43,8 @@
 #include "gdbsupport/gdb_optional.h"
 #include "gdbsupport/gdb_unlinker.h"
 #include "gdbsupport/pathstuff.h"
+#include "gdbsupport/scoped_ignore_signal.h"
+#include "gdbsupport/buildargv.h"
 
 
 
@@ -494,7 +496,22 @@ get_expr_block_and_pc (CORE_ADDR *pc)
 }
 
 /* String for 'set compile-args' and 'show compile-args'.  */
-static char *compile_args;
+static std::string compile_args =
+  /* Override flags possibly coming from DW_AT_producer.  */
+  "-O0 -gdwarf-4"
+  /* We use -fPIE Otherwise GDB would need to reserve space large enough for
+     any object file in the inferior in advance to get the final address when
+     to link the object file to and additionally the default system linker
+     script would need to be modified so that one can specify there the
+     absolute target address.
+     -fPIC is not used at is would require from GDB to generate .got.  */
+  " -fPIE"
+  /* We want warnings, except for some commonly happening for GDB commands.  */
+  " -Wall "
+  " -Wno-unused-but-set-variable"
+  " -Wno-unused-variable"
+  /* Override CU's possible -fstack-protector-strong.  */
+  " -fno-stack-protector";
 
 /* Parsed form of COMPILE_ARGS.  */
 static gdb_argv compile_args_argv;
@@ -504,7 +521,7 @@ static gdb_argv compile_args_argv;
 static void
 set_compile_args (const char *args, int from_tty, struct cmd_list_element *c)
 {
-  compile_args_argv = gdb_argv (compile_args);
+  compile_args_argv = gdb_argv (compile_args.c_str ());
 }
 
 /* Implement 'show compile-args'.  */
@@ -519,7 +536,7 @@ show_compile_args (struct ui_file *file, int from_tty,
 }
 
 /* String for 'set compile-gcc' and 'show compile-gcc'.  */
-static char *compile_gcc;
+static std::string compile_gcc;
 
 /* Implement 'show compile-gcc'.  */
 
@@ -600,8 +617,14 @@ static gdb_argv
 get_args (const compile_instance *compiler, struct gdbarch *gdbarch)
 {
   const char *cs_producer_options;
+  gdb_argv result;
 
-  gdb_argv result (gdbarch_gcc_target_options (gdbarch).c_str ());
+  std::string gcc_options = gdbarch_gcc_target_options (gdbarch);
+
+  /* Make sure we have a non-empty set of options, otherwise GCC will
+     error out trying to look for a filename that is an empty string.  */
+  if (!gcc_options.empty ())
+    result = gdb_argv (gcc_options.c_str ());
 
   cs_producer_options = get_selected_pc_producer_options ();
   if (cs_producer_options != NULL)
@@ -649,8 +672,8 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
   expr_pc = get_frame_address_in_block (get_selected_frame (NULL));
 
   /* Set up instance and context for the compiler.  */
-  std::unique_ptr <compile_instance> compiler
-			(current_language->get_compile_instance ());
+  std::unique_ptr<compile_instance> compiler
+    = current_language->get_compile_instance ();
   if (compiler == nullptr)
     error (_("No compiler support for language %s."),
 	   current_language->name ());
@@ -689,13 +712,13 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
 
   compiler->set_verbose (compile_debug);
 
-  if (compile_gcc[0] != 0)
+  if (!compile_gcc.empty ())
     {
       if (compiler->version () < GCC_FE_VERSION_1)
 	error (_("Command 'set compile-gcc' requires GCC version 6 or higher "
 		 "(libcc1 interface version 1 or higher)"));
 
-      compiler->set_driver_filename (compile_gcc);
+      compiler->set_driver_filename (compile_gcc.c_str ());
     }
   else
     {
@@ -703,7 +726,9 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
       const char *arch_rx = gdbarch_gnu_triplet_regexp (gdbarch);
 
       /* Allow triplets with or without vendor set.  */
-      triplet_rx = std::string (arch_rx) + "(-[^-]*)?-" + os_rx;
+      triplet_rx = std::string (arch_rx) + "(-[^-]*)?-";
+      if (os_rx != nullptr)
+	triplet_rx += os_rx;
       compiler->set_triplet_regexp (triplet_rx.c_str ());
     }
 
@@ -712,9 +737,8 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
   int argc = argv_holder.count ();
   char **argv = argv_holder.get ();
 
-  gdb::unique_xmalloc_ptr<char> error_message;
-  error_message.reset (compiler->set_arguments (argc, argv,
-						triplet_rx.c_str ()));
+  gdb::unique_xmalloc_ptr<char> error_message
+    = compiler->set_arguments (argc, argv, triplet_rx.c_str ());
 
   if (error_message != NULL)
     error ("%s", error_message.get ());
@@ -747,6 +771,10 @@ compile_to_object (struct command_line *cmd, const char *cmd_string,
   if (compile_debug)
     fprintf_unfiltered (gdb_stdlog, "source file produced: %s\n\n",
 			fnames.source_file ());
+
+  /* If we don't do this, then GDB simply exits
+     when the compiler dies.  */
+  scoped_ignore_sigpipe ignore_sigpipe;
 
   /* Call the compiler and start the compilation process.  */
   compiler->set_source_file (fnames.source_file ());
@@ -880,13 +908,14 @@ compile_instance::set_triplet_regexp (const char *regexp)
 
 /* See compile-internal.h.  */
 
-char *
+gdb::unique_xmalloc_ptr<char>
 compile_instance::set_arguments (int argc, char **argv, const char *regexp)
 {
   if (version () >= GCC_FE_VERSION_1)
-    return FORWARD (set_arguments, argc, argv);
+    return gdb::unique_xmalloc_ptr<char> (FORWARD (set_arguments, argc, argv));
   else
-    return FORWARD (set_arguments_v0, regexp, argc, argv);
+    return gdb::unique_xmalloc_ptr<char> (FORWARD (set_arguments_v0, regexp,
+						   argc, argv));
 }
 
 /* See compile-internal.h.  */
@@ -922,8 +951,8 @@ _initialize_compile ()
   compile_cmd_element = add_prefix_cmd ("compile", class_obscure,
 					compile_command, _("\
 Command to compile source code and inject it into the inferior."),
-		  &compile_command_list, "compile ", 1, &cmdlist);
-  add_com_alias ("expression", "compile", class_obscure, 0);
+		  &compile_command_list, 1, &cmdlist);
+  add_com_alias ("expression", compile_cmd_element, class_obscure, 0);
 
   const auto compile_opts = make_compile_options_def_group (nullptr);
 
@@ -1016,23 +1045,9 @@ String quoting is parsed like in shell, for example:\n\
   -mno-align-double \"-I/dir with a space/include\""),
 			  set_compile_args, show_compile_args, &setlist, &showlist);
 
-  /* Override flags possibly coming from DW_AT_producer.  */
-  compile_args = xstrdup ("-O0 -gdwarf-4"
-  /* We use -fPIE Otherwise GDB would need to reserve space large enough for
-     any object file in the inferior in advance to get the final address when
-     to link the object file to and additionally the default system linker
-     script would need to be modified so that one can specify there the
-     absolute target address.
-     -fPIC is not used at is would require from GDB to generate .got.  */
-			 " -fPIE"
-  /* We want warnings, except for some commonly happening for GDB commands.  */
-			 " -Wall "
-			 " -Wno-unused-but-set-variable"
-			 " -Wno-unused-variable"
-  /* Override CU's possible -fstack-protector-strong.  */
-			 " -fno-stack-protector"
-  );
-  set_compile_args (compile_args, 0, NULL);
+
+  /* Initialize compile_args_argv.  */
+  set_compile_args (compile_args.c_str (), 0, NULL);
 
   add_setshow_optional_filename_cmd ("compile-gcc", class_support,
 				     &compile_gcc,
@@ -1045,5 +1060,4 @@ It should be absolute filename of the gcc executable.\n\
 If empty the default target triplet will be searched in $PATH."),
 				     NULL, show_compile_gcc, &setlist,
 				     &showlist);
-  compile_gcc = xstrdup ("");
 }

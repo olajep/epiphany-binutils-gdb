@@ -1,6 +1,6 @@
 /* Rust language support definitions for GDB, the GNU debugger.
 
-   Copyright (C) 2016-2021 Free Software Foundation, Inc.
+   Copyright (C) 2016-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -84,8 +84,9 @@ public:
 
   /* See language.h.  */
 
-  bool sniff_from_mangled_name (const char *mangled,
-				char **demangled) const override
+  bool sniff_from_mangled_name
+       (const char *mangled, gdb::unique_xmalloc_ptr<char> *demangled)
+       const override
   {
     *demangled = gdb_demangle (mangled, DMGL_PARAMS | DMGL_ANSI);
     return *demangled != NULL;
@@ -93,7 +94,8 @@ public:
 
   /* See language.h.  */
 
-  char *demangle_symbol (const char *mangled, int options) const override
+  gdb::unique_xmalloc_ptr<char> demangle_symbol (const char *mangled,
+						 int options) const override
   {
     return gdb_demangle (mangled, options);
   }
@@ -111,9 +113,8 @@ public:
   {
     type = check_typedef (TYPE_TARGET_TYPE (check_typedef (type)));
     std::string name = type_to_string (type);
-    return gdb::unique_xmalloc_ptr<char>
-      (xstrprintf ("*(%s as *mut %s)", core_addr_to_string (addr),
-		   name.c_str ()));
+    return xstrprintf ("*(%s as *mut %s)", core_addr_to_string (addr),
+		       name.c_str ());
   }
 
   /* See language.h.  */
@@ -209,22 +210,7 @@ public:
   bool range_checking_on_by_default () const override
   { return true; }
 
-  /* See language.h.  */
-
-  const struct exp_descriptor *expression_ops () const override
-  { return &exp_descriptor_tab; }
-
-  /* See language.h.  */
-
-  const struct op_print *opcode_print_table () const override
-  { return c_op_print_tab; }
-
 private:
-
-  /* Table of expression handling functions for use by EXPRESSION_OPS
-     member function.  */
-
-  static const struct exp_descriptor exp_descriptor_tab;
 
   /* Helper for value_print_inner, arguments are as for that function.
      Prints structs and untagged unions.  */

@@ -1,6 +1,6 @@
 /* Process record and replay target for GDB, the GNU debugger.
 
-   Copyright (C) 2013-2021 Free Software Foundation, Inc.
+   Copyright (C) 2013-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -267,7 +267,6 @@ public:
   const target_info &info () const override
   { return record_full_target_info; }
 
-  void commit_resume () override;
   void resume (ptid_t, int, enum gdb_signal) override;
   void disconnect (const char *, int) override;
   void detach (inferior *, int) override;
@@ -925,7 +924,7 @@ record_full_core_open_1 (const char *name, int from_tty)
 
   record_full_core_sections = build_section_table (core_bfd);
 
-  push_target (&record_full_core_ops);
+  current_inferior ()->push_target (&record_full_core_ops);
   record_full_restore ();
 }
 
@@ -948,7 +947,7 @@ record_full_open_1 (const char *name, int from_tty)
     error (_("Process record: the current architecture doesn't support "
 	     "record function."));
 
-  push_target (&record_full_ops);
+  current_inferior ()->push_target (&record_full_ops);
 }
 
 static void record_full_init_record_breakpoints (void);
@@ -1103,15 +1102,6 @@ record_full_target::resume (ptid_t ptid, int step, enum gdb_signal signal)
     target_async (1);
 }
 
-/* "commit_resume" method for process record target.  */
-
-void
-record_full_target::commit_resume ()
-{
-  if (!RECORD_FULL_IS_REPLAY)
-    beneath ()->commit_resume ();
-}
-
 static int record_full_get_sig = 0;
 
 /* SIGINT signal handler, registered by "wait" method.  */
@@ -1165,7 +1155,7 @@ record_full_wait_1 (struct target_ops *ops,
       gdb_assert ((options & TARGET_WNOHANG) != 0);
 
       /* No interesting event.  */
-      status->kind = TARGET_WAITKIND_IGNORE;
+      status->set_ignore ();
       return minus_one_ptid;
     }
 
@@ -1192,7 +1182,7 @@ record_full_wait_1 (struct target_ops *ops,
 	  while (1)
 	    {
 	      ret = ops->beneath ()->wait (ptid, status, options);
-	      if (status->kind == TARGET_WAITKIND_IGNORE)
+	      if (status->kind () == TARGET_WAITKIND_IGNORE)
 		{
 		  if (record_debug)
 		    fprintf_unfiltered (gdb_stdlog,
@@ -1208,8 +1198,8 @@ record_full_wait_1 (struct target_ops *ops,
 		return ret;
 
 	      /* Is this a SIGTRAP?  */
-	      if (status->kind == TARGET_WAITKIND_STOPPED
-		  && status->value.sig == GDB_SIGNAL_TRAP)
+	      if (status->kind () == TARGET_WAITKIND_STOPPED
+		  && status->sig () == GDB_SIGNAL_TRAP)
 		{
 		  struct regcache *regcache;
 		  enum target_stop_reason *stop_reason_p
@@ -1246,25 +1236,26 @@ record_full_wait_1 (struct target_ops *ops,
 
 		      if (!record_full_message_wrapper_safe (regcache,
 							     GDB_SIGNAL_0))
-  			{
-			   status->kind = TARGET_WAITKIND_STOPPED;
-			   status->value.sig = GDB_SIGNAL_0;
+			{
+			   status->set_stopped (GDB_SIGNAL_0);
 			   break;
-  			}
+			}
+
+		      process_stratum_target *proc_target
+			= current_inferior ()->process_target ();
 
 		      if (gdbarch_software_single_step_p (gdbarch))
 			{
-			  process_stratum_target *proc_target
-			    = current_inferior ()->process_target ();
-
 			  /* Try to insert the software single step breakpoint.
 			     If insert success, set step to 0.  */
 			  set_executing (proc_target, inferior_ptid, false);
+			  SCOPE_EXIT
+			    {
+			      set_executing (proc_target, inferior_ptid, true);
+			    };
+
 			  reinit_frame_cache ();
-
 			  step = !insert_single_step_breakpoints (gdbarch);
-
-			  set_executing (proc_target, inferior_ptid, true);
 			}
 
 		      if (record_debug)
@@ -1273,7 +1264,9 @@ record_full_wait_1 (struct target_ops *ops,
 					    "issuing one more step in the "
 					    "target beneath\n");
 		      ops->beneath ()->resume (ptid, step, GDB_SIGNAL_0);
-		      ops->beneath ()->commit_resume ();
+		      proc_target->commit_resumed_state = true;
+		      proc_target->commit_resumed ();
+		      proc_target->commit_resumed_state = false;
 		      continue;
 		    }
 		}
@@ -1300,7 +1293,7 @@ record_full_wait_1 (struct target_ops *ops,
 	  CORE_ADDR tmp_pc;
 
 	  record_full_stop_reason = TARGET_STOPPED_BY_NO_REASON;
-	  status->kind = TARGET_WAITKIND_STOPPED;
+	  status->set_stopped (GDB_SIGNAL_0);
 
 	  /* Check breakpoint when forward execute.  */
 	  if (execution_direction == EXEC_FORWARD)
@@ -1338,14 +1331,14 @@ record_full_wait_1 (struct target_ops *ops,
 		  && record_full_list == &record_full_first)
 		{
 		  /* Hit beginning of record log in reverse.  */
-		  status->kind = TARGET_WAITKIND_NO_HISTORY;
+		  status->set_no_history ();
 		  break;
 		}
 	      if (execution_direction != EXEC_REVERSE
 		  && !record_full_list->next)
 		{
 		  /* Hit end of record log going forward.  */
-		  status->kind = TARGET_WAITKIND_NO_HISTORY;
+		  status->set_no_history ();
 		  break;
 		}
 
@@ -1430,13 +1423,16 @@ record_full_wait_1 (struct target_ops *ops,
 	  while (continue_flag);
 
 	replay_out:
-	  if (record_full_get_sig)
-	    status->value.sig = GDB_SIGNAL_INT;
-	  else if (record_full_list->u.end.sigval != GDB_SIGNAL_0)
-	    /* FIXME: better way to check */
-	    status->value.sig = record_full_list->u.end.sigval;
-	  else
-	    status->value.sig = GDB_SIGNAL_TRAP;
+	  if (status->kind () == TARGET_WAITKIND_STOPPED)
+	    {
+	      if (record_full_get_sig)
+		status->set_stopped (GDB_SIGNAL_INT);
+	      else if (record_full_list->u.end.sigval != GDB_SIGNAL_0)
+		/* FIXME: better way to check */
+		status->set_stopped (record_full_list->u.end.sigval);
+	      else
+		status->set_stopped (GDB_SIGNAL_TRAP);
+	    }
 	}
       catch (const gdb_exception &ex)
 	{
@@ -1463,8 +1459,10 @@ record_full_base_target::wait (ptid_t ptid, struct target_waitstatus *status,
 {
   ptid_t return_ptid;
 
+  clear_async_event_handler (record_full_async_inferior_event_token);
+
   return_ptid = record_full_wait_1 (this, ptid, status, options);
-  if (status->kind != TARGET_WAITKIND_IGNORE)
+  if (status->kind () != TARGET_WAITKIND_IGNORE)
     {
       /* We're reporting a stop.  Make sure any spurious
 	 target_wait(WNOHANG) doesn't advance the target until the
@@ -1725,21 +1723,6 @@ struct record_full_breakpoint
    active.  */
 static std::vector<record_full_breakpoint> record_full_breakpoints;
 
-static void
-record_full_sync_record_breakpoints (struct bp_location *loc, void *data)
-{
-  if (loc->loc_type != bp_loc_software_breakpoint)
-      return;
-
-  if (loc->inserted)
-    {
-      record_full_breakpoints.emplace_back
-	(loc->target_info.placed_address_space,
-	 loc->target_info.placed_address,
-	 1);
-    }
-}
-
 /* Sync existing breakpoints to record_full_breakpoints.  */
 
 static void
@@ -1747,7 +1730,16 @@ record_full_init_record_breakpoints (void)
 {
   record_full_breakpoints.clear ();
 
-  iterate_over_bp_locations (record_full_sync_record_breakpoints);
+  for (bp_location *loc : all_bp_locations ())
+    {
+      if (loc->loc_type != bp_loc_software_breakpoint)
+	continue;
+
+      if (loc->inserted)
+	record_full_breakpoints.emplace_back
+	  (loc->target_info.placed_address_space,
+	   loc->target_info.placed_address, 1);
+    }
 }
 
 /* Behavior is conditional on RECORD_FULL_IS_REPLAY.  We will not actually
@@ -2005,8 +1997,7 @@ record_full_goto_entry (struct record_full_entry *p)
 
   registers_changed ();
   reinit_frame_cache ();
-  inferior_thread ()->suspend.stop_pc
-    = regcache_read_pc (get_current_regcache ());
+  inferior_thread ()->set_stop_pc (regcache_read_pc (get_current_regcache ()));
   print_stack_frame (get_selected_frame (NULL), 1, SRC_AND_LOC, 1);
 }
 
@@ -2086,7 +2077,7 @@ record_full_core_target::kill ()
   if (record_debug)
     fprintf_unfiltered (gdb_stdlog, "Process record: record_full_core_kill\n");
 
-  unpush_target (this);
+  current_inferior ()->unpush_target (this);
 }
 
 /* "fetch_registers" method for prec over corefile.  */
@@ -2800,84 +2791,91 @@ _initialize_record_full ()
 
   add_prefix_cmd ("full", class_obscure, cmd_record_full_start,
 		  _("Start full execution recording."), &record_full_cmdlist,
-		  "record full ", 0, &record_cmdlist);
+		  0, &record_cmdlist);
 
-  c = add_cmd ("restore", class_obscure, cmd_record_full_restore,
+  cmd_list_element *record_full_restore_cmd
+    = add_cmd ("restore", class_obscure, cmd_record_full_restore,
 	       _("Restore the execution log from a file.\n\
 Argument is filename.  File must be created with 'record save'."),
 	       &record_full_cmdlist);
-  set_cmd_completer (c, filename_completer);
+  set_cmd_completer (record_full_restore_cmd, filename_completer);
 
   /* Deprecate the old version without "full" prefix.  */
-  c = add_alias_cmd ("restore", "full restore", class_obscure, 1,
+  c = add_alias_cmd ("restore", record_full_restore_cmd, class_obscure, 1,
 		     &record_cmdlist);
   set_cmd_completer (c, filename_completer);
   deprecate_cmd (c, "record full restore");
 
-  add_basic_prefix_cmd ("full", class_support,
-			_("Set record options."), &set_record_full_cmdlist,
-			"set record full ", 0, &set_record_cmdlist);
-
-  add_show_prefix_cmd ("full", class_support,
-		       _("Show record options."), &show_record_full_cmdlist,
-		       "show record full ", 0, &show_record_cmdlist);
+  add_setshow_prefix_cmd ("full", class_support,
+			  _("Set record options."),
+			  _("Show record options."),
+			  &set_record_full_cmdlist,
+			  &show_record_full_cmdlist,
+			  &set_record_cmdlist,
+			  &show_record_cmdlist);
 
   /* Record instructions number limit command.  */
-  add_setshow_boolean_cmd ("stop-at-limit", no_class,
-			   &record_full_stop_at_limit, _("\
+  set_show_commands set_record_full_stop_at_limit_cmds
+    = add_setshow_boolean_cmd ("stop-at-limit", no_class,
+			       &record_full_stop_at_limit, _("\
 Set whether record/replay stops when record/replay buffer becomes full."), _("\
 Show whether record/replay stops when record/replay buffer becomes full."),
 			   _("Default is ON.\n\
 When ON, if the record/replay buffer becomes full, ask user what to do.\n\
 When OFF, if the record/replay buffer becomes full,\n\
 delete the oldest recorded instruction to make room for each new one."),
-			   NULL, NULL,
-			   &set_record_full_cmdlist, &show_record_full_cmdlist);
+			       NULL, NULL,
+			       &set_record_full_cmdlist,
+			       &show_record_full_cmdlist);
 
-  c = add_alias_cmd ("stop-at-limit", "full stop-at-limit", no_class, 1,
+  c = add_alias_cmd ("stop-at-limit",
+		     set_record_full_stop_at_limit_cmds.set, no_class, 1,
 		     &set_record_cmdlist);
   deprecate_cmd (c, "set record full stop-at-limit");
 
-  c = add_alias_cmd ("stop-at-limit", "full stop-at-limit", no_class, 1,
+  c = add_alias_cmd ("stop-at-limit",
+		     set_record_full_stop_at_limit_cmds.show, no_class, 1,
 		     &show_record_cmdlist);
   deprecate_cmd (c, "show record full stop-at-limit");
 
-  add_setshow_uinteger_cmd ("insn-number-max", no_class,
-			    &record_full_insn_max_num,
-			    _("Set record/replay buffer limit."),
-			    _("Show record/replay buffer limit."), _("\
+  set_show_commands record_full_insn_number_max_cmds
+    = add_setshow_uinteger_cmd ("insn-number-max", no_class,
+				&record_full_insn_max_num,
+				_("Set record/replay buffer limit."),
+				_("Show record/replay buffer limit."), _("\
 Set the maximum number of instructions to be stored in the\n\
 record/replay buffer.  A value of either \"unlimited\" or zero means no\n\
 limit.  Default is 200000."),
-			    set_record_full_insn_max_num,
-			    NULL, &set_record_full_cmdlist,
-			    &show_record_full_cmdlist);
+				set_record_full_insn_max_num,
+				NULL, &set_record_full_cmdlist,
+				&show_record_full_cmdlist);
 
-  c = add_alias_cmd ("insn-number-max", "full insn-number-max", no_class, 1,
-		     &set_record_cmdlist);
+  c = add_alias_cmd ("insn-number-max", record_full_insn_number_max_cmds.set,
+		     no_class, 1, &set_record_cmdlist);
   deprecate_cmd (c, "set record full insn-number-max");
 
-  c = add_alias_cmd ("insn-number-max", "full insn-number-max", no_class, 1,
-		     &show_record_cmdlist);
+  c = add_alias_cmd ("insn-number-max", record_full_insn_number_max_cmds.show,
+		     no_class, 1, &show_record_cmdlist);
   deprecate_cmd (c, "show record full insn-number-max");
 
-  add_setshow_boolean_cmd ("memory-query", no_class,
-			   &record_full_memory_query, _("\
+  set_show_commands record_full_memory_query_cmds
+    = add_setshow_boolean_cmd ("memory-query", no_class,
+			       &record_full_memory_query, _("\
 Set whether query if PREC cannot record memory change of next instruction."),
-			   _("\
+			       _("\
 Show whether query if PREC cannot record memory change of next instruction."),
-			   _("\
+			       _("\
 Default is OFF.\n\
 When ON, query if PREC cannot record memory change of next instruction."),
-			   NULL, NULL,
-			   &set_record_full_cmdlist,
-			   &show_record_full_cmdlist);
+			       NULL, NULL,
+			       &set_record_full_cmdlist,
+			       &show_record_full_cmdlist);
 
-  c = add_alias_cmd ("memory-query", "full memory-query", no_class, 1,
-		     &set_record_cmdlist);
+  c = add_alias_cmd ("memory-query", record_full_memory_query_cmds.set,
+		     no_class, 1, &set_record_cmdlist);
   deprecate_cmd (c, "set record full memory-query");
 
-  c = add_alias_cmd ("memory-query", "full memory-query", no_class, 1,
-		     &show_record_cmdlist);
+  c = add_alias_cmd ("memory-query", record_full_memory_query_cmds.show,
+		     no_class, 1,&show_record_cmdlist);
   deprecate_cmd (c, "show record full memory-query");
 }

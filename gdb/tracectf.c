@@ -1,6 +1,6 @@
 /* CTF format support.
 
-   Copyright (C) 2012-2021 Free Software Foundation, Inc.
+   Copyright (C) 2012-2022 Free Software Foundation, Inc.
    Contributed by Hui Zhu <hui_zhu@mentor.com>
    Contributed by Yao Qi <yao@codesourcery.com>
 
@@ -1165,7 +1165,7 @@ ctf_target_open (const char *dirname, int from_tty)
   gdb_assert (start_pos->type == BT_SEEK_RESTORE);
 
   trace_dirname = xstrdup (dirname);
-  push_target (&ctf_ops);
+  current_inferior ()->push_target (&ctf_ops);
 
   inferior_appeared (current_inferior (), CTF_PID);
 

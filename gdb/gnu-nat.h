@@ -1,5 +1,5 @@
 /* Common things used by the various *gnu-nat.c files
-   Copyright (C) 1995-2021 Free Software Foundation, Inc.
+   Copyright (C) 1995-2022 Free Software Foundation, Inc.
 
    Written by Miles Bader <miles@gnu.ai.mit.edu>
 
@@ -165,8 +165,8 @@ private:
   void inf_validate_task_sc (struct inf *inf);
   void inf_restore_exc_ports (struct inf *inf);
   void inf_set_threads_resume_sc (struct inf *inf,
-  				struct proc *run_thread,
-  				int run_others);
+				  struct proc *run_thread,
+				  int run_others);
   int inf_set_threads_resume_sc_for_signal_thread (struct inf *inf);
   void inf_resume (struct inf *inf);
   void inf_set_step_thread (struct inf *inf, struct proc *proc);

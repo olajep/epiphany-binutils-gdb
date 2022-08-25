@@ -1,6 +1,6 @@
 /* Low-level child interface to ptrace.
 
-   Copyright (C) 1988-2021 Free Software Foundation, Inc.
+   Copyright (C) 1988-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,7 +20,6 @@
 #include "defs.h"
 #include "command.h"
 #include "inferior.h"
-#include "inflow.h"
 #include "terminal.h"
 #include "gdbcore.h"
 #include "regcache.h"
@@ -49,22 +48,6 @@ gdb_ptrace (PTRACE_TYPE_ARG1 request, ptid_t ptid, PTRACE_TYPE_ARG3 addr,
 #endif
 }
 
-/* A unique_ptr helper to unpush a target.  */
-
-struct target_unpusher
-{
-  void operator() (struct target_ops *ops) const
-  {
-    unpush_target (ops);
-  }
-};
-
-/* A unique_ptr that unpushes a target on destruction.  */
-
-typedef std::unique_ptr<struct target_ops, target_unpusher> target_unpush_up;
-
-
-
 inf_ptrace_target::~inf_ptrace_target ()
 {}
 
@@ -90,15 +73,17 @@ inf_ptrace_target::create_inferior (const char *exec_file,
 				    const std::string &allargs,
 				    char **env, int from_tty)
 {
+  inferior *inf = current_inferior ();
+
   /* Do not change either targets above or the same target if already present.
      The reason is the target stack is shared across multiple inferiors.  */
-  int ops_already_pushed = target_is_pushed (this);
+  int ops_already_pushed = inf->target_is_pushed (this);
 
   target_unpush_up unpusher;
   if (! ops_already_pushed)
     {
       /* Clear possible core file with its process_stratum.  */
-      push_target (this);
+      inf->push_target (this);
       unpusher.reset (this);
     }
 
@@ -118,7 +103,7 @@ inf_ptrace_target::create_inferior (const char *exec_file,
 
   /* On some targets, there must be some explicit actions taken after
      the inferior has been started up.  */
-  target_post_startup_inferior (ptid);
+  post_startup_inferior (ptid);
 }
 
 /* Clean up a rotting corpse of an inferior after it died.  */
@@ -143,14 +128,13 @@ inf_ptrace_target::mourn_inferior ()
 void
 inf_ptrace_target::attach (const char *args, int from_tty)
 {
-  pid_t pid;
-  struct inferior *inf;
+  inferior *inf = current_inferior ();
 
   /* Do not change either targets above or the same target if already present.
      The reason is the target stack is shared across multiple inferiors.  */
-  int ops_already_pushed = target_is_pushed (this);
+  int ops_already_pushed = inf->target_is_pushed (this);
 
-  pid = parse_pid_to_attach (args);
+  pid_t pid = parse_pid_to_attach (args);
 
   if (pid == getpid ())		/* Trying to masturbate?  */
     error (_("I refuse to debug myself!"));
@@ -160,21 +144,11 @@ inf_ptrace_target::attach (const char *args, int from_tty)
     {
       /* target_pid_to_str already uses the target.  Also clear possible core
 	 file with its process_stratum.  */
-      push_target (this);
+      inf->push_target (this);
       unpusher.reset (this);
     }
 
-  if (from_tty)
-    {
-      const char *exec_file = get_exec_file (0);
-
-      if (exec_file)
-	printf_unfiltered (_("Attaching to program: %s, %s\n"), exec_file,
-			   target_pid_to_str (ptid_t (pid)).c_str ());
-      else
-	printf_unfiltered (_("Attaching to %s\n"),
-			   target_pid_to_str (ptid_t (pid)).c_str ());
-    }
+  target_announce_attach (from_tty, pid);
 
 #ifdef PT_ATTACH
   errno = 0;
@@ -185,7 +159,6 @@ inf_ptrace_target::attach (const char *args, int from_tty)
   error (_("This system does not support attaching to a process"));
 #endif
 
-  inf = current_inferior ();
   inferior_appeared (inf, pid);
   inf->attach_flag = 1;
 
@@ -341,8 +314,7 @@ inf_ptrace_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
 			      safe_strerror (save_errno));
 
 	  /* Claim it exited with unknown signal.  */
-	  ourstatus->kind = TARGET_WAITKIND_SIGNALLED;
-	  ourstatus->value.sig = GDB_SIGNAL_UNKNOWN;
+	  ourstatus->set_signalled (GDB_SIGNAL_UNKNOWN);
 	  return inferior_ptid;
 	}
 
@@ -352,7 +324,8 @@ inf_ptrace_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
     }
   while (pid == -1);
 
-  store_waitstatus (ourstatus, status);
+  *ourstatus = host_status_to_waitstatus (status);
+
   return ptid_t (pid);
 }
 

@@ -369,8 +369,8 @@ update_for_binary_section(bfd *abfd,
     mem_in[2] = section_vma;
     if (device_instance_call_method(memory, "claim", 3, mem_in, 1, mem_out) < 0)
       device_error(me, "failed to claim memory for section at 0x%lx (0x%lx",
-		   section_vma,
-		   section_size);
+		   (unsigned long)section_vma,
+		   (unsigned long)section_size);
     if (mem_out[0] != section_vma)
       device_error(me, "section address not as requested");
   }
@@ -517,8 +517,8 @@ write_stack_arguments(device *me,
 		      unsigned_word end_arg)
 {
   DTRACE(stack,
-	("write_stack_arguments(device=%s, arg=0x%lx, start_block=0x%lx, end_block=0x%lx, start_arg=0x%lx, end_arg=0x%lx)\n",
-	 device_name(me), (long)arg, (long)start_block, (long)end_block, (long)start_arg, (long)end_arg));
+	("write_stack_arguments(device=%s, arg=%p, start_block=0x%lx, end_block=0x%lx, start_arg=0x%lx, end_arg=0x%lx)\n",
+	 device_name(me), arg, (long)start_block, (long)end_block, (long)start_arg, (long)end_arg));
   if (arg == NULL)
     device_error(me, "Attempt to write a null array onto the stack\n");
   /* only copy in arguments, memory is already zero */
@@ -671,12 +671,12 @@ hw_stack_ioctl(device *me,
       char **envp = va_arg(ap, char **);
       const char *stack_type;
       DTRACE(stack,
-	     ("stack_ioctl_callback(me=0x%lx:%s processor=0x%lx cia=0x%lx argv=0x%lx envp=0x%lx)\n",
-	      (long)me, device_name(me),
-	      (long)processor,
+	     ("stack_ioctl_callback(me=%p:%s processor=%p cia=0x%lx argv=%p envp=%p)\n",
+	      me, device_name(me),
+	      processor,
 	      (long)cia,
-	      (long)argv,
-	      (long)envp));
+	      argv,
+	      envp));
       stack_type = device_find_string_property(me, "stack-type");
       if (strcmp(stack_type, "ppc-elf") == 0)
 	create_ppc_elf_stack_frame(me, stack_pointer, argv, envp);

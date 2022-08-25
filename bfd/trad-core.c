@@ -1,5 +1,5 @@
 /* BFD back end for traditional Unix core files (U-area and raw sections)
-   Copyright (C) 1988-2021 Free Software Foundation, Inc.
+   Copyright (C) 1988-2022 Free Software Foundation, Inc.
    Written by John Gilmore of Cygnus Support.
 
    This file is part of BFD, the Binary File Descriptor library.
@@ -25,19 +25,7 @@
 #include "libaout.h"	       /* BFD a.out internal data structures */
 
 #include <sys/param.h>
-#ifdef HAVE_DIRENT_H
-# include <dirent.h>
-#else
-# ifdef HAVE_SYS_NDIR_H
-#  include <sys/ndir.h>
-# endif
-# ifdef HAVE_SYS_DIR_H
-#  include <sys/dir.h>
-# endif
-# ifdef HAVE_NDIR_H
-#  include <ndir.h>
-# endif
-#endif
+#include <dirent.h>
 #include <signal.h>
 
 #include <sys/user.h>		/* After a.out.h  */

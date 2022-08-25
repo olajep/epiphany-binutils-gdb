@@ -1,6 +1,6 @@
 /* Program and address space management, for GDB, the GNU debugger.
 
-   Copyright (C) 2009-2021 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -29,7 +29,7 @@
 #include <algorithm>
 
 /* The last program space number assigned.  */
-int last_program_space_num = 0;
+static int last_program_space_num = 0;
 
 /* The head of the program spaces list.  */
 std::vector<struct program_space *> program_spaces;
@@ -211,14 +211,6 @@ program_space::remove_objfile (struct objfile *objfile)
 
   if (objfile == symfile_object_file)
     symfile_object_file = NULL;
-}
-
-/* See progspace.h.  */
-
-next_adapter<struct so_list>
-program_space::solibs () const
-{
-  return next_adapter<struct so_list> (this->so_list);
 }
 
 /* See progspace.h.  */
@@ -412,7 +404,6 @@ void
 update_address_spaces (void)
 {
   int shared_aspace = gdbarch_has_shared_address_space (target_gdbarch ());
-  struct inferior *inf;
 
   init_address_spaces ();
 
@@ -431,7 +422,7 @@ update_address_spaces (void)
 	pspace->aspace = new_address_space ();
       }
 
-  for (inf = inferior_list; inf; inf = inf->next)
+  for (inferior *inf : all_inferiors ())
     if (gdbarch_has_global_solist (target_gdbarch ()))
       inf->aspace = maybe_new_address_space ();
     else

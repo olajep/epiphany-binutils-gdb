@@ -1,5 +1,5 @@
 /* Support for printing Ada types for GDB, the GNU debugger.
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -326,42 +326,17 @@ print_enum_type (struct type *type, struct ui_file *stream)
       if (i)
 	fprintf_filtered (stream, ", ");
       wrap_here ("    ");
-      fputs_styled (ada_enum_name (TYPE_FIELD_NAME (type, i)),
+      fputs_styled (ada_enum_name (type->field (i).name ()),
 		    variable_name_style.style (), stream);
-      if (lastval != TYPE_FIELD_ENUMVAL (type, i))
+      if (lastval != type->field (i).loc_enumval ())
 	{
 	  fprintf_filtered (stream, " => %s",
-			    plongest (TYPE_FIELD_ENUMVAL (type, i)));
-	  lastval = TYPE_FIELD_ENUMVAL (type, i);
+			    plongest (type->field (i).loc_enumval ()));
+	  lastval = type->field (i).loc_enumval ();
 	}
       lastval += 1;
     }
   fprintf_filtered (stream, ")");
-}
-
-/* Print representation of Ada fixed-point type TYPE on STREAM.  */
-
-static void
-print_gnat_encoded_fixed_point_type (struct type *type, struct ui_file *stream)
-{
-  struct value *delta = gnat_encoded_fixed_point_delta (type);
-  struct value *small = gnat_encoded_fixed_point_scaling_factor (type);
-
-  if (delta == nullptr)
-    fprintf_filtered (stream, "delta ??");
-  else
-    {
-      std::string str;
-      str = target_float_to_string (value_contents (delta),
-				    value_type (delta), "%g");
-      fprintf_filtered (stream, "delta %s", str.c_str());
-      if (!value_equal (delta, small))
-	{
-	  str = target_float_to_string (value_contents (small),
-					value_type (small), "%g");
-	  fprintf_filtered (stream, " <'small = %s>", str.c_str());
-	}
-    }
 }
 
 /* Print simple (constrained) array type TYPE on STREAM.  LEVEL is the
@@ -464,7 +439,7 @@ print_choices (struct type *type, int field_num, struct ui_file *stream,
 {
   int have_output;
   int p;
-  const char *name = TYPE_FIELD_NAME (type, field_num);
+  const char *name = type->field (field_num).name ();
 
   have_output = 0;
 
@@ -645,7 +620,7 @@ print_selected_record_field_types (struct type *type, struct type *outer_type,
 	  flds += 1;
 	  fprintf_filtered (stream, "\n%*s", level + 4, "");
 	  ada_print_type (type->field (i).type (),
-			  TYPE_FIELD_NAME (type, i),
+			  type->field (i).name (),
 			  stream, show - 1, level + 4, flags);
 	  fprintf_filtered (stream, ";");
 	}
@@ -707,7 +682,7 @@ print_variant_part (const variant_part &part,
     name = "?";
   else
     {
-      name = TYPE_FIELD_NAME (type, part.discriminant_index);
+      name = type->field (part.discriminant_index).name ();;
       discr_type = type->field (part.discriminant_index).type ();
     }
 
@@ -876,7 +851,7 @@ print_unchecked_union_type (struct type *type, struct ui_file *stream,
 	  fprintf_filtered (stream, "\n%*swhen ? =>\n%*s", level + 8, "",
 			    level + 12, "");
 	  ada_print_type (type->field (i).type (),
-			  TYPE_FIELD_NAME (type, i),
+			  type->field (i).name (),
 			  stream, show - 1, level + 12, flags);
 	  fprintf_filtered (stream, ";");
 	}
@@ -1026,27 +1001,22 @@ ada_print_type (struct type *type0, const char *varstring,
 	fprintf_filtered (stream, "(false, true)");
 	break;
       case TYPE_CODE_INT:
-	if (ada_is_gnat_encoded_fixed_point_type (type))
-	  print_gnat_encoded_fixed_point_type (type, stream);
-	else
-	  {
-	    const char *name = ada_type_name (type);
+	{
+	  const char *name = ada_type_name (type);
 
-	    if (!ada_is_range_type_name (name))
-	      fprintf_styled (stream, metadata_style.style (),
-			      _("<%s-byte integer>"),
-			      pulongest (TYPE_LENGTH (type)));
-	    else
-	      {
-		fprintf_filtered (stream, "range ");
-		print_range_type (type, stream, 1 /* bounds_prefered_p */);
-	      }
-	  }
+	  if (!ada_is_range_type_name (name))
+	    fprintf_styled (stream, metadata_style.style (),
+			    _("<%s-byte integer>"),
+			    pulongest (TYPE_LENGTH (type)));
+	  else
+	    {
+	      fprintf_filtered (stream, "range ");
+	      print_range_type (type, stream, 1 /* bounds_prefered_p */);
+	    }
+	}
 	break;
       case TYPE_CODE_RANGE:
-	if (ada_is_gnat_encoded_fixed_point_type (type))
-	  print_gnat_encoded_fixed_point_type (type, stream);
-	else if (is_fixed_point_type (type))
+	if (is_fixed_point_type (type))
 	  {
 	    fprintf_filtered (stream, "<");
 	    print_type_fixed_point (type, stream);

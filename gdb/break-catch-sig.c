@@ -1,6 +1,6 @@
 /* Everything about signal catchpoints, for GDB.
 
-   Copyright (C) 2011-2021 Free Software Foundation, Inc.
+   Copyright (C) 2011-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -29,6 +29,7 @@
 #include "cli/cli-utils.h"
 #include "completer.h"
 #include "cli/cli-style.h"
+#include "cli/cli-decode.h"
 
 #include <string>
 
@@ -148,16 +149,16 @@ static int
 signal_catchpoint_breakpoint_hit (const struct bp_location *bl,
 				  const address_space *aspace,
 				  CORE_ADDR bp_addr,
-				  const struct target_waitstatus *ws)
+				  const target_waitstatus &ws)
 {
   const struct signal_catchpoint *c
     = (const struct signal_catchpoint *) bl->owner;
   gdb_signal signal_number;
 
-  if (ws->kind != TARGET_WAITKIND_STOPPED)
+  if (ws.kind () != TARGET_WAITKIND_STOPPED)
     return 0;
 
-  signal_number = ws->value.sig;
+  signal_number = ws.sig ();
 
   /* If we are catching specific signals in this breakpoint, then we
      must guarantee that the called signal is the same signal we are
@@ -178,7 +179,7 @@ signal_catchpoint_breakpoint_hit (const struct bp_location *bl,
    catchpoints.  */
 
 static enum print_stop_action
-signal_catchpoint_print_it (bpstat bs)
+signal_catchpoint_print_it (bpstat *bs)
 {
   struct breakpoint *b = bs->breakpoint_at;
   struct target_waitstatus last;
@@ -187,7 +188,7 @@ signal_catchpoint_print_it (bpstat bs)
 
   get_last_target_status (nullptr, nullptr, &last);
 
-  signal_name = signal_to_name_or_int (last.value.sig);
+  signal_name = signal_to_name_or_int (last.sig ());
 
   annotate_catchpoint (b->number);
   maybe_print_thread_hit_breakpoint (uiout);
@@ -237,7 +238,7 @@ signal_catchpoint_print_one (struct breakpoint *b,
 
 	  text += name;
 	}
-      uiout->field_string ("what", text.c_str ());
+      uiout->field_string ("what", text);
     }
   else
     uiout->field_string ("what",
@@ -389,7 +390,7 @@ catch_signal_command (const char *arg, int from_tty,
   bool catch_all = false;
   std::vector<gdb_signal> filter;
 
-  tempflag = get_cmd_context (command) == CATCH_TEMPORARY;
+  tempflag = command->context () == CATCH_TEMPORARY;
 
   arg = skip_spaces (arg);
 

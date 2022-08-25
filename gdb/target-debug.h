@@ -1,6 +1,6 @@
 /* GDB target debugging macros
 
-   Copyright (C) 2014-2021 Free Software Foundation, Inc.
+   Copyright (C) 2014-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -104,7 +104,7 @@
   target_debug_do_print (host_address_to_string (X))
 #define target_debug_print_struct_ui_file_p(X)	\
   target_debug_do_print (host_address_to_string (X))
-#define target_debug_print_target_section_table_p(X)	\
+#define target_debug_print_const_target_section_table_p(X)	\
   target_debug_do_print (host_address_to_string (X))
 #define target_debug_print_void_p(X) \
   target_debug_do_print (host_address_to_string (X))
@@ -174,13 +174,13 @@
   target_debug_do_print (host_address_to_string (X.data ()))
 #define target_debug_print_gdb_unique_xmalloc_ptr_char(X) \
   target_debug_do_print (X.get ())
+#define target_debug_print_target_waitkind(X) \
+  target_debug_do_print (pulongest (X))
 
 static void
 target_debug_print_struct_target_waitstatus_p (struct target_waitstatus *status)
 {
-  std::string str = target_waitstatus_to_string (status);
-
-  fputs_unfiltered (str.c_str (), gdb_stdlog);
+  fputs_unfiltered (status->to_string ().c_str (), gdb_stdlog);
 }
 
 
@@ -212,4 +212,28 @@ target_debug_print_signals (gdb::array_view<const unsigned char> sigs)
   fputs_unfiltered (" }", gdb_stdlog);
 }
 
+static void
+target_debug_print_size_t (size_t size)
+{
+  fprintf_unfiltered (gdb_stdlog, "%s", pulongest (size));
+}
+
+static void
+target_debug_print_const_gdb_byte_vector_r (const gdb::byte_vector &vector)
+{
+  fputs_unfiltered ("{", gdb_stdlog);
+
+  for (size_t i = 0; i < vector.size (); i++)
+    {
+      fprintf_unfiltered (gdb_stdlog, " %s",
+			  phex_nz (vector[i], 1));
+    }
+  fputs_unfiltered (" }", gdb_stdlog);
+}
+
+static void
+target_debug_print_gdb_byte_vector_r (gdb::byte_vector &vector)
+{
+  target_debug_print_const_gdb_byte_vector_r (vector);
+}
 #endif /* TARGET_DEBUG_H */

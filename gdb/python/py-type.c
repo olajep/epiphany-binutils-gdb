@@ -1,6 +1,6 @@
 /* Python interface to types.
 
-   Copyright (C) 2008-2021 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -27,6 +27,7 @@
 #include "objfiles.h"
 #include "language.h"
 #include "typeprint.h"
+#include "ada-lang.h"
 
 struct type_object
 {
@@ -183,15 +184,15 @@ convert_field (struct type *type, int field)
 
       if (type->code () == TYPE_CODE_ENUM)
 	{
-	  arg = gdb_py_object_from_longest (TYPE_FIELD_ENUMVAL (type, field));
+	  arg = gdb_py_object_from_longest (type->field (field).loc_enumval ());
 	  attrstring = "enumval";
 	}
       else
 	{
-	  if (TYPE_FIELD_LOC_KIND (type, field) == FIELD_LOC_KIND_DWARF_BLOCK)
+	  if (type->field (field).loc_kind () == FIELD_LOC_KIND_DWARF_BLOCK)
 	    arg = gdbpy_ref<>::new_reference (Py_None);
 	  else
-	    arg = gdb_py_object_from_longest (TYPE_FIELD_BITPOS (type, field));
+	    arg = gdb_py_object_from_longest (type->field (field).loc_bitpos ());
 	  attrstring = "bitpos";
 	}
 
@@ -203,13 +204,13 @@ convert_field (struct type *type, int field)
     }
 
   arg.reset (NULL);
-  if (TYPE_FIELD_NAME (type, field))
+  if (type->field (field).name ())
     {
-      const char *field_name = TYPE_FIELD_NAME (type, field);
+      const char *field_name = type->field (field).name ();
 
       if (field_name[0] != '\0')
 	{
-	  arg.reset (PyString_FromString (TYPE_FIELD_NAME (type, field)));
+	  arg.reset (PyString_FromString (type->field (field).name ()));
 	  if (arg == NULL)
 	    return NULL;
 	}
@@ -260,8 +261,8 @@ field_name (struct type *type, int field)
 {
   gdbpy_ref<> result;
 
-  if (TYPE_FIELD_NAME (type, field))
-    result.reset (PyString_FromString (TYPE_FIELD_NAME (type, field)));
+  if (type->field (field).name ())
+    result.reset (PyString_FromString (type->field (field).name ()));
   else
     result = gdbpy_ref<>::new_reference (Py_None);
 
@@ -393,6 +394,14 @@ typy_get_name (PyObject *self, void *closure)
 
   if (type->name () == NULL)
     Py_RETURN_NONE;
+  /* Ada type names are encoded, but it is better for users to see the
+     decoded form.  */
+  if (ADA_TYPE_P (type))
+    {
+      std::string name = ada_decode (type->name (), false);
+      if (!name.empty ())
+	return PyString_FromString (name.c_str ());
+    }
   return PyString_FromString (type->name ());
 }
 
@@ -418,7 +427,7 @@ static PyObject *
 typy_get_objfile (PyObject *self, void *closure)
 {
   struct type *type = ((type_object *) self)->type;
-  struct objfile *objfile = TYPE_OBJFILE (type);
+  struct objfile *objfile = type->objfile_owner ();
 
   if (objfile == nullptr)
     Py_RETURN_NONE;
@@ -461,7 +470,7 @@ typy_get_composite (struct type *type)
 	  GDB_PY_HANDLE_EXCEPTION (except);
 	}
 
-      if (type->code () != TYPE_CODE_PTR && !TYPE_IS_REFERENCE (type))
+      if (!type->is_pointer_or_reference ())
 	break;
       type = TYPE_TARGET_TYPE (type);
     }
@@ -592,8 +601,15 @@ typy_range (PyObject *self, PyObject *args)
     case TYPE_CODE_ARRAY:
     case TYPE_CODE_STRING:
     case TYPE_CODE_RANGE:
-      low = type->bounds ()->low.const_val ();
-      high = type->bounds ()->high.const_val ();;
+      if (type->bounds ()->low.kind () == PROP_CONST)
+	low = type->bounds ()->low.const_val ();
+      else
+	low = 0;
+
+      if (type->bounds ()->high.kind () == PROP_CONST)
+	high = type->bounds ()->high.const_val ();
+      else
+	high = 0;
       break;
     }
 
@@ -1098,9 +1114,9 @@ set_type (type_object *obj, struct type *type)
 {
   obj->type = type;
   obj->prev = NULL;
-  if (type && TYPE_OBJFILE (type))
+  if (type != nullptr && type->objfile_owner () != nullptr)
     {
-      struct objfile *objfile = TYPE_OBJFILE (type);
+      struct objfile *objfile = type->objfile_owner ();
 
       obj->next = ((type_object *)
 		   objfile_data (objfile, typy_objfile_data_key));
@@ -1119,10 +1135,10 @@ typy_dealloc (PyObject *obj)
 
   if (type->prev)
     type->prev->next = type->next;
-  else if (type->type && TYPE_OBJFILE (type->type))
+  else if (type->type != nullptr && type->type->objfile_owner () != nullptr)
     {
       /* Must reset head of list.  */
-      struct objfile *objfile = TYPE_OBJFILE (type->type);
+      struct objfile *objfile = type->type->objfile_owner ();
 
       if (objfile)
 	set_objfile_data (objfile, typy_objfile_data_key, type->next);
@@ -1189,7 +1205,7 @@ typy_getitem (PyObject *self, PyObject *key)
 
   for (i = 0; i < type->num_fields (); i++)
     {
-      const char *t_field_name = TYPE_FIELD_NAME (type, i);
+      const char *t_field_name = type->field (i).name ();
 
       if (t_field_name && (strcmp_iw (t_field_name, field.get ()) == 0))
 	return convert_field (type, i).release ();
@@ -1247,7 +1263,7 @@ typy_has_key (PyObject *self, PyObject *args)
 
   for (i = 0; i < type->num_fields (); i++)
     {
-      const char *t_field_name = TYPE_FIELD_NAME (type, i);
+      const char *t_field_name = type->field (i).name ();
 
       if (t_field_name && (strcmp_iw (t_field_name, field) == 0))
 	Py_RETURN_TRUE;
@@ -1417,13 +1433,18 @@ gdbpy_lookup_type (PyObject *self, PyObject *args, PyObject *kw)
   return type_to_type_object (type);
 }
 
+void _initialize_py_type ();
+void
+_initialize_py_type ()
+{
+  typy_objfile_data_key
+    = register_objfile_data_with_cleanup (save_objfile_types, NULL);
+}
+
 int
 gdbpy_initialize_types (void)
 {
   int i;
-
-  typy_objfile_data_key
-    = register_objfile_data_with_cleanup (save_objfile_types, NULL);
 
   if (PyType_Ready (&type_object_type) < 0)
     return -1;
@@ -1612,7 +1633,7 @@ PyTypeObject type_object_type =
   0,				  /*tp_getattro*/
   0,				  /*tp_setattro*/
   0,				  /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER,  /*tp_flags*/
+  Py_TPFLAGS_DEFAULT,		  /*tp_flags*/
   "GDB type object",		  /* tp_doc */
   0,				  /* tp_traverse */
   0,				  /* tp_clear */
@@ -1661,7 +1682,7 @@ PyTypeObject field_object_type =
   0,				  /*tp_getattro*/
   0,				  /*tp_setattro*/
   0,				  /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER,  /*tp_flags*/
+  Py_TPFLAGS_DEFAULT,		  /*tp_flags*/
   "GDB field object",		  /* tp_doc */
   0,				  /* tp_traverse */
   0,				  /* tp_clear */
@@ -1702,7 +1723,7 @@ PyTypeObject type_iterator_object_type = {
   0,				  /*tp_getattro*/
   0,				  /*tp_setattro*/
   0,				  /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER,  /*tp_flags*/
+  Py_TPFLAGS_DEFAULT,		  /*tp_flags*/
   "GDB type iterator object",	  /*tp_doc */
   0,				  /*tp_traverse */
   0,				  /*tp_clear */

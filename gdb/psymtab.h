@@ -1,6 +1,6 @@
 /* Public partial symbol table definitions.
 
-   Copyright (C) 2009-2021 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,7 +20,7 @@
 #ifndef PSYMTAB_H
 #define PSYMTAB_H
 
-#include "gdb_obstack.h"
+#include "gdbsupport/gdb_obstack.h"
 #include "symfile.h"
 #include "gdbsupport/next-iterator.h"
 #include "bcache.h"
@@ -104,7 +104,7 @@ public:
 
   void install_psymtab (partial_symtab *pst);
 
-  typedef next_adapter<struct partial_symtab> partial_symtab_range;
+  using partial_symtab_range = next_range<partial_symtab>;
 
   /* A range adapter that makes it possible to iterate over all
      psymtabs in one objfile.  */
@@ -144,19 +144,5 @@ private:
 
   gdb::optional<auto_obstack> m_obstack;
 };
-
-
-extern const struct quick_symbol_functions psym_functions;
-
-extern const struct quick_symbol_functions dwarf2_gdb_index_functions;
-extern const struct quick_symbol_functions dwarf2_debug_names_functions;
-
-/* Ensure that the partial symbols for OBJFILE have been loaded.  If
-   VERBOSE is true, then this will print a message when symbols
-   are loaded.  This function returns a range adapter suitable for
-   iterating over the psymtabs of OBJFILE.  */
-
-extern psymtab_storage::partial_symtab_range require_partial_symbols
-    (struct objfile *objfile, bool verbose);
 
 #endif /* PSYMTAB_H */

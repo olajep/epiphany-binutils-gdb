@@ -2,7 +2,7 @@
    convert to internal format, for GDB. Used as a last resort if no
    debugging symbols recognized.
 
-   Copyright (C) 2003-2021 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -246,7 +246,7 @@ add_pe_forwarded_sym (minimal_symbol_reader &reader,
 
   vma = BMSYMBOL_VALUE_ADDRESS (msymbol);
   msymtype = MSYMBOL_TYPE (msymbol.minsym);
-  section = MSYMBOL_SECTION (msymbol.minsym);
+  section = msymbol.minsym->section_index ();
 
   /* Generate a (hopefully unique) qualified name using the first part
      of the dll name, e.g. KERNEL32!AddAtomA.  This matches the style

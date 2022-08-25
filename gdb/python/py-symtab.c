@@ -1,6 +1,6 @@
 /* Python interface to symbol tables.
 
-   Copyright (C) 2008-2021 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -511,6 +511,20 @@ del_objfile_sal (struct objfile *objfile, void *datum)
     }
 }
 
+void _initialize_py_symtab ();
+void
+_initialize_py_symtab ()
+{
+  /* Register an objfile "free" callback so we can properly
+     invalidate symbol tables, and symbol table and line data
+     structures when an object file that is about to be
+     deleted.  */
+  stpy_objfile_data_key
+    = register_objfile_data_with_cleanup (NULL, del_objfile_symtab);
+  salpy_objfile_data_key
+    = register_objfile_data_with_cleanup (NULL, del_objfile_sal);
+}
+
 int
 gdbpy_initialize_symtabs (void)
 {
@@ -521,15 +535,6 @@ gdbpy_initialize_symtabs (void)
   sal_object_type.tp_new = PyType_GenericNew;
   if (PyType_Ready (&sal_object_type) < 0)
     return -1;
-
-  /* Register an objfile "free" callback so we can properly
-     invalidate symbol tables, and symbol table and line data
-     structures when an object file that is about to be
-     deleted.  */
-  stpy_objfile_data_key
-    = register_objfile_data_with_cleanup (NULL, del_objfile_symtab);
-  salpy_objfile_data_key
-    = register_objfile_data_with_cleanup (NULL, del_objfile_sal);
 
   if (gdb_pymodule_addobject (gdb_module, "Symtab",
 			      (PyObject *) &symtab_object_type) < 0)

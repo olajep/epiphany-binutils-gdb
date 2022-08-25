@@ -1,6 +1,6 @@
 /* Trace file TFILE format support in GDB.
 
-   Copyright (C) 1997-2021 Free Software Foundation, Inc.
+   Copyright (C) 1997-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -310,7 +310,7 @@ tfile_write_tdesc (struct trace_file_writer *self)
     = (struct tfile_trace_file_writer *) self;
 
   gdb::optional<std::string> tdesc
-    = target_fetch_description_xml (current_top_target ());
+    = target_fetch_description_xml (current_inferior ()->top_target ());
 
   if (!tdesc)
     return;
@@ -475,13 +475,13 @@ tfile_target_open (const char *arg, int from_tty)
 
   flags = O_BINARY | O_LARGEFILE;
   flags |= O_RDONLY;
-  scratch_chan = gdb_open_cloexec (filename.get (), flags, 0);
+  scratch_chan = gdb_open_cloexec (filename.get (), flags, 0).release ();
   if (scratch_chan < 0)
     perror_with_name (filename.get ());
 
   /* Looks semi-reasonable.  Toss the old trace file and work on the new.  */
 
-  unpush_target (&tfile_ops);
+  current_inferior ()->unpush_target (&tfile_ops);
 
   trace_filename = filename.release ();
   trace_fd = scratch_chan;
@@ -498,7 +498,7 @@ tfile_target_open (const char *arg, int from_tty)
 	&& (startswith (header + 1, "TRACE0\n"))))
     error (_("File is not a valid trace file."));
 
-  push_target (&tfile_ops);
+  current_inferior ()->push_target (&tfile_ops);
 
   trace_regblock_size = 0;
   ts = current_trace_status ();
@@ -551,7 +551,7 @@ tfile_target_open (const char *arg, int from_tty)
   catch (const gdb_exception &ex)
     {
       /* Remove the partially set up target.  */
-      unpush_target (&tfile_ops);
+      current_inferior ()->unpush_target (&tfile_ops);
       throw;
     }
 

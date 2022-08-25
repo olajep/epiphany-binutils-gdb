@@ -1,6 +1,6 @@
 /* Convert types from GDB to GCC
 
-   Copyright (C) 2014-2021 Free Software Foundation, Inc.
+   Copyright (C) 2014-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -91,7 +91,7 @@ get_method_access_flag (const struct type *type, int fni, int num)
   gdb_assert (type->code () == TYPE_CODE_STRUCT);
 
   /* If this type was not declared a class, everything is public.  */
-  if (!TYPE_DECLARED_CLASS (type))
+  if (!type->is_declared_class ())
     return GCC_CP_ACCESS_PUBLIC;
 
   /* Otherwise, read accessibility from the fn_field.  */
@@ -582,7 +582,7 @@ compile_cplus_convert_struct_or_union_members
 {
   for (int i = TYPE_N_BASECLASSES (type); i < type->num_fields (); ++i)
     {
-      const char *field_name = TYPE_FIELD_NAME (type, i);
+      const char *field_name = type->field (i).name ();
 
       if (TYPE_FIELD_IGNORE (type, i)
 	  || TYPE_FIELD_ARTIFICIAL (type, i))
@@ -599,11 +599,11 @@ compile_cplus_convert_struct_or_union_members
 	{
 	  CORE_ADDR physaddr;
 
-	  switch (TYPE_FIELD_LOC_KIND (type, i))
+	  switch (type->field (i).loc_kind ())
 	    {
 	    case FIELD_LOC_KIND_PHYSADDR:
 	      {
-		physaddr = TYPE_FIELD_STATIC_PHYSADDR (type, i);
+		physaddr = type->field (i).loc_physaddr ();
 
 		instance->plugin ().build_decl
 		  ("field physaddr", field_name,
@@ -614,7 +614,7 @@ compile_cplus_convert_struct_or_union_members
 
 	    case FIELD_LOC_KIND_PHYSNAME:
 	      {
-		const char *physname = TYPE_FIELD_STATIC_PHYSNAME (type, i);
+		const char *physname = type->field (i).loc_physname ();
 		struct block_symbol sym
 		  = lookup_symbol (physname, instance->block (),
 				   VAR_DOMAIN, nullptr);
@@ -652,7 +652,7 @@ compile_cplus_convert_struct_or_union_members
 
 	  instance->plugin ().build_field
 	    (field_name, field_type, field_flags, bitsize,
-	     TYPE_FIELD_BITPOS (type, i));
+	     type->field (i).loc_bitpos ());
 	}
     }
 }
@@ -828,11 +828,11 @@ compile_cplus_convert_struct_or_union (compile_cplus_instance *instance,
   gcc_decl resuld;
   if (type->code () == TYPE_CODE_STRUCT)
     {
-      const char *what = TYPE_DECLARED_CLASS (type) ? "struct" : "class";
+      const char *what = type->is_declared_class () ? "class" : "struct";
 
       resuld = instance->plugin ().build_decl
 	(what, name.get (), (GCC_CP_SYMBOL_CLASS | nested_access
-			     | (TYPE_DECLARED_CLASS (type)
+			     | (type->is_declared_class ()
 				? GCC_CP_FLAG_CLASS_NOFLAG
 				: GCC_CP_FLAG_CLASS_IS_STRUCT)),
 	 0, nullptr, 0, filename, line);
@@ -937,14 +937,14 @@ compile_cplus_convert_enum (compile_cplus_instance *instance, struct type *type,
   for (int i = 0; i < type->num_fields (); ++i)
     {
       gdb::unique_xmalloc_ptr<char> fname
-	= compile_cplus_instance::decl_name (TYPE_FIELD_NAME (type, i));
+	= compile_cplus_instance::decl_name (type->field (i).name ());
 
-      if (TYPE_FIELD_LOC_KIND (type, i) != FIELD_LOC_KIND_ENUMVAL
+      if (type->field (i).loc_kind () != FIELD_LOC_KIND_ENUMVAL
 	  || fname == nullptr)
 	continue;
 
       instance->plugin ().build_enum_constant (result, fname.get (),
-					       TYPE_FIELD_ENUMVAL (type, i));
+					       type->field (i).loc_enumval ());
     }
 
   /* Finish enum definition and pop scopes.  */
@@ -970,10 +970,10 @@ compile_cplus_convert_func (compile_cplus_instance *instance,
      GDB's parser used to do.  */
   if (target_type == nullptr)
     {
-      if (TYPE_OBJFILE_OWNED (type))
-	target_type = objfile_type (TYPE_OWNER (type).objfile)->builtin_int;
+      if (type->is_objfile_owned ())
+	target_type = objfile_type (type->objfile_owner ())->builtin_int;
       else
-	target_type = builtin_type (TYPE_OWNER (type).gdbarch)->builtin_int;
+	target_type = builtin_type (type->arch_owner ())->builtin_int;
       warning (_("function has unknown return type; assuming int"));
     }
 

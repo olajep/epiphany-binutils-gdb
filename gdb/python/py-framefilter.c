@@ -1,6 +1,6 @@
 /* Python frame filters
 
-   Copyright (C) 2013-2021 Free Software Foundation, Inc.
+   Copyright (C) 2013-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -348,16 +348,12 @@ py_print_single_arg (struct ui_out *out,
     {
       string_file stb;
 
-      fprintf_symbol_filtered (&stb, fa->sym->print_name (),
-			       fa->sym->language (),
-			       DMGL_PARAMS | DMGL_ANSI);
+      fputs_filtered (fa->sym->print_name (), &stb);
       if (fa->entry_kind == print_entry_values_compact)
 	{
 	  stb.puts ("=");
 
-	  fprintf_symbol_filtered (&stb, fa->sym->print_name (),
-				   fa->sym->language (),
-				   DMGL_PARAMS | DMGL_ANSI);
+	  fputs_filtered (fa->sym->print_name (), &stb);
 	}
       if (fa->entry_kind == print_entry_values_only
 	  || fa->entry_kind == print_entry_values_compact)
@@ -780,16 +776,16 @@ py_print_frame (PyObject *filter, frame_filter_flags flags,
 
   get_user_print_options (&opts);
   if (print_frame_info)
-  {
-    gdb::optional<enum print_what> user_frame_info_print_what;
+    {
+      gdb::optional<enum print_what> user_frame_info_print_what;
 
-    get_user_print_what_frame_info (&user_frame_info_print_what);
-    if (!out->is_mi_like_p () && user_frame_info_print_what.has_value ())
-      {
-	/* Use the specific frame information desired by the user.  */
-	print_what = *user_frame_info_print_what;
-      }
-  }
+      get_user_print_what_frame_info (&user_frame_info_print_what);
+      if (!out->is_mi_like_p () && user_frame_info_print_what.has_value ())
+	{
+	  /* Use the specific frame information desired by the user.  */
+	  print_what = *user_frame_info_print_what;
+	}
+    }
 
   /* Get the underlying frame.  This is needed to determine GDB
   architecture, and also, in the cases of frame variables/arguments to
@@ -924,7 +920,11 @@ py_print_frame (PyObject *filter, frame_filter_flags flags,
 
 	      function = function_to_free.get ();
 	    }
-	  else if (PyLong_Check (py_func.get ()))
+	  else if (PyLong_Check (py_func.get ())
+#if PY_MAJOR_VERSION == 2
+		   || PyInt_Check (py_func.get ())
+#endif
+		   )
 	    {
 	      CORE_ADDR addr;
 	      struct bound_minimal_symbol msymbol;

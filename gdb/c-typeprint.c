@@ -1,5 +1,5 @@
 /* Support for printing C and C++ types for GDB, the GNU debugger.
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,7 +17,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "defs.h"
-#include "gdb_obstack.h"
+#include "gdbsupport/gdb_obstack.h"
 #include "bfd.h"		/* Binary File Description.  */
 #include "symtab.h"
 #include "gdbtypes.h"
@@ -119,6 +119,7 @@ c_print_type_1 (struct type *type,
   code = type->code ();
   if (local_name != NULL)
     {
+      c_type_print_modifier (type, stream, 0, 1, language);
       fputs_filtered (local_name, stream);
       if (varstring != NULL && *varstring != '\0')
 	fputs_filtered (" ", stream);
@@ -171,7 +172,7 @@ c_print_type (struct type *type,
 	      int show, int level,
 	      const struct type_print_options *flags)
 {
-  struct print_offset_data podata;
+  struct print_offset_data podata (flags);
 
   c_print_type_1 (type, varstring, stream, show, level,
 		  current_language->la_language, flags, &podata);
@@ -188,7 +189,7 @@ c_print_type (struct type *type,
 	      enum language language,
 	      const struct type_print_options *flags)
 {
-  struct print_offset_data podata;
+  struct print_offset_data podata (flags);
 
   c_print_type_1 (type, varstring, stream, show, level, language, flags,
 		  &podata);
@@ -436,8 +437,8 @@ c_type_print_varspec_prefix (struct type *type,
 
     case TYPE_CODE_ARRAY:
       c_type_print_varspec_prefix (TYPE_TARGET_TYPE (type),
-				   stream, show, 0, 0, language, flags,
-				   podata);
+				   stream, show, 0, need_post_space,
+				   language, flags, podata);
       if (passed_a_ptr)
 	fprintf_filtered (stream, "(");
       break;
@@ -528,7 +529,7 @@ c_type_print_modifier (struct type *type, struct ui_file *stream,
     }
 
   address_space_id
-    = address_space_type_instance_flags_to_name (get_type_arch (type),
+    = address_space_type_instance_flags_to_name (type->arch (),
 						 type->instance_flags ());
   if (address_space_id)
     {
@@ -674,16 +675,16 @@ is_type_conversion_operator (struct type *type, int i, int j)
    form.  Even the author of this function feels that writing little
    parsers like this everywhere is stupid.  */
 
-static char *
-remove_qualifiers (char *qid)
+static const char *
+remove_qualifiers (const char *qid)
 {
   int quoted = 0;	/* Zero if we're not in quotes;
 			   '"' if we're in a double-quoted string;
 			   '\'' if we're in a single-quoted string.  */
   int depth = 0;	/* Number of unclosed parens we've seen.  */
   char *parenstack = (char *) alloca (strlen (qid));
-  char *scan;
-  char *last = 0;	/* The character after the rightmost
+  const char *scan;
+  const char *last = 0;	/* The character after the rightmost
 			   `::' token we've seen so far.  */
 
   for (scan = qid; *scan; scan++)
@@ -965,7 +966,7 @@ output_access_specifier (struct ui_file *stream,
 static bool
 need_access_label_p (struct type *type)
 {
-  if (TYPE_DECLARED_CLASS (type))
+  if (type->is_declared_class ())
     {
       QUIT;
       for (int i = TYPE_N_BASECLASSES (type); i < type->num_fields (); i++)
@@ -1061,7 +1062,7 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
   c_type_print_modifier (type, stream, 0, 1, language);
   if (type->code () == TYPE_CODE_UNION)
     fprintf_filtered (stream, "union ");
-  else if (TYPE_DECLARED_CLASS (type))
+  else if (type->is_declared_class ())
     fprintf_filtered (stream, "class ");
   else
     fprintf_filtered (stream, "struct ");
@@ -1121,13 +1122,12 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
       if (type->num_fields () == 0 && TYPE_NFN_FIELDS (type) == 0
 	  && TYPE_TYPEDEF_FIELD_COUNT (type) == 0)
 	{
+	  print_spaces_filtered_with_print_options (level + 4, stream, flags);
 	  if (type->is_stub ())
-	    fprintf_filtered (stream, _("%*s%p[<incomplete type>%p]\n"),
-			      level + 4, "",
+	    fprintf_filtered (stream, _("%p[<incomplete type>%p]\n"),
 			      metadata_style.style ().ptr (), nullptr);
 	  else
-	    fprintf_filtered (stream, _("%*s%p[<no data fields>%p]\n"),
-			      level + 4, "",
+	    fprintf_filtered (stream, _("%p[<no data fields>%p]\n"),
 			      metadata_style.style ().ptr (), nullptr);
 	}
 
@@ -1149,7 +1149,7 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
       int len = type->num_fields ();
       vptr_fieldno = get_vptr_fieldno (type, &basetype);
 
-      struct print_offset_data local_podata;
+      struct print_offset_data local_podata (flags);
 
       for (int i = TYPE_N_BASECLASSES (type); i < len; i++)
 	{
@@ -1193,7 +1193,7 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 	      /* Make sure we carry our offset when we expand the
 		 struct/union.  */
 	      local_podata.offset_bitpos
-		= podata->offset_bitpos + TYPE_FIELD_BITPOS (type, i);
+		= podata->offset_bitpos + type->field (i).loc_bitpos ();
 	      /* We're entering a struct/union.  Right now,
 		 PODATA->END_BITPOS points right *after* the
 		 struct/union.  However, when printing the first field
@@ -1207,7 +1207,7 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 	    }
 
 	  c_print_type_1 (type->field (i).type (),
-			  TYPE_FIELD_NAME (type, i),
+			  type->field (i).name (),
 			  stream, newshow, level + 4,
 			  language, &local_flags, &local_podata);
 
@@ -1258,7 +1258,6 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 	    {
 	      const char *mangled_name;
 	      gdb::unique_xmalloc_ptr<char> mangled_name_holder;
-	      char *demangled_name;
 	      const char *physname = TYPE_FN_FIELD_PHYSNAME (f, j);
 	      int is_full_physname_constructor =
 		TYPE_FN_FIELD_CONSTRUCTOR (f, j)
@@ -1312,9 +1311,9 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 	      else
 		mangled_name = TYPE_FN_FIELD_PHYSNAME (f, j);
 
-	      demangled_name =
-		gdb_demangle (mangled_name,
-			      DMGL_ANSI | DMGL_PARAMS);
+	      gdb::unique_xmalloc_ptr<char> demangled_name
+		= gdb_demangle (mangled_name,
+				DMGL_ANSI | DMGL_PARAMS);
 	      if (demangled_name == NULL)
 		{
 		  /* In some cases (for instance with the HP
@@ -1341,9 +1340,9 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 		}
 	      else
 		{
-		  char *p;
-		  char *demangled_no_class
-		    = remove_qualifiers (demangled_name);
+		  const char *p;
+		  const char *demangled_no_class
+		    = remove_qualifiers (demangled_name.get ());
 
 		  /* Get rid of the `static' appended by the
 		     demangler.  */
@@ -1351,19 +1350,12 @@ c_type_print_base_struct_union (struct type *type, struct ui_file *stream,
 		  if (p != NULL)
 		    {
 		      int length = p - demangled_no_class;
-		      char *demangled_no_static;
-
-		      demangled_no_static
-			= (char *) xmalloc (length + 1);
-		      strncpy (demangled_no_static,
-			       demangled_no_class, length);
-		      *(demangled_no_static + length) = '\0';
-		      fputs_filtered (demangled_no_static, stream);
-		      xfree (demangled_no_static);
+		      std::string demangled_no_static (demangled_no_class,
+						       length);
+		      fputs_filtered (demangled_no_static.c_str (), stream);
 		    }
 		  else
 		    fputs_filtered (demangled_no_class, stream);
-		  xfree (demangled_name);
 		}
 
 	      fprintf_filtered (stream, ";\n");
@@ -1499,7 +1491,7 @@ c_type_print_base_1 (struct type *type, struct ui_file *stream,
 	    fprintf_filtered (stream, "union ");
 	  else if (type->code () == TYPE_CODE_STRUCT)
 	    {
-	      if (TYPE_DECLARED_CLASS (type))
+	      if (type->is_declared_class ())
 		fprintf_filtered (stream, "class ");
 	      else
 		fprintf_filtered (stream, "struct ");
@@ -1552,7 +1544,7 @@ c_type_print_base_1 (struct type *type, struct ui_file *stream,
     case TYPE_CODE_ENUM:
       c_type_print_modifier (type, stream, 0, 1, language);
       fprintf_filtered (stream, "enum ");
-      if (TYPE_DECLARED_CLASS (type))
+      if (type->is_declared_class ())
 	fprintf_filtered (stream, "class ");
       /* Print the tag name if it exists.
 	 The aCC compiler emits a spurious 
@@ -1603,13 +1595,13 @@ c_type_print_base_1 (struct type *type, struct ui_file *stream,
 	      if (i)
 		fprintf_filtered (stream, ", ");
 	      wrap_here ("    ");
-	      fputs_styled (TYPE_FIELD_NAME (type, i),
+	      fputs_styled (type->field (i).name (),
 			    variable_name_style.style (), stream);
-	      if (lastval != TYPE_FIELD_ENUMVAL (type, i))
+	      if (lastval != type->field (i).loc_enumval ())
 		{
 		  fprintf_filtered (stream, " = %s",
-				    plongest (TYPE_FIELD_ENUMVAL (type, i)));
-		  lastval = TYPE_FIELD_ENUMVAL (type, i);
+				    plongest (type->field (i).loc_enumval ()));
+		  lastval = type->field (i).loc_enumval ();
 		}
 	      lastval++;
 	    }
@@ -1651,15 +1643,15 @@ c_type_print_base_1 (struct type *type, struct ui_file *stream,
 		/* We pass "show" here and not "show - 1" to get enum types
 		   printed.  There's no other way to see them.  */
 		c_print_type_1 (type->field (i).type (),
-				TYPE_FIELD_NAME (type, i),
+				type->field (i).name (),
 				stream, show, level + 4,
 				language, &local_flags, podata);
 		fprintf_filtered (stream, " @%s",
-				  plongest (TYPE_FIELD_BITPOS (type, i)));
+				  plongest (type->field (i).loc_bitpos ()));
 		if (TYPE_FIELD_BITSIZE (type, i) > 1)
 		  {
 		    fprintf_filtered (stream, "-%s",
-				      plongest (TYPE_FIELD_BITPOS (type, i)
+				      plongest (type->field (i).loc_bitpos ()
 						+ TYPE_FIELD_BITSIZE (type, i)
 						- 1));
 		  }
@@ -1724,7 +1716,7 @@ c_type_print_base (struct type *type, struct ui_file *stream,
 		   int show, int level,
 		   const struct type_print_options *flags)
 {
-  struct print_offset_data podata;
+  struct print_offset_data podata (flags);
 
   c_type_print_base_1 (type, stream, show, level,
 		       current_language->la_language, flags, &podata);

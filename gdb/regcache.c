@@ -1,6 +1,6 @@
 /* Cache and manage the values of registers for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -41,7 +41,7 @@
 /* Per-architecture object describing the layout of a register cache.
    Computed once when the architecture is created.  */
 
-struct gdbarch_data *regcache_descr_handle;
+static struct gdbarch_data *regcache_descr_handle;
 
 struct regcache_descr
 {
@@ -184,15 +184,18 @@ reg_buffer::reg_buffer (gdbarch *gdbarch, bool has_pseudo)
   gdb_assert (gdbarch != NULL);
   m_descr = regcache_descr (gdbarch);
 
+  /* We don't zero-initialize the M_REGISTERS array, as the bytes it contains
+     aren't meaningful as long as the corresponding register status is not
+     REG_VALID.  */
   if (has_pseudo)
     {
-      m_registers.reset (new gdb_byte[m_descr->sizeof_cooked_registers] ());
+      m_registers.reset (new gdb_byte[m_descr->sizeof_cooked_registers]);
       m_register_status.reset
 	(new register_status[m_descr->nr_cooked_registers] ());
     }
   else
     {
-      m_registers.reset (new gdb_byte[m_descr->sizeof_raw_registers] ());
+      m_registers.reset (new gdb_byte[m_descr->sizeof_raw_registers]);
       m_register_status.reset
 	(new register_status[gdbarch_num_regs (gdbarch)] ());
     }
@@ -617,15 +620,12 @@ template<typename T, typename>
 enum register_status
 readable_regcache::raw_read (int regnum, T *val)
 {
-  gdb_byte *buf;
-  enum register_status status;
-
   assert_regnum (regnum);
-  buf = (gdb_byte *) alloca (m_descr->sizeof_register[regnum]);
-  status = raw_read (regnum, buf);
+  size_t len = m_descr->sizeof_register[regnum];
+  gdb_byte *buf = (gdb_byte *) alloca (len);
+  register_status status = raw_read (regnum, buf);
   if (status == REG_VALID)
-    *val = extract_integer<T> (buf,
-			       m_descr->sizeof_register[regnum],
+    *val = extract_integer<T> ({buf, len},
 			       gdbarch_byte_order (m_descr->gdbarch));
   else
     *val = 0;
@@ -709,7 +709,7 @@ readable_regcache::cooked_read (int regnum, gdb_byte *buf)
       computed = gdbarch_pseudo_register_read_value (m_descr->gdbarch,
 						     this, regnum);
       if (value_entirely_available (computed))
-	memcpy (buf, value_contents_raw (computed),
+	memcpy (buf, value_contents_raw (computed).data (),
 		m_descr->sizeof_register[regnum]);
       else
 	{
@@ -746,7 +746,7 @@ readable_regcache::cooked_read_value (int regnum)
 	 direction than in the other one, even though the value-based
 	 API is preferred.  */
       if (cooked_read (regnum,
-		       value_contents_raw (result)) == REG_UNAVAILABLE)
+		       value_contents_raw (result).data ()) == REG_UNAVAILABLE)
 	mark_value_bytes_unavailable (result, 0,
 				      TYPE_LENGTH (value_type (result)));
 
@@ -769,14 +769,12 @@ template<typename T, typename>
 enum register_status
 readable_regcache::cooked_read (int regnum, T *val)
 {
-  enum register_status status;
-  gdb_byte *buf;
-
   gdb_assert (regnum >= 0 && regnum < m_descr->nr_cooked_registers);
-  buf = (gdb_byte *) alloca (m_descr->sizeof_register[regnum]);
-  status = cooked_read (regnum, buf);
+  size_t len = m_descr->sizeof_register[regnum];
+  gdb_byte *buf = (gdb_byte *) alloca (len);
+  register_status status = cooked_read (regnum, buf);
   if (status == REG_VALID)
-    *val = extract_integer<T> (buf, m_descr->sizeof_register[regnum],
+    *val = extract_integer<T> ({buf, len},
 			       gdbarch_byte_order (m_descr->gdbarch));
   else
     *val = 0;
@@ -1261,6 +1259,33 @@ regcache::collect_regset (const struct regset *regset,
   transfer_regset (regset, nullptr, regnum, nullptr, (gdb_byte *) buf, size);
 }
 
+/* See regcache.h  */
+
+bool
+regcache_map_supplies (const struct regcache_map_entry *map, int regnum,
+		       struct gdbarch *gdbarch, size_t size)
+{
+  int offs = 0, count;
+
+  for (; (count = map->count) != 0; map++)
+    {
+      int regno = map->regno;
+      int slot_size = map->size;
+
+      if (slot_size == 0 && regno != REGCACHE_MAP_SKIP)
+	slot_size = register_size (gdbarch, regno);
+
+      if (regno != REGCACHE_MAP_SKIP && regnum >= regno
+	  && regnum < regno + count)
+	return offs + (regnum - regno + 1) * slot_size <= size;
+
+      offs += count * slot_size;
+      if (offs >= size)
+	return false;
+    }
+  return false;
+}
+
 /* See gdbsupport/common-regcache.h.  */
 
 bool
@@ -1411,7 +1436,7 @@ register_dump::dump (ui_file *file)
     {
       /* Name.  */
       if (regnum < 0)
-	fprintf_unfiltered (file, " %-10s", "Name");
+	fprintf_filtered (file, " %-10s", "Name");
       else
 	{
 	  const char *p = gdbarch_register_name (m_gdbarch, regnum);
@@ -1420,31 +1445,31 @@ register_dump::dump (ui_file *file)
 	    p = "";
 	  else if (p[0] == '\0')
 	    p = "''";
-	  fprintf_unfiltered (file, " %-10s", p);
+	  fprintf_filtered (file, " %-10s", p);
 	}
 
       /* Number.  */
       if (regnum < 0)
-	fprintf_unfiltered (file, " %4s", "Nr");
+	fprintf_filtered (file, " %4s", "Nr");
       else
-	fprintf_unfiltered (file, " %4d", regnum);
+	fprintf_filtered (file, " %4d", regnum);
 
       /* Relative number.  */
       if (regnum < 0)
-	fprintf_unfiltered (file, " %4s", "Rel");
+	fprintf_filtered (file, " %4s", "Rel");
       else if (regnum < gdbarch_num_regs (m_gdbarch))
-	fprintf_unfiltered (file, " %4d", regnum);
+	fprintf_filtered (file, " %4d", regnum);
       else
-	fprintf_unfiltered (file, " %4d",
-			    (regnum - gdbarch_num_regs (m_gdbarch)));
+	fprintf_filtered (file, " %4d",
+			  (regnum - gdbarch_num_regs (m_gdbarch)));
 
       /* Offset.  */
       if (regnum < 0)
-	fprintf_unfiltered (file, " %6s  ", "Offset");
+	fprintf_filtered (file, " %6s  ", "Offset");
       else
 	{
-	  fprintf_unfiltered (file, " %6ld",
-			      descr->register_offset[regnum]);
+	  fprintf_filtered (file, " %6ld",
+			    descr->register_offset[regnum]);
 	  if (register_offset != descr->register_offset[regnum]
 	      || (regnum > 0
 		  && (descr->register_offset[regnum]
@@ -1454,19 +1479,19 @@ register_dump::dump (ui_file *file)
 	    {
 	      if (!footnote_register_offset)
 		footnote_register_offset = ++footnote_nr;
-	      fprintf_unfiltered (file, "*%d", footnote_register_offset);
+	      fprintf_filtered (file, "*%d", footnote_register_offset);
 	    }
 	  else
-	    fprintf_unfiltered (file, "  ");
+	    fprintf_filtered (file, "  ");
 	  register_offset = (descr->register_offset[regnum]
 			     + descr->sizeof_register[regnum]);
 	}
 
       /* Size.  */
       if (regnum < 0)
-	fprintf_unfiltered (file, " %5s ", "Size");
+	fprintf_filtered (file, " %5s ", "Size");
       else
-	fprintf_unfiltered (file, " %5ld", descr->sizeof_register[regnum]);
+	fprintf_filtered (file, " %5ld", descr->sizeof_register[regnum]);
 
       /* Type.  */
       {
@@ -1492,24 +1517,24 @@ register_dump::dump (ui_file *file)
 	    if (startswith (t, blt))
 	      t += strlen (blt);
 	  }
-	fprintf_unfiltered (file, " %-15s", t);
+	fprintf_filtered (file, " %-15s", t);
       }
 
       /* Leading space always present.  */
-      fprintf_unfiltered (file, " ");
+      fprintf_filtered (file, " ");
 
       dump_reg (file, regnum);
 
-      fprintf_unfiltered (file, "\n");
+      fprintf_filtered (file, "\n");
     }
 
   if (footnote_register_offset)
-    fprintf_unfiltered (file, "*%d: Inconsistent register offsets.\n",
-			footnote_register_offset);
+    fprintf_filtered (file, "*%d: Inconsistent register offsets.\n",
+		      footnote_register_offset);
   if (footnote_register_type_name_null)
-    fprintf_unfiltered (file,
-			"*%d: Register type's name NULL.\n",
-			footnote_register_type_name_null);
+    fprintf_filtered (file,
+		      "*%d: Register type's name NULL.\n",
+		      footnote_register_type_name_null);
 }
 
 #if GDB_SELF_TEST
@@ -1916,7 +1941,7 @@ cooked_write_test (struct gdbarch *gdbarch)
 {
   /* Error out if debugging something, because we're going to push the
      test target, which would pop any existing target.  */
-  if (current_top_target ()->stratum () >= process_stratum)
+  if (current_inferior ()->top_target ()->stratum () >= process_stratum)
     error (_("target already pushed"));
 
   /* Create a mock environment.  A process_stratum target pushed.  */
@@ -1925,7 +1950,7 @@ cooked_write_test (struct gdbarch *gdbarch)
 
   /* Push the process_stratum target so we can mock accessing
      registers.  */
-  push_target (&mock_target);
+  current_inferior ()->push_target (&mock_target);
 
   /* Pop it again on exit (return/exception).  */
   struct on_exit
@@ -2035,15 +2060,19 @@ regcache_thread_ptid_changed ()
   /* Prepare two targets with one thread each, with the same ptid.  */
   scoped_mock_context<test_target_ops> target1 (arch);
   scoped_mock_context<test_target_ops> target2 (arch);
-  target2.mock_inferior.next = &target1.mock_inferior;
 
   ptid_t old_ptid (111, 222);
   ptid_t new_ptid (111, 333);
 
   target1.mock_inferior.pid = old_ptid.pid ();
   target1.mock_thread.ptid = old_ptid;
+  target1.mock_inferior.ptid_thread_map.clear ();
+  target1.mock_inferior.ptid_thread_map[old_ptid] = &target1.mock_thread;
+
   target2.mock_inferior.pid = old_ptid.pid ();
   target2.mock_thread.ptid = old_ptid;
+  target2.mock_inferior.ptid_thread_map.clear ();
+  target2.mock_inferior.ptid_thread_map[old_ptid] = &target2.mock_thread;
 
   gdb_assert (regcaches.empty ());
 
@@ -2084,25 +2113,28 @@ _initialize_regcache ()
   regcache_descr_handle
     = gdbarch_data_register_post_init (init_regcache_descr);
 
-  gdb::observers::target_changed.attach (regcache_observer_target_changed);
-  gdb::observers::thread_ptid_changed.attach (regcache_thread_ptid_changed);
+  gdb::observers::target_changed.attach (regcache_observer_target_changed,
+					 "regcache");
+  gdb::observers::thread_ptid_changed.attach (regcache_thread_ptid_changed,
+					      "regcache");
 
-  add_cmd ("register-cache", class_maintenance, reg_flush_command,
-	   _("Force gdb to flush its register and frame cache."),
-	   &maintenanceflushlist);
-  c = add_com_alias ("flushregs", "maintenance flush register-cache",
+  cmd_list_element *maintenance_flush_register_cache_cmd
+    = add_cmd ("register-cache", class_maintenance, reg_flush_command,
+	       _("Force gdb to flush its register and frame cache."),
+	       &maintenanceflushlist);
+  c = add_com_alias ("flushregs", maintenance_flush_register_cache_cmd,
 		     class_maintenance, 0);
   deprecate_cmd (c, "maintenance flush register-cache");
 
 #if GDB_SELF_TEST
   selftests::register_test ("get_thread_arch_aspace_regcache",
-  			    selftests::get_thread_arch_aspace_regcache_test);
+			    selftests::get_thread_arch_aspace_regcache_test);
   selftests::register_test ("registers_changed_ptid_all",
 			    selftests::registers_changed_ptid_all_test);
   selftests::register_test ("registers_changed_ptid_target",
-  			    selftests::registers_changed_ptid_target_test);
+			    selftests::registers_changed_ptid_target_test);
   selftests::register_test ("registers_changed_ptid_target_pid",
-  			    selftests::registers_changed_ptid_target_pid_test);
+			    selftests::registers_changed_ptid_target_pid_test);
   selftests::register_test ("registers_changed_ptid_target_ptid",
 			    selftests::registers_changed_ptid_target_ptid_test);
 

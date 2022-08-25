@@ -1,4 +1,4 @@
-/* Copyright (C) 2012-2021 Free Software Foundation, Inc.
+/* Copyright (C) 2012-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -78,7 +78,8 @@ void _initialize_agent ();
 void
 _initialize_agent ()
 {
-  gdb::observers::new_objfile.attach (agent_new_objfile);
+  gdb::observers::new_objfile.attach (agent_new_objfile,
+				      "agent");
 
   add_setshow_enum_cmd ("agent", class_run,
 			can_use_agent_enum,

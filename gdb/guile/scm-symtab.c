@@ -1,6 +1,6 @@
 /* Scheme interface to symbol tables.
 
-   Copyright (C) 2008-2021 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -688,7 +688,12 @@ gdbscm_initialize_symtabs (void)
   scm_set_smob_print (sal_smob_tag, stscm_print_sal_smob);
 
   gdbscm_define_functions (symtab_functions, 1);
+}
 
+void _initialize_scm_symtab ();
+void
+_initialize_scm_symtab ()
+{
   /* Register an objfile "free" callback so we can properly
      invalidate symbol tables, and symbol table and line data
      structures when an object file that is about to be deleted.  */

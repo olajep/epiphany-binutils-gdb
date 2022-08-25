@@ -1,5 +1,5 @@
 /* OS ABI variant handling for GDB.
-   Copyright (C) 2001-2021 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
    
    This file is part of GDB.
 
@@ -41,7 +41,6 @@ enum gdb_osabi
   GDB_OSABI_AIX,
   GDB_OSABI_DICOS,
   GDB_OSABI_DARWIN,
-  GDB_OSABI_SYMBIAN,
   GDB_OSABI_OPENVMS,
   GDB_OSABI_LYNXOS178,
   GDB_OSABI_NEWLIB,

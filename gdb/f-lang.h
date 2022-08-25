@@ -1,6 +1,6 @@
 /* Fortran language support definitions for GDB, the GNU debugger.
 
-   Copyright (C) 1992-2021 Free Software Foundation, Inc.
+   Copyright (C) 1992-2022 Free Software Foundation, Inc.
 
    Contributed by Motorola.  Adapted from the C definitions by Farooq Butt
    (fmbutt@engage.sps.mot.com).
@@ -59,6 +59,12 @@ public:
   }
 
   /* See language.h.  */
+  void print_array_index (struct type *index_type,
+			  LONGEST index,
+			  struct ui_file *stream,
+			  const value_print_options *options) const override;
+
+  /* See language.h.  */
   void language_arch_info (struct gdbarch *gdbarch,
 			   struct language_arch_info *lai) const override;
 
@@ -67,7 +73,8 @@ public:
 
   /* See language.h.  */
 
-  char *demangle_symbol (const char *mangled, int options) const override
+  gdb::unique_xmalloc_ptr<char> demangle_symbol (const char *mangled,
+						 int options) const override
   {
       /* We could support demangling here to provide module namespaces
 	 also for inferiors with only minimal symbol table (ELF symbols).
@@ -218,16 +225,6 @@ public:
   enum array_ordering array_ordering () const override
   { return array_column_major; }
 
-  /* See language.h.  */
-
-  const struct exp_descriptor *expression_ops () const override
-  { return &exp_descriptor_tab; }
-
-  /* See language.h.  */
-
-  const struct op_print *opcode_print_table () const override
-  { return op_print_tab; }
-
 protected:
 
   /* See language.h.  */
@@ -236,15 +233,6 @@ protected:
 	(const lookup_name_info &lookup_name) const override;
 
 private:
-  /* Table of expression handling functions for use by EXPRESSION_OPS
-     member function.  */
-
-  static const struct exp_descriptor exp_descriptor_tab;
-
-  /* Table of opcode data for use by OPCODE_PRINT_TABLE member function.  */
-
-  static const struct op_print op_print_tab[];
-
   /* Return the encoding that should be used for the character type
      TYPE.  */
 

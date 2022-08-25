@@ -1,6 +1,6 @@
 /* Target-dependent code for BPF.
 
-   Copyright (C) 2020-2021 Free Software Foundation, Inc.
+   Copyright (C) 2020-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -34,6 +34,7 @@
 #include "osabi.h"
 #include "target-descriptions.h"
 #include "remote.h"
+#include "gdbarch.h"
 
 
 /* eBPF registers.  */
@@ -57,7 +58,7 @@ enum bpf_regnum
 #define BPF_NUM_REGS	(BPF_PC_REGNUM + 1)
 
 /* Target-dependent structure in gdbarch.  */
-struct gdbarch_tdep
+struct bpf_gdbarch_tdep : gdbarch_tdep
 {
 };
 
@@ -184,6 +185,7 @@ bpf_frame_prev_register (struct frame_info *this_frame,
 
 static const struct frame_unwind bpf_frame_unwind =
 {
+  "bpf prologue",
   NORMAL_FRAME,
   bpf_frame_unwind_stop_reason,
   bpf_frame_this_id,
@@ -320,7 +322,7 @@ bpf_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
     return arches->gdbarch;
 
   /* Allocate space for the new architecture.  */
-  struct gdbarch_tdep *tdep = XCNEW (struct gdbarch_tdep);
+  bpf_gdbarch_tdep *tdep = new bpf_gdbarch_tdep;
   struct gdbarch *gdbarch = gdbarch_alloc (&info, tdep);
 
   /* Information about registers, etc.  */
@@ -370,7 +372,7 @@ bpf_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 
 void _initialize_bpf_tdep ();
 void
-_initialize_bpf_tdep (void)
+_initialize_bpf_tdep ()
 {
   register_gdbarch_init (bfd_arch_bpf, bpf_gdbarch_init);
 

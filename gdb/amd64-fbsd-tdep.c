@@ -1,6 +1,6 @@
 /* Target-dependent code for FreeBSD/amd64.
 
-   Copyright (C) 2003-2021 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -52,7 +52,7 @@ amd64fbsd_sigtramp_p (struct frame_info *this_frame)
   CORE_ADDR pc = get_frame_pc (this_frame);
   gdb_byte buf[sizeof amd64fbsd_sigtramp_code];
 
-  if (!safe_frame_unwind_memory (this_frame, pc, buf, sizeof buf))
+  if (!safe_frame_unwind_memory (this_frame, pc, buf))
     return 0;
   if (memcmp (buf, amd64fbsd_sigtramp_code, sizeof amd64fbsd_sigtramp_code)
       != 0)
@@ -195,7 +195,7 @@ amd64fbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,
 					void *cb_data,
 					const struct regcache *regcache)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   cb (".reg", tdep->sizeof_gregset, tdep->sizeof_gregset, &i386_gregset, NULL,
       cb_data);
@@ -229,7 +229,7 @@ amd64fbsd_get_thread_local_address (struct gdbarch *gdbarch, ptid_t ptid,
 static void
 amd64fbsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  i386_gdbarch_tdep *tdep = (i386_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   /* Generic FreeBSD support. */
   fbsd_init_abi (info, gdbarch);

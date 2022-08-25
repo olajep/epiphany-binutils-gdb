@@ -1,6 +1,6 @@
 /* Reading symbol files from memory.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -218,5 +218,5 @@ _initialize_symfile_mem ()
 
   /* Want to know of each new inferior so that its vsyscall info can
      be extracted.  */
-  gdb::observers::inferior_created.attach (add_vsyscall_page);
+  gdb::observers::inferior_created.attach (add_vsyscall_page, "symfile-mem");
 }

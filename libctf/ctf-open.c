@@ -1,5 +1,5 @@
 /* Opening CTF files.
-   Copyright (C) 2019-2021 Free Software Foundation, Inc.
+   Copyright (C) 2019-2022 Free Software Foundation, Inc.
 
    This file is part of libctf.
 
@@ -238,7 +238,7 @@ init_symtab (ctf_dict_t *fp, const ctf_header_t *hp, const ctf_sect_t *sp)
   int skip_func_info = 0;
   int i;
   uint32_t *xp = fp->ctf_sxlate;
-  uint32_t *xend = xp + fp->ctf_nsyms;
+  uint32_t *xend = PTR_ADD (xp, fp->ctf_nsyms);
 
   uint32_t objtoff = hp->cth_objtoff;
   uint32_t funcoff = hp->cth_funcoff;
@@ -683,7 +683,7 @@ init_types (ctf_dict_t *fp, ctf_header_t *cth)
 
   unsigned long pop[CTF_K_MAX + 1] = { 0 };
   const ctf_type_t *tp;
-  uint32_t id, dst;
+  uint32_t id;
   uint32_t *xp;
 
   /* We determine whether the dict is a child or a parent based on the value of
@@ -756,7 +756,8 @@ init_types (ctf_dict_t *fp, ctf_header_t *cth)
     return ENOMEM;
 
   if ((fp->ctf_names.ctn_readonly
-       = ctf_hash_create (pop[CTF_K_INTEGER] +
+       = ctf_hash_create (pop[CTF_K_UNKNOWN] +
+			  pop[CTF_K_INTEGER] +
 			  pop[CTF_K_FLOAT] +
 			  pop[CTF_K_FUNCTION] +
 			  pop[CTF_K_TYPEDEF] +
@@ -800,6 +801,7 @@ init_types (ctf_dict_t *fp, ctf_header_t *cth)
 
       switch (kind)
 	{
+	case CTF_K_UNKNOWN:
 	case CTF_K_INTEGER:
 	case CTF_K_FLOAT:
 	  /* Names are reused by bit-fields, which are differentiated by their
@@ -952,25 +954,6 @@ init_types (ctf_dict_t *fp, ctf_header_t *cth)
 	       ctf_hash_size (fp->ctf_unions.ctn_readonly), nlunions);
   ctf_dprintf ("%u base type names hashed\n",
 	       ctf_hash_size (fp->ctf_names.ctn_readonly));
-
-  /* Make an additional pass through the pointer table to find pointers that
-     point to anonymous typedef nodes.  If we find one, modify the pointer table
-     so that the pointer is also known to point to the node that is referenced
-     by the anonymous typedef node.  */
-
-  for (id = 1; id <= fp->ctf_typemax; id++)
-    {
-      if ((dst = fp->ctf_ptrtab[id]) != 0)
-	{
-	  tp = LCTF_INDEX_TO_TYPEPTR (fp, id);
-
-	  if (LCTF_INFO_KIND (fp, tp->ctt_info) == CTF_K_TYPEDEF
-	      && strcmp (ctf_strptr (fp, tp->ctt_name), "") == 0
-	      && LCTF_TYPE_ISCHILD (fp, tp->ctt_type) == child
-	      && LCTF_TYPE_TO_INDEX (fp, tp->ctt_type) <= fp->ctf_typemax)
-	      fp->ctf_ptrtab[LCTF_TYPE_TO_INDEX (fp, tp->ctt_type)] = dst;
-	}
-    }
 
   return 0;
 }
@@ -1466,7 +1449,7 @@ ctf_bufopen_internal (const ctf_sect_t *ctfsect, const ctf_sect_t *symsect,
        != hp->cth_funcoff - hp->cth_objtoff))
     {
       ctf_err_warn (NULL, 0, ECTF_CORRUPT,
-		    _("Object index section exists is neither empty nor the "
+		    _("Object index section is neither empty nor the "
 		      "same length as the object section: %u versus %u "
 		      "bytes"), hp->cth_funcoff - hp->cth_objtoff,
 		    hp->cth_funcidxoff - hp->cth_objtidxoff);
@@ -1475,10 +1458,11 @@ ctf_bufopen_internal (const ctf_sect_t *ctfsect, const ctf_sect_t *symsect,
 
   if ((hp->cth_varoff - hp->cth_funcidxoff != 0) &&
       (hp->cth_varoff - hp->cth_funcidxoff
-       != hp->cth_objtidxoff - hp->cth_funcoff))
+       != hp->cth_objtidxoff - hp->cth_funcoff) &&
+      (hp->cth_flags & CTF_F_NEWFUNCINFO))
     {
       ctf_err_warn (NULL, 0, ECTF_CORRUPT,
-		    _("Function index section exists is neither empty nor the "
+		    _("Function index section is neither empty nor the "
 		      "same length as the function section: %u versus %u "
 		      "bytes"), hp->cth_objtidxoff - hp->cth_funcoff,
 		    hp->cth_varoff - hp->cth_funcidxoff);
@@ -1564,7 +1548,12 @@ ctf_bufopen_internal (const ctf_sect_t *ctfsect, const ctf_sect_t *symsect,
      ctf_set_base().  */
 
   ctf_set_version (fp, hp, hp->cth_version);
-  ctf_str_create_atoms (fp);
+  if (ctf_str_create_atoms (fp) < 0)
+    {
+      err = ENOMEM;
+      goto bad;
+    }
+
   fp->ctf_parmax = CTF_MAX_PTYPE;
   memcpy (&fp->ctf_data, ctfsect, sizeof (ctf_sect_t));
 
@@ -1756,6 +1745,7 @@ ctf_dict_close (ctf_dict_t *fp)
     }
   ctf_dynhash_destroy (fp->ctf_dvhash);
 
+  ctf_dynhash_destroy (fp->ctf_symhash);
   free (fp->ctf_funcidx_sxlate);
   free (fp->ctf_objtidx_sxlate);
   ctf_dynhash_destroy (fp->ctf_objthash);

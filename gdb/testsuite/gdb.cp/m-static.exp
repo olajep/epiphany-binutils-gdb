@@ -1,4 +1,4 @@
-# Copyright 2002-2021 Free Software Foundation, Inc.
+# Copyright 2002-2022 Free Software Foundation, Inc.
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,8 +31,14 @@ if [get_compiler_info] {
     return -1
 }
 
+set flags [list debug c++]
+if { [test_compiler_info gcc-*] && [gcc_major_version] >= 10 } {
+    # Work around PR gcc/101452.
+    lappend flags additional_flags=-fno-eliminate-unused-debug-types
+}
+
 if {[prepare_for_testing "failed to prepare" $testfile \
-	 [list $srcfile $srcfile2] {debug c++}]} {
+	 [list $srcfile $srcfile2] $flags]} {
     return -1
 }
 
@@ -42,7 +48,7 @@ if ![runto_main] then {
 }
 
 get_debug_format
-set non_dwarf [expr ! [test_debug_format "DWARF 2"]]
+set non_dwarf [expr ! [test_debug_format "DWARF \[0-9\]"]]
 
 # First, run to after we've constructed all the objects:
 

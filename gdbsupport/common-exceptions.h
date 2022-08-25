@@ -1,6 +1,6 @@
 /* Exception (throw catch) mechanism, for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2021 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -163,6 +163,23 @@ struct gdb_exception
   const char *what () const noexcept
   {
     return message->c_str ();
+  }
+
+  /* Compare two exceptions.  */
+  bool operator== (const gdb_exception &other) const
+  {
+    const char *msg1 = message == nullptr ? "" : what ();
+    const char *msg2 = other.message == nullptr ? "" : other.what ();
+
+    return (reason == other.reason
+	    && error == other.error
+	    && strcmp (msg1, msg2) == 0);
+  }
+
+  /* Compare two exceptions.  */
+  bool operator!= (const gdb_exception &other) const
+  {
+    return !(*this == other);
   }
 
   enum return_reason reason;

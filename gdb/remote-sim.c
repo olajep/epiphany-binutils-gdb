@@ -1,6 +1,6 @@
 /* Generic remote debugging interface for simulators.
 
-   Copyright (C) 1993-2021 Free Software Foundation, Inc.
+   Copyright (C) 1993-2022 Free Software Foundation, Inc.
 
    Contributed by Cygnus Support.
    Steve Chamberlain (sac@cygnus.com).
@@ -33,8 +33,8 @@
 #include "target.h"
 #include "process-stratum-target.h"
 #include "gdbcore.h"
-#include "gdb/callback.h"
-#include "gdb/remote-sim.h"
+#include "sim/callback.h"
+#include "sim/sim.h"
 #include "command.h"
 #include "regcache.h"
 #include "sim-regno.h"
@@ -43,6 +43,8 @@
 #include "gdbthread.h"
 #include "gdbsupport/byte-vector.h"
 #include "memory-map.h"
+#include "remote.h"
+#include "gdbsupport/buildargv.h"
 
 /* Prototypes */
 
@@ -679,10 +681,9 @@ gdbsim_target_open (const char *args, int from_tty)
   int len;
   char *arg_buf;
   struct sim_inferior_data *sim_data;
-  const char *sysroot;
   SIM_DESC gdbsim_desc;
 
-  sysroot = gdb_sysroot;
+  const char *sysroot = gdb_sysroot.c_str ();
   if (is_target_filename (sysroot))
     sysroot += strlen (TARGET_SYSROOT_PREFIX);
 
@@ -698,7 +699,7 @@ gdbsim_target_open (const char *args, int from_tty)
      operation until after we complete those operations which could
      error out.  */
   if (gdbsim_is_open)
-    unpush_target (&gdbsim_ops);
+    current_inferior ()->unpush_target (&gdbsim_ops);
 
   len = (7 + 1			/* gdbsim */
 	 + strlen (" -E little")
@@ -762,7 +763,7 @@ gdbsim_target_open (const char *args, int from_tty)
 
   sim_data->gdbsim_desc = gdbsim_desc;
 
-  push_target (&gdbsim_ops);
+  current_inferior ()->push_target (&gdbsim_ops);
   printf_filtered ("Connected to the simulator.\n");
 
   /* There's nothing running after "target sim" or "load"; not until
@@ -833,9 +834,9 @@ gdbsim_target::detach (inferior *inf, int from_tty)
   if (remote_debug)
     fprintf_unfiltered (gdb_stdlog, "gdbsim_detach\n");
 
-  unpush_target (this);		/* calls gdbsim_close to do the real work */
+  inf->unpush_target (this);		/* calls gdbsim_close to do the real work */
   if (from_tty)
-    printf_filtered ("Ending simulator %s debugging\n", target_shortname);
+    printf_filtered ("Ending simulator %s debugging\n", target_shortname ());
 }
 
 /* Resume execution of the target process.  STEP says whether to single-step
@@ -980,8 +981,7 @@ gdbsim_target::wait (ptid_t ptid, struct target_waitstatus *status,
   switch (reason)
     {
     case sim_exited:
-      status->kind = TARGET_WAITKIND_EXITED;
-      status->value.integer = sigrc;
+      status->set_exited (sigrc);
       break;
     case sim_stopped:
       switch (sigrc)
@@ -992,14 +992,12 @@ gdbsim_target::wait (ptid_t ptid, struct target_waitstatus *status,
 	case GDB_SIGNAL_INT:
 	case GDB_SIGNAL_TRAP:
 	default:
-	  status->kind = TARGET_WAITKIND_STOPPED;
-	  status->value.sig = (enum gdb_signal) sigrc;
+	  status->set_stopped ((gdb_signal) sigrc);
 	  break;
 	}
       break;
     case sim_signalled:
-      status->kind = TARGET_WAITKIND_SIGNALLED;
-      status->value.sig = (enum gdb_signal) sigrc;
+      status->set_signalled ((gdb_signal) sigrc);
       break;
     case sim_running:
     case sim_polling:
@@ -1117,8 +1115,8 @@ gdbsim_target::files_info ()
 
   if (current_program_space->exec_bfd ())
     {
-      fprintf_unfiltered (gdb_stdlog, "\tAttached to %s running program %s\n",
-			  target_shortname, file);
+      printf_filtered ("\tAttached to %s running program %s\n",
+		       target_shortname (), file);
       sim_info (sim_data->gdbsim_desc, 0);
     }
 }

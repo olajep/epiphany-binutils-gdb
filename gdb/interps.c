@@ -1,6 +1,6 @@
 /* Manages interpreters for GDB, the GNU debugger.
 
-   Copyright (C) 2000-2021 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
 
    Written by Jim Ingham <jingham@apple.com> of Apple Computer, Inc.
 
@@ -37,8 +37,8 @@
 #include "interps.h"
 #include "completer.h"
 #include "top.h"		/* For command_loop.  */
-#include "continuations.h"
 #include "main.h"
+#include "gdbsupport/buildargv.h"
 
 /* Each UI has its own independent set of interpreters.  */
 

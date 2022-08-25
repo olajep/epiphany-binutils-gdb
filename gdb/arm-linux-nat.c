@@ -1,5 +1,5 @@
 /* GNU/Linux on ARM native support.
-   Copyright (C) 1999-2021 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -339,7 +339,7 @@ fetch_vfp_regs (struct regcache *regcache)
   gdb_byte regbuf[ARM_VFP3_REGS_SIZE];
   int ret, tid;
   struct gdbarch *gdbarch = regcache->arch ();
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  arm_gdbarch_tdep *tdep = (arm_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   /* Get the thread id for the ptrace call.  */
   tid = regcache->ptid ().lwp ();
@@ -368,7 +368,7 @@ store_vfp_regs (const struct regcache *regcache)
   gdb_byte regbuf[ARM_VFP3_REGS_SIZE];
   int ret, tid;
   struct gdbarch *gdbarch = regcache->arch ();
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  arm_gdbarch_tdep *tdep = (arm_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   /* Get the thread id for the ptrace call.  */
   tid = regcache->ptid ().lwp ();
@@ -413,7 +413,7 @@ void
 arm_linux_nat_target::fetch_registers (struct regcache *regcache, int regno)
 {
   struct gdbarch *gdbarch = regcache->arch ();
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  arm_gdbarch_tdep *tdep = (arm_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   if (-1 == regno)
     {
@@ -450,7 +450,7 @@ void
 arm_linux_nat_target::store_registers (struct regcache *regcache, int regno)
 {
   struct gdbarch *gdbarch = regcache->arch ();
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  arm_gdbarch_tdep *tdep = (arm_gdbarch_tdep *) gdbarch_tdep (gdbarch);
 
   if (-1 == regno)
     {
@@ -537,7 +537,7 @@ arm_linux_nat_target::read_description ()
     {
       elf_gregset_t gpregs;
       struct iovec iov;
-      int tid = inferior_ptid.lwp ();
+      int tid = inferior_ptid.pid ();
 
       iov.iov_base = &gpregs;
       iov.iov_len = sizeof (gpregs);
@@ -556,7 +556,7 @@ arm_linux_nat_target::read_description ()
     {
       /* Make sure that the kernel supports reading VFP registers.  Support was
 	 added in 2.6.30.  */
-      int pid = inferior_ptid.lwp ();
+      int pid = inferior_ptid.pid ();
       errno = 0;
       char *buf = (char *) alloca (ARM_VFP3_REGS_SIZE);
       if (ptrace (PTRACE_GETVFPREGS, pid, 0, buf) < 0 && errno == EIO)

@@ -1,4 +1,4 @@
-# Copyright (C) 1989-2021 Free Software Foundation, Inc.
+# Copyright (C) 1989-2022 Free Software Foundation, Inc.
 
 # This file is part of GDB.
 
@@ -245,8 +245,12 @@ CODESIGN_CERT = @CODESIGN_CERT@
 GDBFLAGS =
 
 # Helper code from gnulib.
-GNULIB_BUILDDIR = ../gnulib
-include $(GNULIB_BUILDDIR)/Makefile.gnulib.inc
+GNULIB_PARENT_DIR = ..
+include $(GNULIB_PARENT_DIR)/gnulib/Makefile.gnulib.inc
+
+# For libbacktrace.
+LIBBACKTRACE_INC=@LIBBACKTRACE_INC@
+LIBBACKTRACE_LIB=@LIBBACKTRACE_LIB@
 
 SUPPORT = ../gdbsupport
 LIBSUPPORT = $(SUPPORT)/libgdbsupport.a
@@ -310,6 +314,7 @@ SUBDIR_TUI_SRCS = \
 	tui/tui-interp.c \
 	tui/tui-io.c \
 	tui/tui-layout.c \
+	tui/tui-location.c \
 	tui/tui-out.c \
 	tui/tui-regs.c \
 	tui/tui-source.c \
@@ -386,6 +391,7 @@ SUBDIR_PYTHON_SRCS = \
 	python/py-bpevent.c \
 	python/py-breakpoint.c \
 	python/py-cmd.c \
+	python/py-connection.c \
 	python/py-continueevent.c \
 	python/py-event.c \
 	python/py-evtregistry.c \
@@ -402,6 +408,7 @@ SUBDIR_PYTHON_SRCS = \
 	python/py-instruction.c \
 	python/py-lazy-string.c \
 	python/py-linetable.c \
+	python/py-membuf.c \
 	python/py-newobjfileevent.c \
 	python/py-objfile.c \
 	python/py-param.c \
@@ -446,19 +453,23 @@ SELFTESTS_SRCS = \
 	unittests/filtered_iterator-selftests.c \
 	unittests/format_pieces-selftests.c \
 	unittests/function-view-selftests.c \
+	unittests/gdb_tilde_expand-selftests.c \
 	unittests/gmp-utils-selftests.c \
+	unittests/intrusive_list-selftests.c \
 	unittests/lookup_name_info-selftests.c \
 	unittests/memory-map-selftests.c \
 	unittests/memrange-selftests.c \
 	unittests/offset-type-selftests.c \
 	unittests/observable-selftests.c \
 	unittests/optional-selftests.c \
+	unittests/parallel-for-selftests.c \
 	unittests/parse-connection-spec-selftests.c \
 	unittests/ptid-selftests.c \
 	unittests/main-thread-selftests.c \
 	unittests/mkdir-recursive-selftests.c \
 	unittests/rsp-low-selftests.c \
 	unittests/scoped_fd-selftests.c \
+	unittests/scoped_ignore_signal-selftests.c \
 	unittests/scoped_mmap-selftests.c \
 	unittests/scoped_restore-selftests.c \
 	unittests/search-memory-selftests.c \
@@ -466,6 +477,7 @@ SELFTESTS_SRCS = \
 	unittests/style-selftests.c \
 	unittests/tracepoint-selftests.c \
 	unittests/tui-selftests.c \
+	unittests/ui-file-selftests.c \
 	unittests/unpack-selftests.c \
 	unittests/utils-selftests.c \
 	unittests/vec-utils-selftests.c \
@@ -609,9 +621,9 @@ INTERNAL_CFLAGS_BASE = \
 	$(GLOBAL_CFLAGS) $(PROFILE_CFLAGS) \
 	$(GDB_CFLAGS) $(OPCODES_CFLAGS) $(READLINE_CFLAGS) $(ZLIBINC) \
 	$(BFD_CFLAGS) $(INCLUDE_CFLAGS) $(LIBDECNUMBER_CFLAGS) \
-	$(INTL_CFLAGS) $(INCGNU) $(INCSUPPORT) $(ENABLE_CFLAGS) \
-	$(INTERNAL_CPPFLAGS) $(SRCHIGH_CFLAGS) $(TOP_CFLAGS) $(PTHREAD_CFLAGS) \
-	$(DEBUGINFOD_CFLAGS)
+	$(INTL_CFLAGS) $(INCGNU) $(INCSUPPORT) $(LIBBACKTRACE_INC) \
+	$(ENABLE_CFLAGS) $(INTERNAL_CPPFLAGS) $(SRCHIGH_CFLAGS) \
+	$(TOP_CFLAGS) $(PTHREAD_CFLAGS) $(DEBUGINFOD_CFLAGS)
 INTERNAL_WARN_CFLAGS = $(INTERNAL_CFLAGS_BASE) $(GDB_WARN_CFLAGS)
 INTERNAL_CFLAGS = $(INTERNAL_WARN_CFLAGS) $(GDB_WERROR_CFLAGS)
 
@@ -632,12 +644,12 @@ INTERNAL_LDFLAGS = \
 # LIBIBERTY appears twice on purpose.
 CLIBS = $(SIM) $(READLINE) $(OPCODES) $(LIBCTF) $(BFD) $(ZLIB) \
         $(LIBSUPPORT) $(INTL) $(LIBIBERTY) $(LIBDECNUMBER) \
-	$(XM_CLIBS) $(GDBTKLIBS) \
+	$(XM_CLIBS) $(GDBTKLIBS)  $(LIBBACKTRACE_LIB) \
 	@LIBS@ @GUILE_LIBS@ @PYTHON_LIBS@ \
 	$(LIBEXPAT) $(LIBLZMA) $(LIBBABELTRACE) $(LIBIPT) \
 	$(WIN32LIBS) $(LIBGNU) $(LIBGNU_EXTRA_LIBS) $(LIBICONV) \
 	$(LIBMPFR) $(LIBGMP) $(SRCHIGH_LIBS) $(LIBXXHASH) $(PTHREAD_LIBS) \
-	$(DEBUGINFOD_LIBS)
+	$(DEBUGINFOD_LIBS) $(LIBBABELTRACE_LIB)
 CDEPS = $(NAT_CDEPS) $(SIM) $(BFD) $(READLINE_DEPS) $(CTF_DEPS) \
 	$(OPCODES) $(INTL_DEPS) $(LIBIBERTY) $(CONFIG_DEPS) $(LIBGNU) \
 	$(LIBSUPPORT)
@@ -697,11 +709,23 @@ ALL_64_TARGET_OBS = \
 	amd64-windows-tdep.o \
 	arch/aarch64.o \
 	arch/aarch64-insn.o \
+	arch/aarch64-mte-linux.o \
 	arch/amd64.o \
+	arch/riscv.o \
 	ia64-linux-tdep.o \
 	ia64-tdep.o \
 	ia64-vms-tdep.o \
+	mips-fbsd-tdep.o \
+	mips-linux-tdep.o \
+	mips-netbsd-tdep.o \
+	mips-sde-tdep.o \
+	mips-tdep.o \
 	mips64-obsd-tdep.o \
+	riscv-fbsd-tdep.o \
+	riscv-linux-tdep.o \
+	riscv-none-tdep.o \
+	riscv-ravenscar-thread.o \
+	riscv-tdep.o \
 	sparc64-fbsd-tdep.o \
 	sparc64-linux-tdep.o \
 	sparc64-netbsd-tdep.o \
@@ -713,6 +737,7 @@ ALL_64_TARGET_OBS = \
 ALL_TARGET_OBS = \
 	aarch32-tdep.o \
 	arc-linux-tdep.o \
+	arc-newlib-tdep.o \
 	arc-tdep.o \
 	arch/aarch32.o \
 	arch/arc.o \
@@ -721,14 +746,13 @@ ALL_TARGET_OBS = \
 	arch/arm-linux.o \
 	arch/i386.o \
 	arch/ppc-linux-common.o \
-	arch/riscv.o \
 	arm-bsd-tdep.o \
 	arm-fbsd-tdep.o \
 	arm-linux-tdep.o \
 	arm-netbsd-tdep.o \
+	arm-none-tdep.o \
 	arm-obsd-tdep.o \
 	arm-pikeos-tdep.o \
-	arm-symbian-tdep.o \
 	arm-tdep.o \
 	arm-wince-tdep.o \
 	avr-tdep.o \
@@ -780,11 +804,6 @@ ALL_TARGET_OBS = \
 	mep-tdep.o \
 	microblaze-linux-tdep.o \
 	microblaze-tdep.o \
-	mips-fbsd-tdep.o \
-	mips-linux-tdep.o \
-	mips-netbsd-tdep.o \
-	mips-sde-tdep.o \
-	mips-tdep.o \
 	mn10300-linux-tdep.o \
 	mn10300-tdep.o \
 	moxie-tdep.o \
@@ -805,10 +824,6 @@ ALL_TARGET_OBS = \
 	ppc-sysv-tdep.o \
 	ppc64-tdep.o \
 	ravenscar-thread.o \
-	riscv-fbsd-tdep.o \
-	riscv-linux-tdep.o \
-	riscv-ravenscar-thread.o \
-	riscv-tdep.o \
 	rl78-tdep.o \
 	rs6000-aix-tdep.o \
 	rs6000-lynx178-tdep.o \
@@ -847,7 +862,8 @@ ALL_TARGET_OBS = \
 	xstormy16-tdep.o \
 	xtensa-config.o \
 	xtensa-linux-tdep.o \
-	xtensa-tdep.o
+	xtensa-tdep.o \
+	z80-tdep.o
 
 # The following native-target dependent variables are defined on
 # configure.nat.
@@ -983,10 +999,13 @@ COMMON_SFILES = \
 	bfd-target.c \
 	block.c \
 	blockframe.c \
+	break-catch-exec.c \
+	break-catch-fork.c \
 	break-catch-sig.c \
 	break-catch-syscall.c \
 	break-catch-throw.c \
 	breakpoint.c \
+	bt-utils.c \
 	btrace.c \
 	build-id.c \
 	buildsym-legacy.c \
@@ -1001,7 +1020,6 @@ COMMON_SFILES = \
 	coffread.c \
 	complaints.c \
 	completer.c \
-	continuations.c \
 	copying.c \
 	corefile.c \
 	corelow.c \
@@ -1023,7 +1041,8 @@ COMMON_SFILES = \
 	dummy-frame.c \
 	dwarf2/abbrev.c \
 	dwarf2/attribute.c \
-	dwarf2/comp-unit.c \
+	dwarf2/comp-unit-head.c \
+	dwarf2/cu.c \
 	dwarf2/dwz.c \
 	dwarf2/expr.c \
 	dwarf2/frame-tailcall.c \
@@ -1057,9 +1076,6 @@ COMMON_SFILES = \
 	gcore.c \
 	gdb-demangle.c \
 	gdb_bfd.c \
-	gdb_obstack.c \
-	gdb_regex.c \
-	gdbarch.c \
 	gdbtypes.c \
 	gmp-utils.c \
 	gnu-v2-abi.c \
@@ -1131,6 +1147,7 @@ COMMON_SFILES = \
 	reverse.c \
 	run-on-main-thread.c \
 	rust-lang.c \
+	rust-parse.c \
 	sentinel-frame.c \
 	ser-event.c \
 	serial.c \
@@ -1188,14 +1205,15 @@ SFILES = \
 	cp-name-parser.y \
 	d-exp.y \
 	dtrace-probe.c \
+	elf-none-tdep.c \
 	elfread.c \
 	f-exp.y \
+	gcore-elf.c \
 	gdb.c \
 	go-exp.y \
 	m2-exp.y \
 	p-exp.y \
 	proc-service.list \
-	rust-exp.y \
 	ser-base.c \
 	ser-unix.c \
 	sol-thread.c \
@@ -1246,6 +1264,7 @@ HFILES_NO_SRCDIR = \
 	breakpoint.h \
 	bsd-kvm.h \
 	bsd-uthread.h \
+	bt-utils.h \
 	build-id.h \
 	buildsym-legacy.h \
 	buildsym.h \
@@ -1268,6 +1287,7 @@ HFILES_NO_SRCDIR = \
 	dictionary.h \
 	disasm.h \
 	dummy-frame.h \
+	dwarf2/cu.h \
 	dwarf2/frame-tailcall.h \
 	dwarf2/frame.h \
 	dwarf2/expr.h \
@@ -1291,13 +1311,12 @@ HFILES_NO_SRCDIR = \
 	frame-unwind.h \
 	frv-tdep.h \
 	ft32-tdep.h \
+	gcore-elf.h \
 	gcore.h \
 	gdb_bfd.h \
 	gdb_curses.h \
 	gdb_expat.h \
-	gdb_obstack.h \
 	gdb_proc_service.h \
-	gdb_regex.h \
 	gdb_select.h \
 	gdb-stabs.h \
 	gdb_vfork.h \
@@ -1328,7 +1347,6 @@ HFILES_NO_SRCDIR = \
 	inf-ptrace.h \
 	infcall.h \
 	inferior.h \
-	inflow.h \
 	inline-frame.h \
 	interps.h \
 	jit.h \
@@ -1360,11 +1378,13 @@ HFILES_NO_SRCDIR = \
 	netbsd-tdep.h \
 	nds32-tdep.h \
 	nios2-tdep.h \
+	elf-none-tdep.h \
 	nto-tdep.h \
 	objc-lang.h \
 	objfiles.h \
 	obsd-nat.h \
 	obsd-tdep.h \
+	or1k-linux-tdep.h \
 	osabi.h \
 	osdata.h \
 	p-lang.h \
@@ -1397,7 +1417,6 @@ HFILES_NO_SRCDIR = \
 	riscv-ravenscar-thread.h \
 	riscv-tdep.h \
 	rs6000-aix-tdep.h \
-	rs6000-tdep.h \
 	run-on-main-thread.h \
 	s390-linux-tdep.h \
 	s390-tdep.h \
@@ -1468,6 +1487,7 @@ HFILES_NO_SRCDIR = \
 	arch/aarch32.h \
 	arch/aarch64.h \
 	arch/aarch64-insn.h \
+	arch/aarch64-mte-linux.h \
 	arch/arc.h \
 	arch/arm.h \
 	arch/i386.h \
@@ -1503,6 +1523,7 @@ HFILES_NO_SRCDIR = \
 	mi/mi-parse.h \
 	nat/aarch64-linux.h \
 	nat/aarch64-linux-hw-point.h \
+	nat/aarch64-mte-linux-ptrace.h \
 	nat/aarch64-sve-linux-ptrace.h \
 	nat/amd64-linux-siginfo.h \
 	nat/gdb_ptrace.h \
@@ -1540,6 +1561,7 @@ HFILES_NO_SRCDIR = \
 	tui/tui-hooks.h \
 	tui/tui-io.h \
 	tui/tui-layout.h \
+	tui/tui-location.h \
 	tui/tui-out.h \
 	tui/tui-regs.h \
 	tui/tui-source.h \
@@ -1598,8 +1620,7 @@ YYFILES = \
 	f-exp.c \
 	go-exp.c \
 	m2-exp.c \
-	p-exp.c \
-	rust-exp.c
+	p-exp.c
 
 # ada-lex.c is included by another file, so it shouldn't wind up as a
 # .o itself.
@@ -1622,7 +1643,7 @@ generated_files = \
 PYTHON_CFLAGS = @PYTHON_CFLAGS@
 
 all: gdb$(EXEEXT) $(CONFIG_ALL) gdb-gdb.py gdb-gdb.gdb
-	@$(MAKE) $(FLAGS_TO_PASS) DO=all "DODIRS=`echo $(SUBDIRS) | sed 's/testsuite//'`" subdir_do
+	@$(MAKE) $(FLAGS_TO_PASS) DO=all "DODIRS=$(SUBDIRS)" subdir_do
 
 # Rule for compiling .c files in the top-level gdb directory.
 # The order-only dependencies ensure that we create the build subdirectories.
@@ -1661,12 +1682,12 @@ check-perf: force
 	  $(MAKE) $(TARGET_FLAGS_TO_PASS) check-perf; \
 	else true; fi
 
-check-read1: force
+check-read1 check-readmore: force
 	@if [ -f testsuite/Makefile ]; then \
 	  rootme=`pwd`; export rootme; \
 	  rootsrc=`cd $(srcdir); pwd`; export rootsrc; \
 	  cd testsuite; \
-	  $(MAKE) $(TARGET_FLAGS_TO_PASS) check-read1; \
+	  $(MAKE) $(TARGET_FLAGS_TO_PASS) $@; \
 	else true; fi
 
 check-parallel: force
@@ -1798,8 +1819,8 @@ uninstall: force $(CONFIG_UNINSTALL)
 		else \
 		  true ; \
 		fi ; \
-		rm -f $(DESTDIR)$(bindir)/$$transformed_name$(EXEEXT) \
-		      $(DESTDIR)$(man1dir)/$$transformed_name.1
+		rm -f $(DESTDIR)$(bindir)/$$transformed_name$(EXEEXT)
+		rm -f $(DESTDIR)$(includedir)/gdb/jit-reader.h
 	if test "x$(HAVE_NATIVE_GCORE_TARGET)$(HAVE_NATIVE_GCORE_HOST)" != x; \
 	then \
 	  transformed_name=`t='$(program_transform_name)'; \
@@ -1811,6 +1832,14 @@ uninstall: force $(CONFIG_UNINSTALL)
 		  fi ; \
 		  rm -f $(DESTDIR)$(bindir)/$$transformed_name; \
 	fi
+	transformed_name=`t='$(program_transform_name)'; \
+			  echo gdb-add-index | sed -e "$$t"` ; \
+	if test "x$$transformed_name" = x; then \
+	  transformed_name=gdb-add-index ; \
+	else \
+	  true ; \
+	fi ; \
+	rm -f $(DESTDIR)$(bindir)/$$transformed_name
 	@$(MAKE) DO=uninstall "DODIRS=$(SUBDIRS)" $(FLAGS_TO_PASS) subdir_do
 
 # The C++ name parser can be built standalone for testing.
@@ -1827,42 +1856,31 @@ test-cp-name-parser$(EXEEXT): test-cp-name-parser.o $(LIBIBERTY)
 # maybe we could just require every .o file to have an initialization routine
 # of a given name (top.o -> _initialize_top, etc.).
 #
-# Formatting conventions:  The name of the _initialize_* routines must start
-# in column zero, and must not be inside #if.
-#
 # Note that the set of files with init functions might change, or the names
 # of the functions might change, so this files needs to depend on all the
 # source files that will be linked into gdb.  However, due to the way
 # this Makefile has generally been written, we do this indirectly, by
 # computing the list of source files from the list of object files.
 
+INIT_FILES_FILTER_OUT = \
+	cp-name-parser.o \
+	init.o \
+	version.o \
+	xml-builtin.o \
+	%_S.o \
+	%_U.o
+
 INIT_FILES = \
 	$(patsubst %.o,%.c, \
 	  $(patsubst %-exp.o,%-exp.y, \
-	    $(filter-out init.o version.o %_S.o %_U.o,\
-	      $(COMMON_OBS))))
+	    $(filter-out $(INIT_FILES_FILTER_OUT), $(COMMON_OBS))))
 
 init.c: stamp-init; @true
-stamp-init: $(INIT_FILES) config.status
-	@$(ECHO_INIT_C) echo "Making init.c"
-	@rm -f init.c-tmp init.l-tmp
-	@touch init.c-tmp
-	@-for f in $(INIT_FILES); do \
-	    sed -n -e 's/^_initialize_\([a-z_0-9A-Z]*\).*/\1/p' \
-	        $(srcdir)/$$f 2>/dev/null; \
-	done > init.l-tmp
-	@echo '/* Do not modify this file.  */' >>init.c-tmp
-	@echo '/* It is created automatically by the Makefile.  */'>>init.c-tmp
-	@echo '#include "defs.h"      /* For initialize_file_ftype.  */' >>init.c-tmp
-	@echo 'extern void initialize_all_files(void);' >>init.c-tmp
-	@sed -e 's/\(.*\)/extern initialize_file_ftype _initialize_\1;/' <init.l-tmp >>init.c-tmp
-	@echo 'void' >>init.c-tmp
-	@echo 'initialize_all_files (void)' >>init.c-tmp
-	@echo '{' >>init.c-tmp
-	@sed -e 's/\(.*\)/  _initialize_\1 ();/' <init.l-tmp >>init.c-tmp
-	@echo '}' >>init.c-tmp
-	@$(SHELL) $(srcdir)/../move-if-change init.c-tmp init.c
-	@echo stamp > stamp-init
+stamp-init: $(INIT_FILES) config.status $(srcdir)/make-init-c
+	$(ECHO_INIT_C)
+	$(SILENCE) $(srcdir)/make-init-c $(addprefix $(srcdir)/,$(INIT_FILES)) > init.c-tmp
+	$(SILENCE) $(SHELL) $(srcdir)/../move-if-change init.c-tmp init.c
+	$(SILENCE) echo stamp > stamp-init
 
 .PRECIOUS: init.c
 
@@ -1885,11 +1903,6 @@ gdb$(EXEEXT): gdb.o $(LIBGDB_OBS) $(CDEPS) $(TDEPLIBS)
 ifneq ($(CODESIGN_CERT),)
 	$(ECHO_SIGN) $(CODESIGN) -s $(CODESIGN_CERT) gdb$(EXEEXT)
 endif
-
-# Convenience rule to handle recursion.
-.PHONY: all-data-directory
-all-data-directory: data-directory/Makefile
-	@$(MAKE) $(FLAGS_TO_PASS) DO=all DODIRS=data-directory subdir_do
 
 # This is useful when debugging GDB, because some Unix's don't let you run GDB
 # on itself without copying the executable.  So "make gdb1" will make
@@ -1959,7 +1972,7 @@ local-maintainer-clean:
 	rm -f c-exp.c \
 		cp-name-parser.c \
 		ada-lex.c ada-exp.c \
-		d-exp.c f-exp.c go-exp.c m2-exp.c p-exp.c rust-exp.c
+		d-exp.c f-exp.c go-exp.c m2-exp.c p-exp.c
 	rm -f TAGS
 	rm -f $(YYFILES)
 	rm -f nm.h config.status
@@ -1988,9 +2001,6 @@ subdir_do: force
 	done
 
 Makefile: Makefile.in config.status
-	$(SHELL) config.status $@
-
-data-directory/Makefile: data-directory/Makefile.in config.status
 	$(SHELL) config.status $@
 
 .PHONY: run
@@ -2164,8 +2174,8 @@ ALLDEPFILES = \
 	arm-linux-tdep.c \
 	arm-netbsd-nat.c \
 	arm-netbsd-tdep.c \
+	arm-none-tdep.c \
 	arm-obsd-tdep.c \
-	arm-symbian-tdep.c \
 	arm-tdep.c \
 	avr-tdep.c \
 	bfin-linux-tdep.c \
@@ -2252,6 +2262,7 @@ ALLDEPFILES = \
 	nios2-tdep.c \
 	obsd-nat.c \
 	obsd-tdep.c \
+	or1k-linux-nat.c \
 	posix-hdep.c \
 	ppc-fbsd-nat.c \
 	ppc-fbsd-tdep.c \
@@ -2271,11 +2282,12 @@ ALLDEPFILES = \
 	riscv-fbsd-tdep.c \
 	riscv-linux-nat.c \
 	riscv-linux-tdep.c \
+	riscv-none-tdep.c \
 	riscv-ravenscar-thread.c \
 	riscv-tdep.c \
 	rl78-tdep.c \
+	rs6000-aix-nat.c \
 	rs6000-lynx178-tdep.c \
-	rs6000-nat.c \
 	rs6000-tdep.c \
 	rx-tdep.c \
 	s390-linux-nat.c \

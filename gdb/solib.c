@@ -1,6 +1,6 @@
 /* Handle shared libraries for GDB, the GNU Debugger.
 
-   Copyright (C) 1990-2021 Free Software Foundation, Inc.
+   Copyright (C) 1990-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -29,12 +29,14 @@
 #include "command.h"
 #include "target.h"
 #include "frame.h"
-#include "gdb_regex.h"
+#include "gdbsupport/gdb_regex.h"
 #include "inferior.h"
 #include "gdbsupport/environ.h"
 #include "language.h"
 #include "gdbcmd.h"
 #include "completer.h"
+#include "elf/external.h"
+#include "elf/common.h"
 #include "filenames.h"		/* for DOSish file names */
 #include "exec.h"
 #include "solist.h"
@@ -96,7 +98,7 @@ struct target_so_ops *current_target_so_ops;
 /* If non-empty, this is a search path for loading non-absolute shared library
    symbol files.  This takes precedence over the environment variables PATH
    and LD_LIBRARY_PATH.  */
-static char *solib_search_path = NULL;
+static std::string solib_search_path;
 static void
 show_solib_search_path (struct ui_file *file, int from_tty,
 			struct cmd_list_element *c, const char *value)
@@ -155,7 +157,7 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
   int found_file = -1;
   gdb::unique_xmalloc_ptr<char> temp_pathname;
   const char *fskind = effective_target_file_system_kind ();
-  const char *sysroot = gdb_sysroot;
+  const char *sysroot = gdb_sysroot.c_str ();
   int prefix_len, orig_prefix_len;
 
   /* If the absolute prefix starts with "target:" but the filesystem
@@ -255,7 +257,8 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
     }
 
   /* Now see if we can open it.  */
-  found_file = gdb_open_cloexec (temp_pathname.get (), O_RDONLY | O_BINARY, 0);
+  found_file = gdb_open_cloexec (temp_pathname.get (),
+				 O_RDONLY | O_BINARY, 0).release ();
 
   /* If the search in gdb_sysroot failed, and the path name has a
      drive spec (e.g, c:/foo), try stripping ':' from the drive spec,
@@ -276,7 +279,7 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
 				   in_pathname + 2, (char *) NULL));
 
       found_file = gdb_open_cloexec (temp_pathname.get (),
-				     O_RDONLY | O_BINARY, 0);
+				     O_RDONLY | O_BINARY, 0).release ();
       if (found_file < 0)
 	{
 	  /* If the search in gdb_sysroot still failed, try fully
@@ -290,7 +293,7 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
 				       in_pathname + 2, (char *) NULL));
 
 	  found_file = gdb_open_cloexec (temp_pathname.get (),
-					 O_RDONLY | O_BINARY, 0);
+					 O_RDONLY | O_BINARY, 0).release ();
 	}
     }
 
@@ -319,8 +322,8 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
 
   /* If not found, and we're looking for a solib, search the
      solib_search_path (if any).  */
-  if (is_solib && found_file < 0 && solib_search_path != NULL)
-    found_file = openp (solib_search_path,
+  if (is_solib && found_file < 0 && !solib_search_path.empty ())
+    found_file = openp (solib_search_path.c_str (),
 			OPF_TRY_CWD_FIRST | OPF_RETURN_REALPATH,
 			in_pathname, O_RDONLY | O_BINARY, &temp_pathname);
 
@@ -328,8 +331,8 @@ solib_find_1 (const char *in_pathname, int *fd, bool is_solib)
      solib_search_path (if any) for the basename only (ignoring the
      path).  This is to allow reading solibs from a path that differs
      from the opened path.  */
-  if (is_solib && found_file < 0 && solib_search_path != NULL)
-    found_file = openp (solib_search_path,
+  if (is_solib && found_file < 0 && !solib_search_path.empty ())
+    found_file = openp (solib_search_path.c_str (),
 			OPF_TRY_CWD_FIRST | OPF_RETURN_REALPATH,
 			target_lbasename (fskind, in_pathname),
 			O_RDONLY | O_BINARY, &temp_pathname);
@@ -378,7 +381,7 @@ exec_file_find (const char *in_pathname, int *fd)
   if (in_pathname == NULL)
     return NULL;
 
-  if (*gdb_sysroot != '\0' && IS_TARGET_ABSOLUTE_PATH (fskind, in_pathname))
+  if (!gdb_sysroot.empty () && IS_TARGET_ABSOLUTE_PATH (fskind, in_pathname))
     {
       result = solib_find_1 (in_pathname, fd, false);
 
@@ -900,12 +903,17 @@ Do you need \"set solib-search-path\" or \"set sysroot\"?"),
 
    Uses a fairly simplistic heuristic approach where we check
    the file name against "/libpthread".  This can lead to false
-   positives, but this should be good enough in practice.  */
+   positives, but this should be good enough in practice.
+
+   As of glibc-2.34, functions formerly residing in libpthread have
+   been moved to libc, so "/libc." needs to be checked too.  (Matching
+   the "." will avoid matching libraries such as libcrypt.) */
 
 bool
 libpthread_name_p (const char *name)
 {
-  return (strstr (name, "/libpthread") != NULL);
+  return (strstr (name, "/libpthread") != NULL
+          || strstr (name, "/libc.") != NULL );
 }
 
 /* Return non-zero if SO is the libpthread shared library.  */
@@ -1389,18 +1397,18 @@ gdb_sysroot_changed (const char *ignored, int from_tty,
   const char *old_prefix = "remote:";
   const char *new_prefix = TARGET_SYSROOT_PREFIX;
 
-  if (startswith (gdb_sysroot, old_prefix))
+  if (startswith (gdb_sysroot.c_str (), old_prefix))
     {
       static bool warning_issued = false;
 
       gdb_assert (strlen (old_prefix) == strlen (new_prefix));
-      memcpy (gdb_sysroot, new_prefix, strlen (new_prefix));
+      gdb_sysroot = new_prefix + gdb_sysroot.substr (strlen (old_prefix));
 
       if (!warning_issued)
 	{
 	  warning (_("\"%s\" is deprecated, use \"%s\" instead."),
 		   old_prefix, new_prefix);
-	  warning (_("sysroot set to \"%s\"."), gdb_sysroot);
+	  warning (_("sysroot set to \"%s\"."), gdb_sysroot.c_str ());
 
 	  warning_issued = true;
 	}
@@ -1474,6 +1482,108 @@ gdb_bfd_lookup_symbol_from_symtab (bfd *abfd,
     }
 
   return symaddr;
+}
+
+/* See solib.h.  */
+
+int
+gdb_bfd_scan_elf_dyntag (const int desired_dyntag, bfd *abfd, CORE_ADDR *ptr,
+			 CORE_ADDR *ptr_addr)
+{
+  int arch_size, step, sect_size;
+  long current_dyntag;
+  CORE_ADDR dyn_ptr, dyn_addr;
+  gdb_byte *bufend, *bufstart, *buf;
+  Elf32_External_Dyn *x_dynp_32;
+  Elf64_External_Dyn *x_dynp_64;
+  struct bfd_section *sect;
+
+  if (abfd == NULL)
+    return 0;
+
+  if (bfd_get_flavour (abfd) != bfd_target_elf_flavour)
+    return 0;
+
+  arch_size = bfd_get_arch_size (abfd);
+  if (arch_size == -1)
+    return 0;
+
+  /* Find the start address of the .dynamic section.  */
+  sect = bfd_get_section_by_name (abfd, ".dynamic");
+  if (sect == NULL)
+    return 0;
+
+  bool found = false;
+  for (const target_section &target_section
+	 : current_program_space->target_sections ())
+    if (sect == target_section.the_bfd_section)
+      {
+	dyn_addr = target_section.addr;
+	found = true;
+	break;
+      }
+  if (!found)
+    {
+      /* ABFD may come from OBJFILE acting only as a symbol file without being
+	 loaded into the target (see add_symbol_file_command).  This case is
+	 such fallback to the file VMA address without the possibility of
+	 having the section relocated to its actual in-memory address.  */
+
+      dyn_addr = bfd_section_vma (sect);
+    }
+
+  /* Read in .dynamic from the BFD.  We will get the actual value
+     from memory later.  */
+  sect_size = bfd_section_size (sect);
+  buf = bufstart = (gdb_byte *) alloca (sect_size);
+  if (!bfd_get_section_contents (abfd, sect,
+				 buf, 0, sect_size))
+    return 0;
+
+  /* Iterate over BUF and scan for DYNTAG.  If found, set PTR and return.  */
+  step = (arch_size == 32) ? sizeof (Elf32_External_Dyn)
+			   : sizeof (Elf64_External_Dyn);
+  for (bufend = buf + sect_size;
+       buf < bufend;
+       buf += step)
+  {
+    if (arch_size == 32)
+      {
+	x_dynp_32 = (Elf32_External_Dyn *) buf;
+	current_dyntag = bfd_h_get_32 (abfd, (bfd_byte *) x_dynp_32->d_tag);
+	dyn_ptr = bfd_h_get_32 (abfd, (bfd_byte *) x_dynp_32->d_un.d_ptr);
+      }
+    else
+      {
+	x_dynp_64 = (Elf64_External_Dyn *) buf;
+	current_dyntag = bfd_h_get_64 (abfd, (bfd_byte *) x_dynp_64->d_tag);
+	dyn_ptr = bfd_h_get_64 (abfd, (bfd_byte *) x_dynp_64->d_un.d_ptr);
+      }
+    if (current_dyntag == DT_NULL)
+      return 0;
+    if (current_dyntag == desired_dyntag)
+      {
+	/* If requested, try to read the runtime value of this .dynamic
+	   entry.  */
+	if (ptr)
+	  {
+	    struct type *ptr_type;
+	    gdb_byte ptr_buf[8];
+	    CORE_ADDR ptr_addr_1;
+
+	    ptr_type = builtin_type (target_gdbarch ())->builtin_data_ptr;
+	    ptr_addr_1 = dyn_addr + (buf - bufstart) + arch_size / 8;
+	    if (target_read_memory (ptr_addr_1, ptr_buf, arch_size / 8) == 0)
+	      dyn_ptr = extract_typed_address (ptr_buf, ptr_type);
+	    *ptr = dyn_ptr;
+	    if (ptr_addr)
+	      *ptr_addr = dyn_addr + (buf - bufstart);
+	  }
+	return 1;
+      }
+  }
+
+  return 0;
 }
 
 /* Lookup the value for a specific symbol from symbol table.  Look up symbol
@@ -1556,17 +1666,19 @@ _initialize_solib ()
 {
   solib_data = gdbarch_data_register_pre_init (solib_init);
 
-  gdb::observers::free_objfile.attach (remove_user_added_objfile);
+  gdb::observers::free_objfile.attach (remove_user_added_objfile,
+				       "solib");
   gdb::observers::inferior_execd.attach ([] (inferior *inf)
     {
       solib_create_inferior_hook (0);
-    });
+    }, "solib");
 
   add_com ("sharedlibrary", class_files, sharedlibrary_command,
 	   _("Load shared object library symbols for files matching REGEXP."));
-  add_info ("sharedlibrary", info_sharedlibrary_command,
-	    _("Status of loaded shared object libraries."));
-  add_info_alias ("dll", "sharedlibrary", 1);
+  cmd_list_element *info_sharedlibrary_cmd
+    = add_info ("sharedlibrary", info_sharedlibrary_command,
+		_("Status of loaded shared object libraries."));
+  add_info_alias ("dll", info_sharedlibrary_cmd, 1);
   add_com ("nosharedlibrary", class_files, no_shared_libraries,
 	   _("Unload all shared object library symbols."));
 
@@ -1583,20 +1695,21 @@ inferior.  Otherwise, symbols must be loaded manually, using \
 			   show_auto_solib_add,
 			   &setlist, &showlist);
 
-  add_setshow_optional_filename_cmd ("sysroot", class_support,
-				     &gdb_sysroot, _("\
+  set_show_commands sysroot_cmds
+    = add_setshow_optional_filename_cmd ("sysroot", class_support,
+					 &gdb_sysroot, _("\
 Set an alternate system root."), _("\
 Show the current system root."), _("\
 The system root is used to load absolute shared library symbol files.\n\
 For other (relative) files, you can add directories using\n\
 `set solib-search-path'."),
-				     gdb_sysroot_changed,
-				     NULL,
-				     &setlist, &showlist);
+					 gdb_sysroot_changed,
+					 NULL,
+					 &setlist, &showlist);
 
-  add_alias_cmd ("solib-absolute-prefix", "sysroot", class_support, 0,
+  add_alias_cmd ("solib-absolute-prefix", sysroot_cmds.set, class_support, 0,
 		 &setlist);
-  add_alias_cmd ("solib-absolute-prefix", "sysroot", class_support, 0,
+  add_alias_cmd ("solib-absolute-prefix", sysroot_cmds.show, class_support, 0,
 		 &showlist);
 
   add_setshow_optional_filename_cmd ("solib-search-path", class_support,
