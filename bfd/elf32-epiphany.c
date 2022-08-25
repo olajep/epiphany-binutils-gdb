@@ -104,7 +104,7 @@ static reloc_howto_type epiphany_elf_howto_table [] =
   /* imm12 - sign-magnitude */
   AHOW (R_EPIPHANY_IMM11,   0, 2,11, false, 0, complain_overflow_bitfield, "R_EPIPHANY_IMM12",	 0x00ff0380, 0x00ff0380),
   /* imm8 */
-  AHOW (R_EPIPHANY_IMM8,    0, 1, 8, false, 8, complain_overflow_signed,   "R_EPIPHANY_IMM8",	 0x0000ff00, 0x0000ff00)
+  AHOW (R_EPIPHANY_IMM8,    0, 1, 8, false, 8, complain_overflow_signed,   "R_EPIPHANY_IMM8",	 0x0000ff00, 0x0000ff00),
 
   /* %CACHEHIGH(EA) */
   AHOW (R_EPIPHANY_CACHEHIGH, 0, 2,16, false, 0, complain_overflow_dont,     "R_EPIPHANY_CACHEHIGH", 0x0ff01fe0, 0x0ff01fe0),
@@ -665,7 +665,7 @@ epiphany_elf_relocate_section (bfd *output_bfd ATTRIBUTE_UNUSED,
 
 
 /* Based on _bfd_elf_create_dynamic_sections */
-static bfd_boolean
+static bool
 epiphany_elf_create_plt_section (bfd *dynobj, struct bfd_link_info *info)
 {
    flagword flags;
@@ -701,7 +701,7 @@ epiphany_elf_create_plt_section (bfd *dynobj, struct bfd_link_info *info)
 
 /* Check through relocations in a section, and assign space in the PLT
    where required. */
- static bfd_boolean
+ static bool
  epiphany_elf_check_relocs (bfd *abfd,
 			    struct bfd_link_info *info ATTRIBUTE_UNUSED,
 			    asection *sec ATTRIBUTE_UNUSED,
@@ -766,7 +766,7 @@ epiphany_elf_create_plt_section (bfd *dynobj, struct bfd_link_info *info)
 
 /* Allocate memory for PLT contents, replacing the PLT section
    we previously created with that in the final object. */
-static bfd_boolean
+static bool
 epiphany_elf_size_dynamic_sections (bfd *output_bfd,
 				    struct bfd_link_info *info)
 {
@@ -780,7 +780,7 @@ epiphany_elf_size_dynamic_sections (bfd *output_bfd,
 }
 
 /* Generate the branches to our cache manager */
-static bfd_boolean
+static bool
 epiphany_elf_finish_dynamic_sections (bfd * output_bfd,
 				      struct bfd_link_info * info ATTRIBUTE_UNUSED)
 {
