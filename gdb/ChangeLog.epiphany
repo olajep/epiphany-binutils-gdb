@@ -1,3 +1,14 @@
+2022-09-25  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* epiphany-tdep.c: Adjust headers.
+	(frame_debug, debug_infrun): Remove unneeded declarations.
+	(epiphany_push_dummy_call): Replace struct_return with return_method.
+	(epiphany_print_registers_info): Replace val_print with
+	common_val_print.
+	(epiphany_return_value): Adjust for removed TYPE_CODE.
+	(epiphany_register_reggroup_p): Remove unused tdep variable.
+	(epiphany_gdbarch_init): Remove unused epiphany_frame_base variable.
+
 2019-03-24  Ola Jeppsson  <ola@adapteva.com>
 
 	* epiphany-tdep.c (epiphany_analyze_prologue): Adjust to be

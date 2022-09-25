@@ -36,7 +36,6 @@
 
 
 #include "defs.h"
-#include "gdb_assert.h"
 #include "frame.h"
 #include "inferior.h"
 #include "symtab.h"
@@ -58,8 +57,8 @@
 #include "frame.h"
 #include "frame-unwind.h"
 #include "frame-base.h"
-#include "dwarf2-frame.h"
 #include "trad-frame.h"
+#include "dwarf2/frame.h"
 #include "valprint.h"
 #include "prologue-value.h"
 
@@ -279,10 +278,6 @@ enum epiphany_primary_opc {
   OPC_ASHIFT16,
   OPC_MISC
 };
-
-/* External debug flags */
-extern unsigned int frame_debug;		/*!< frame debugging flag */
-extern unsigned int debug_infrun;		/*!< infrun debugging flag */
 
 
 /*============================================================================*/
@@ -1377,7 +1372,7 @@ epiphany_dummy_id (struct gdbarch    *gdbarch,
   @param[in] nargs          Number of ags to push
   @param[in] args           The arguments
   @param[in] sp             The stack pointer
-  @param[in] struct_return  True (1) if this returns a structure
+  @param[in] return_method  Return type
   @param[in] struct_addr    Address for returning structures
 
   @return  The updated stack pointer                                          */
@@ -1390,7 +1385,7 @@ epiphany_push_dummy_call (struct gdbarch  *gdbarch,
 			  int              nargs,
 			  struct value   **args,
 			  CORE_ADDR        sp,
-			  int              struct_return,
+			  function_call_return_method return_method,
 			  CORE_ADDR        struct_addr)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
@@ -1416,7 +1411,7 @@ epiphany_push_dummy_call (struct gdbarch  *gdbarch,
 
   /* Location for a returned structure. This is passed as a silent first
      argument. */
-  if (struct_return)
+  if (return_method == return_method_struct)
     {
       regcache_cooked_write_unsigned (regcache, EPIPHANY_FIRST_ARG_REGNUM,
 				      struct_addr);
@@ -1790,31 +1785,24 @@ epiphany_print_registers_info (struct gdbarch    *gdbarch,
       /* Print the register in hex.  */
       get_formatted_print_options (&opts, 'x');
       opts.deref_ref = 1;
-      val_print (register_type (gdbarch, i),
-		 0, 0,
-		 file, 0, val, &opts, current_language);
+      common_val_print (val, file, 0, &opts, current_language);
 
       /* Print the register according to its natural format */
       get_user_print_options (&opts);
       opts.deref_ref = 1;
       fprintf_filtered (file, "\t");
-      val_print (register_type (gdbarch, i),
-		 0, 0,
-		 file, 0, val, &opts, current_language);
+      common_val_print (val, file, 0, &opts, current_language);
 
       /* If it in the float group (i.e. a GPR), then print in FP format as
 	 well. */
       if (gdbarch_register_reggroup_p (gdbarch, i, float_reggroup))
 	{
-	  struct type *float_type = builtin_type (gdbarch)->builtin_float;
-
 	  get_user_print_options (&opts);
 	  opts.deref_ref = 1;
 
 	  print_spaces_filtered (4, file);
-	  val_print (float_type,
-		     0, 0,
-		     file, 0, val, &opts, current_language);
+	  get_formatted_print_options (&opts, 'f');
+	  common_val_print (val, file, 0, &opts, current_language);
 	}
 
       fprintf_filtered (file, "\n");
@@ -1961,7 +1949,7 @@ epiphany_return_value (struct gdbarch  *gdbarch,
      for now it is hand-coded. */
   unsigned int    bpw = EPIPHANY_BYTES_PER_WORD;
 
-  enum type_code  rv_type    = TYPE_CODE (valtype);
+  enum type_code  rv_type    = valtype->code ();
   unsigned int    rv_size    = TYPE_LENGTH (valtype);
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
 
@@ -2623,8 +2611,6 @@ epiphany_register_reggroup_p (struct gdbarch  *gdbarch,
 			      int               regnum,
 			      struct reggroup  *group)
 {
-  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
-
   /* All register group includes everything (GPR or SCR). Is the register in
      the number range of all registers and does it have a non-empty name. */
   if (group == all_reggroup)
@@ -2956,7 +2942,6 @@ static struct gdbarch *
 epiphany_gdbarch_init (struct gdbarch_info  info,
 		       struct gdbarch_list *arches)
 {
-  static struct frame_base     epiphany_frame_base;
   struct        gdbarch       *gdbarch;
   const struct  bfd_arch_info *binfo;
 
