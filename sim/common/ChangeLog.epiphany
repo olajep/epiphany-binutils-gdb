@@ -1,3 +1,7 @@
+2016-03-13  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* sim-core.c (sim_memory_map): Fix format string warning.
+
 2016-03-13  Ola Jeppsson  <ola@adapteva.com>
 
 	* sim-arange.h (SIM_ARANGE_INLINE): Change to static inline
