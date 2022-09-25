@@ -1,3 +1,11 @@
+2022-09-25  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* configure.ac: Adjust for build system changes between GDB 8.2
+	to GDB 11.2.
+	* Makefile.in: ditto.
+	* configure: Regenerated.
+	* aclocal.m4: Regenerated.
+
 2019-03-25  Ola Jeppsson  <ola@adapteva.com>
 
 	* arch.c: Regenerated.

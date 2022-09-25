@@ -23,6 +23,8 @@ build_alias = @build_alias@
 EPIPHANY_OBJS = epiphany.o cpu.o decode.o sem.o model.o mloop.o epiphany-fp.o \
                 oob-events.o
 
+SIM_EXTRA_HW_DEVICES = epiphany_mem epiphany_dma epiphany_timer
+
 SIM_EXTRA_LIBS = -lm @epiphany_extra_libs@
 
 SIM_EXTRA_CFLAGS = -fPIC @esim_cflags@
