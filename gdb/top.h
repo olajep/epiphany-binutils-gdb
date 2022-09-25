@@ -1,6 +1,6 @@
 /* Top level stuff for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,8 +20,9 @@
 #ifndef TOP_H
 #define TOP_H
 
-#include "buffer.h"
-#include "event-loop.h"
+#include "gdbsupport/buffer.h"
+#include "gdbsupport/event-loop.h"
+#include "gdbsupport/next-iterator.h"
 #include "value.h"
 
 struct tl_interp_info;
@@ -81,7 +82,7 @@ struct ui
 
   /* The function to invoke when a complete line of input is ready for
      processing.  */
-  void (*input_handler) (char *);
+  void (*input_handler) (gdb::unique_xmalloc_ptr<char> &&);
 
   /* True if this UI is using the readline library for command
      editing; false if using GDB's own simple readline emulation, with
@@ -172,6 +173,8 @@ public:
     current_ui = ui_list;
   }
 
+  DISABLE_COPY_AND_ASSIGN (switch_thru_all_uis);
+
   /* If done iterating, return true; otherwise return false.  */
   bool done () const
   {
@@ -189,11 +192,6 @@ public:
 
  private:
 
-  /* No need for these.  They are intentionally not defined
-     anywhere.  */
-  switch_thru_all_uis &operator= (const switch_thru_all_uis &);
-  switch_thru_all_uis (const switch_thru_all_uis &);
-
   /* Used to iterate through the UIs.  */
   struct ui *m_iter;
 
@@ -206,9 +204,12 @@ public:
 #define SWITCH_THRU_ALL_UIS()		\
   for (switch_thru_all_uis stau_state; !stau_state.done (); stau_state.next ())
 
-/* Traverse over all UIs.  */
-#define ALL_UIS(UI)				\
-  for (UI = ui_list; UI; UI = UI->next)		\
+/* An adapter that can be used to traverse over all UIs.  */
+static inline
+next_adapter<ui> all_uis ()
+{
+  return next_adapter<ui> (ui_list);
+}
 
 /* Register the UI's input file descriptor in the event loop.  */
 extern void ui_register_input_event_handler (struct ui *ui);
@@ -217,10 +218,8 @@ extern void ui_register_input_event_handler (struct ui *ui);
 extern void ui_unregister_input_event_handler (struct ui *ui);
 
 /* From top.c.  */
-extern char *saved_command_line;
-extern int confirm;
+extern bool confirm;
 extern int inhibit_gdbinit;
-extern const char gdbinit[];
 
 /* Print the GDB version banner to STREAM.  If INTERACTIVE is false,
    then information referring to commands (e.g., "show configuration")
@@ -271,33 +270,30 @@ extern void set_prompt (const char *s);
 
 extern int gdb_in_secondary_prompt_p (struct ui *ui);
 
-/* From random places.  */
-extern int readnow_symbol_files;
-extern int readnever_symbol_files;
-
 /* Perform _initialize initialization.  */
-extern void gdb_init (char *);
+extern void gdb_init ();
 
 /* For use by event-top.c.  */
 /* Variables from top.c.  */
 extern int source_line_number;
-extern const char *source_file_name;
-extern int history_expansion_p;
-extern int server_command;
+extern std::string source_file_name;
+extern bool history_expansion_p;
+extern bool server_command;
 extern char *lim_at_start;
 
 extern void gdb_add_history (const char *);
 
 extern void show_commands (const char *args, int from_tty);
 
-extern void set_history (const char *, int);
-
-extern void show_history (const char *, int);
-
 extern void set_verbose (const char *, int, struct cmd_list_element *);
 
 extern char *handle_line_of_input (struct buffer *cmd_line_buffer,
-				   char *rl, int repeat,
+				   const char *rl, int repeat,
 				   const char *annotation_suffix);
+
+/* Call at startup to see if the user has requested that gdb start up
+   quietly.  */
+
+extern bool check_quiet_mode ();
 
 #endif

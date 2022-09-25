@@ -1,5 +1,5 @@
 #objdump: -drx -Mpower4
-#as: -mpower4
+#as: -mpower4 --generate-missing-build-notes=no
 #name: Power4 instructions
 
 .*
@@ -21,7 +21,6 @@ Idx Name +Size +VMA +LMA +File off +Algn
 SYMBOL TABLE:
 0+ l +d +\.text	0+ (|\.text)
 0+ l +d +\.data	0+ (|\.data)
-0+ l +d +\.bss	0+ (|\.bss)
 0+ l +\.data	0+ dsym0
 0+10 l +\.data	0+ dsym1
 0+ l +d +\.toc	0+ (|\.toc)
@@ -57,7 +56,7 @@ Disassembly of section \.text:
 .*:	(e0 c3 00 00|00 00 c3 e0) 	lq      r6,0\(r3\)
 .*: R_PPC64_GOT16_LO_DS	dsym0
 .*:	(e0 c3 00 00|00 00 c3 e0) 	lq      r6,0\(r3\)
-.*: R_PPC64_PLT16_LO_DS	\.data
+.*: R_PPC64_PLT16_LO_DS	dsym0
 .*:	(e0 c3 00 .0|.0 00 c3 e0) 	lq      r6,.*\(r3\)
 .*: R_PPC64_SECTOFF_DS	\.data\+0x10
 .*:	(e0 c3 00 .0|.0 00 c3 e0) 	lq      r6,.*\(r3\)

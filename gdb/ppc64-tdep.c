@@ -1,6 +1,6 @@
 /* Common target-dependent code for ppc64 GDB, the GNU debugger.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -30,24 +30,56 @@
    you can use -1 to make masks.  */
 
 #define insn_d(opcd, rts, ra, d)                \
-  ((((opcd) & 0x3f) << 26)                      \
-   | (((rts) & 0x1f) << 21)                     \
-   | (((ra) & 0x1f) << 16)                      \
-   | ((d) & 0xffff))
+  ((((unsigned (opcd)) & 0x3f) << 26)		\
+   | (((unsigned (rts)) & 0x1f) << 21)		\
+   | (((unsigned (ra)) & 0x1f) << 16)		\
+   | ((unsigned (d)) & 0xffff))
 
 #define insn_ds(opcd, rts, ra, d, xo)           \
-  ((((opcd) & 0x3f) << 26)                      \
-   | (((rts) & 0x1f) << 21)                     \
-   | (((ra) & 0x1f) << 16)                      \
-   | ((d) & 0xfffc)                             \
-   | ((xo) & 0x3))
+  ((((unsigned (opcd)) & 0x3f) << 26)                      \
+   | (((unsigned (rts)) & 0x1f) << 21)                     \
+   | (((unsigned (ra)) & 0x1f) << 16)                      \
+   | ((unsigned (d)) & 0xfffc)                             \
+   | ((unsigned (xo)) & 0x3))
 
 #define insn_xfx(opcd, rts, spr, xo)            \
-  ((((opcd) & 0x3f) << 26)                      \
-   | (((rts) & 0x1f) << 21)                     \
-   | (((spr) & 0x1f) << 16)                     \
-   | (((spr) & 0x3e0) << 6)                     \
-   | (((xo) & 0x3ff) << 1))
+  ((((unsigned (opcd)) & 0x3f) << 26)                      \
+   | (((unsigned (rts)) & 0x1f) << 21)                     \
+   | (((unsigned (spr)) & 0x1f) << 16)                     \
+   | (((unsigned (spr)) & 0x3e0) << 6)                     \
+   | (((unsigned (xo)) & 0x3ff) << 1))
+
+#define prefix(a, b, R, do)				   \
+  (((0x1) << 26)					   \
+   | (((unsigned (a)) & 0x3) << 24)			   \
+   | (((unsigned (b)) & 0x1) << 23)			   \
+   | (((unsigned (R)) & 0x1) << 20)			   \
+   | ((unsigned (do)) & 0x3ffff))
+
+#define insn_md(opcd, ra, rs, sh, me, rc)	       	   \
+  ((((unsigned (opcd)) & 0x3f) << 26)			   \
+   | (((unsigned (rs)) & 0x1f) << 21)			   \
+   | (((unsigned (ra)) & 0x1f) << 16)			   \
+   | (((unsigned (sh)) & 0x3e) << 11)			   \
+   | (((unsigned (me)) & 0x3f) << 25)			   \
+   | (((unsigned (sh)) & 0x1)  << 1)			   \
+   | ((unsigned (rc)) & 0x1))
+
+#define insn_x(opcd, rt, ra, rb, opc2)			   \
+  ((((unsigned (opcd)) & 0x3f) << 26)			   \
+   | (((unsigned (rt)) & 0x1f) << 21)			   \
+   | (((unsigned (ra)) & 0x1f) << 16)			   \
+   | (((unsigned (rb)) & 0x3e) << 11)			   \
+   | (((unsigned (opc2)) & 0x3FF) << 1))
+
+#define insn_xo(opcd, rt, ra, rb, oe, rc, opc2)		   \
+  ((((unsigned (opcd)) & 0x3f) << 26)			   \
+   | (((unsigned (rt)) & 0x1f) << 21)			   \
+   | (((unsigned (ra)) & 0x1f) << 16)			   \
+   | (((unsigned (rb)) & 0x3e) << 11)			   \
+   | (((unsigned (oe)) & 0x1) << 10)			   \
+   | (((unsigned (opc2)) & 0x1FF) << 1)			   \
+   | (((unsigned (rc)))))
 
 /* PLT_OFF is the TOC-relative offset of a 64-bit PowerPC PLT entry.
    Return the function's entry point.  */
@@ -75,6 +107,18 @@ ppc64_plt_entry_point (struct frame_info *frame, CORE_ADDR plt_off)
   return read_memory_unsigned_integer (tocp + plt_off, 8, byte_order);
 }
 
+static CORE_ADDR
+ppc64_plt_pcrel_entry_point (struct frame_info *frame, CORE_ADDR plt_off,
+			     CORE_ADDR pc)
+{
+  struct gdbarch *gdbarch = get_frame_arch (frame);
+  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+
+  /* Execution direction doesn't matter, entry is pc + plt_off either way.
+     The first word of the PLT entry is the function entry point.  */
+  return read_memory_unsigned_integer (pc + plt_off, 8, byte_order);
+}
+
 /* Patterns for the standard linkage functions.  These are built by
    build_plt_stub in bfd/elf64-ppc.c.  */
 
@@ -86,7 +130,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage1[] =
     { insn_d (-1, -1, -1, 0), insn_d (15, 12, 2, 0), 0 },
 
     /* std r2, 40(r1) */
-    { -1, insn_ds (62, 2, 1, 40, 0), 0 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 0 },
 
     /* ld r11, <any>(r12) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 12, 0, 0), 0 },
@@ -107,7 +151,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage1[] =
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 12, 0, 0), 1 },
 
     /* bctr */
-    { -1, 0x4e800420, 0 },
+    { (unsigned) -1, 0x4e800420, 0 },
 
     { 0, 0, 0 }
   };
@@ -122,13 +166,13 @@ static const struct ppc_insn_pattern ppc64_standard_linkage1[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage2[] =
   {
     /* std r2, 40(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 40, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 1 },
 
     /* addis r12, r2, <any> */
     { insn_d (-1, -1, -1, 0), insn_d (15, 12, 2, 0), 0 },
 
     /* std r2, 40(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 40, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 1 },
 
     /* ld r11, <any>(r12) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 12, 0, 0), 0 },
@@ -140,10 +184,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage2[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 11, 9, 467), 0 },
 
     /* xor r11, r11, r11 <optional> */
-    { -1, 0x7d6b5a78, 1 },
+    { (unsigned) -1, 0x7d6b5a78, 1 },
 
     /* add r12, r12, r11 <optional> */
-    { -1, 0x7d8c5a14, 1 },
+    { (unsigned) -1, 0x7d8c5a14, 1 },
 
     /* ld r2, <any>(r12) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 2, 12, 0, 0), 0 },
@@ -152,10 +196,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage2[] =
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 12, 0, 0), 1 },
 
     /* bctr <optional> */
-    { -1, 0x4e800420, 1 },
+    { (unsigned) -1, 0x4e800420, 1 },
 
     /* cmpldi r2, 0 <optional> */
-    { -1, 0x28220000, 1 },
+    { (unsigned) -1, 0x28220000, 1 },
 
     { 0, 0, 0 }
   };
@@ -165,7 +209,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage2[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage3[] =
   {
     /* std r2, 40(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 40, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 1 },
 
     /* ld r11, <any>(r2) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 2, 0, 0), 0 },
@@ -177,10 +221,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage3[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 11, 9, 467), 0 },
 
     /* xor r11, r11, r11 <optional> */
-    { -1, 0x7d6b5a78, 1 },
+    { (unsigned) -1, 0x7d6b5a78, 1 },
 
     /* add r2, r2, r11 <optional> */
-    { -1, 0x7c425a14, 1 },
+    { (unsigned) -1, 0x7c425a14, 1 },
 
     /* ld r11, <any>(r2) <optional> */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 2, 0, 0), 1 },
@@ -189,10 +233,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage3[] =
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 2, 2, 0, 0), 0 },
 
     /* bctr <optional> */
-    { -1, 0x4e800420, 1 },
+    { (unsigned) -1, 0x4e800420, 1 },
 
     /* cmpldi r2, 0 <optional> */
-    { -1, 0x28220000, 1 },
+    { (unsigned) -1, 0x28220000, 1 },
 
     { 0, 0, 0 }
   };
@@ -204,7 +248,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage3[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage4[] =
   {
     /* std r2, 40(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 40, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 1 },
 
     /* addis r11, r2, <any> */
     { insn_d (-1, -1, -1, 0), insn_d (15, 11, 2, 0), 0 },
@@ -219,10 +263,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage4[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
 
     /* xor r2, r12, r12 <optional> */
-    { -1, 0x7d826278, 1 },
+    { (unsigned) -1, 0x7d826278, 1 },
 
     /* add r11, r11, r2 <optional> */
-    { -1, 0x7d6b1214, 1 },
+    { (unsigned) -1, 0x7d6b1214, 1 },
 
     /* ld r2, <any>(r11) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 2, 11, 0, 0), 0 },
@@ -231,10 +275,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage4[] =
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 11, 0, 0), 1 },
 
     /* bctr <optional> */
-    { -1, 0x4e800420, 1 },
+    { (unsigned) -1, 0x4e800420, 1 },
 
     /* cmpldi r2, 0 <optional> */
-    { -1, 0x28220000, 1 },
+    { (unsigned) -1, 0x28220000, 1 },
 
     { 0, 0, 0 }
   };
@@ -246,7 +290,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage4[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage5[] =
   {
     /* std r2, 40(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 40, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 40, 0), 1 },
 
     /* ld r12, <any>(r2) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 12, 2, 0, 0), 0 },
@@ -258,10 +302,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage5[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
 
     /* xor r11, r12, r12 <optional> */
-    { -1, 0x7d8b6278, 1 },
+    { (unsigned) -1, 0x7d8b6278, 1 },
 
     /* add r2, r2, r11 <optional> */
-    { -1, 0x7c425a14, 1 },
+    { (unsigned) -1, 0x7c425a14, 1 },
 
     /* ld r11, <any>(r2) <optional> */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 11, 2, 0, 0), 1 },
@@ -270,10 +314,10 @@ static const struct ppc_insn_pattern ppc64_standard_linkage5[] =
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 2, 2, 0, 0), 0 },
 
     /* bctr <optional> */
-    { -1, 0x4e800420, 1 },
+    { (unsigned) -1, 0x4e800420, 1 },
 
     /* cmpldi r2, 0 <optional> */
-    { -1, 0x28220000, 1 },
+    { (unsigned) -1, 0x28220000, 1 },
 
     { 0, 0, 0 }
   };
@@ -283,7 +327,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage5[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage6[] =
   {
     /* std r2, 24(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 24, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 24, 0), 1 },
 
     /* addis r11, r2, <any> */
     { insn_d (-1, -1, -1, 0), insn_d (15, 11, 2, 0), 0 },
@@ -295,7 +339,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage6[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
 
     /* bctr */
-    { -1, 0x4e800420, 0 },
+    { (unsigned) -1, 0x4e800420, 0 },
 
     { 0, 0, 0 }
   };
@@ -305,7 +349,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage6[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage7[] =
   {
     /* std r2, 24(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 24, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 24, 0), 1 },
 
     /* ld r12, <any>(r2) */
     { insn_ds (-1, -1, -1, 0, -1), insn_ds (58, 12, 2, 0, 0), 0 },
@@ -314,7 +358,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage7[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
 
     /* bctr */
-    { -1, 0x4e800420, 0 },
+    { (unsigned) -1, 0x4e800420, 0 },
 
     { 0, 0, 0 }
   };
@@ -325,7 +369,7 @@ static const struct ppc_insn_pattern ppc64_standard_linkage7[] =
 static const struct ppc_insn_pattern ppc64_standard_linkage8[] =
   {
     /* std r2, 24(r1) <optional> */
-    { -1, insn_ds (62, 2, 1, 24, 0), 1 },
+    { (unsigned) -1, insn_ds (62, 2, 1, 24, 0), 1 },
 
     /* addis r12, r2, <any> */
     { insn_d (-1, -1, -1, 0), insn_d (15, 12, 2, 0), 0 },
@@ -337,7 +381,111 @@ static const struct ppc_insn_pattern ppc64_standard_linkage8[] =
     { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
 
     /* bctr */
-    { -1, 0x4e800420, 0 },
+    { (unsigned) -1, 0x4e800420, 0 },
+
+    { 0, 0, 0 }
+  };
+
+/* Power 10 ELFv2 PLT call stubs */
+static const struct ppc_insn_pattern ppc64_standard_linkage9[] =
+  {
+    /* std   %r2,0+40(%r1)   <optional> */
+    { insn_ds (-1, -1, -1, 0, 1), insn_ds (62, 2, 1, 40, 0), 1 },
+
+    /* pld r12, <any> */
+    { prefix (-1, -1, 1, 0), prefix (0, 0, 1, 0), 0 },
+    { insn_d (-1, -1, -1, 0), insn_d (57, 12, 0, 0), 0 },
+
+    /* mtctr r12  */
+    { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
+
+    /* bctr   */
+    { (unsigned) -1, 0x4e800420, 0 },
+
+    { 0, 0, 0 }
+  };
+
+static const struct ppc_insn_pattern ppc64_standard_linkage10[] =
+  {
+    /* std   %r2,0+40(%r1)    <optional> */
+    { insn_ds (-1, -1, -1, 0, 1), insn_ds (62, 2, 1, 40, 0), 1 },
+
+    /* paddi r12,<any> */
+    { prefix (-1, -1, 1, 0), prefix (2, 0, 1, 0), 0 },
+    { insn_d (-1, -1, -1, 0), insn_d (14, 12, 0, 0), 0 },
+
+    /* mtctr r12  <optional> */
+    { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
+
+    /* bctr   */
+    { (unsigned) -1, 0x4e800420, 0 },
+
+    { 0, 0, 0 }
+  };
+
+static const struct ppc_insn_pattern ppc64_standard_linkage11[] =
+  {
+    /* std   %r2,0+40(%r1)   <optional> */
+    { insn_ds (-1, -1, -1, 0, 1), insn_ds (62, 2, 1, 40, 0), 1 },
+
+    /* li %r11,0     <optional> */
+    { insn_d (-1, -1, -1, 0), insn_d (14, 11, 0, 0), 1 },
+
+    /* sldi  %r11,%r11,34   <eq to rldicr rx,ry,n, 63-n> <optional>  */
+    { insn_md (-1, -1, -1, 0, 0, 1), insn_md (30, 11, 11, 34, 63-34, 0), 1 },
+
+    /* paddi r12, <any> */
+    { prefix (-1, -1, 1, 0), prefix (2, 0, 1, 0), 0 },
+    { insn_d (-1, -1, -1, 0), insn_d (14, 12, 0, 0), 0 },
+
+    /* ldx   %r12,%r11,%r12  <optional> */
+    { (unsigned) -1, insn_x (31, 12, 11, 12, 21), 1 },
+
+    /* add   %r12,%r11,%r12  <optional> */
+    { (unsigned) -1, insn_xo (31, 12, 11, 12, 0, 0, 40), 1 },
+
+    /* mtctr r12   */
+    { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
+
+    /* bctr   */ // 13, 14, 15, 16
+    { (unsigned) -1, 0x4e800420, 0 },
+
+    { 0, 0, 0 }
+  };
+
+static const struct ppc_insn_pattern ppc64_standard_linkage12[] =
+  {
+    /* std   %r2,0+40(%r1)    <optional>  */
+    { insn_ds (-1, -1, -1, 0, 1), insn_ds (62, 2, 1, 40, 0), 1 },
+
+    /* lis %r11,xxx@ha <equivalent addis rx, 0, val> */
+    /* addis r12, r2, <any> */
+    { insn_d (-1, -1, -1, 0), insn_d (15, 12, 2, 0), 0 },
+
+    /* ori   %r11,%r11,xxx@l */
+    { insn_d (-1, -1, -1, 0), insn_d (24, 11, 11, 0), 0 },
+
+    /* sldi  %r11,%r11,34 <optional> */
+    { (unsigned) -1, insn_md (30, 11, 11, 34, 63-34, 0), 1 },
+
+    /*paddi r12,<any> */
+    { prefix (-1, -1, 1, 0), prefix (2, 0, 1, 0), 0 },
+    { insn_d (-1, -1, -1, 0), insn_d (14, 12, 0, 0), 0 },
+
+    /* sldi  %r11,%r11,34 <optional> */
+    { (unsigned) -1, insn_md (30, 11, 11, 34, 63-34, 0), 1 },
+
+    /* ldx   %r12,%r11,%r12 <optional> */
+    { (unsigned) -1, insn_x (31, 12, 11, 12, 21), 1 },
+
+    /* add   %r12,%r11,%r12 <optional> */
+    { (unsigned) -1, insn_xo (31, 12, 11, 12, 0, 0, 40), 1 },
+
+    /* mtctr r12  */
+    { insn_xfx (-1, -1, -1, -1), insn_xfx (31, 12, 9, 467), 0 },
+
+    /* bctr  */ // 17, 18, 19, 20
+    { (unsigned) -1, 0x4e800420, 0 },
 
     { 0, 0, 0 }
   };
@@ -432,6 +580,29 @@ ppc64_standard_linkage4_target (struct frame_info *frame, unsigned int *insn)
   return ppc64_plt_entry_point (frame, plt_off);
 }
 
+static CORE_ADDR
+ppc64_pcrel_linkage1_target (struct frame_info *frame, unsigned int *insn,
+			     CORE_ADDR pc)
+{
+  /* insn[0] is for the std instruction.  */
+  CORE_ADDR plt_off = ppc_insn_prefix_dform (insn[1], insn[2]);
+
+  return ppc64_plt_pcrel_entry_point (frame, plt_off, pc);
+}
+
+static CORE_ADDR
+ppc64_pcrel_linkage2_target (struct frame_info *frame, unsigned int *insn,
+			     CORE_ADDR pc)
+{
+  CORE_ADDR plt_off;
+
+  /* insn[0] is for the std instruction.
+     insn[1] is for the  li r11 instruction  */
+  plt_off = ppc_insn_prefix_dform (insn[2], insn[3]);
+
+  return ppc64_plt_pcrel_entry_point (frame, plt_off, pc);
+}
+
 
 /* Given that we've begun executing a call trampoline at PC, return
    the entry point of the function the trampoline will go to.
@@ -447,10 +618,15 @@ ppc64_skip_trampoline_code_1 (struct frame_info *frame, CORE_ADDR pc)
 				    ARRAY_SIZE (ppc64_standard_linkage2)),
 			       MAX (ARRAY_SIZE (ppc64_standard_linkage3),
 				    ARRAY_SIZE (ppc64_standard_linkage4))),
-			  MAX (MAX (ARRAY_SIZE (ppc64_standard_linkage5),
+		      MAX(MAX (MAX (ARRAY_SIZE (ppc64_standard_linkage5),
 				    ARRAY_SIZE (ppc64_standard_linkage6)),
 			       MAX (ARRAY_SIZE (ppc64_standard_linkage7),
-				    ARRAY_SIZE (ppc64_standard_linkage8))))
+				    ARRAY_SIZE (ppc64_standard_linkage8))),
+		          MAX (MAX (ARRAY_SIZE (ppc64_standard_linkage9),
+				    ARRAY_SIZE (ppc64_standard_linkage10)),
+		               MAX (ARRAY_SIZE (ppc64_standard_linkage11),
+				    ARRAY_SIZE (ppc64_standard_linkage12)))))
+
 		     - 1];
   CORE_ADDR target;
   int scan_limit, i;
@@ -463,7 +639,19 @@ ppc64_skip_trampoline_code_1 (struct frame_info *frame, CORE_ADDR pc)
 
   for (i = 0; i < scan_limit; i++)
     {
-      if (i < ARRAY_SIZE (ppc64_standard_linkage8) - 1
+      if (i < ARRAY_SIZE (ppc64_standard_linkage12) - 1
+	  && ppc_insns_match_pattern (frame, pc, ppc64_standard_linkage12, insns))
+	pc = ppc64_pcrel_linkage1_target (frame, insns, pc);
+      else if (i < ARRAY_SIZE (ppc64_standard_linkage11) - 1
+	  && ppc_insns_match_pattern (frame, pc, ppc64_standard_linkage11, insns))
+	pc = ppc64_pcrel_linkage2_target (frame, insns, pc);
+      else if (i < ARRAY_SIZE (ppc64_standard_linkage10) - 1
+	  && ppc_insns_match_pattern (frame, pc, ppc64_standard_linkage10, insns))
+	pc = ppc64_pcrel_linkage1_target (frame, insns, pc);
+      else if (i < ARRAY_SIZE (ppc64_standard_linkage9) - 1
+	  && ppc_insns_match_pattern (frame, pc, ppc64_standard_linkage9, insns))
+	pc = ppc64_pcrel_linkage1_target (frame, insns, pc);
+      else if (i < ARRAY_SIZE (ppc64_standard_linkage8) - 1
 	  && ppc_insns_match_pattern (frame, pc, ppc64_standard_linkage8, insns))
 	pc = ppc64_standard_linkage4_target (frame, insns);
       else if (i < ARRAY_SIZE (ppc64_standard_linkage7) - 1
@@ -506,8 +694,8 @@ ppc64_skip_trampoline_code_1 (struct frame_info *frame, CORE_ADDR pc)
 	}
 
       /* The PLT descriptor will either point to the already resolved target
-         address, or else to a glink stub.  As the latter carry synthetic @plt
-         symbols, find_solib_trampoline_target should be able to resolve them.  */
+	 address, or else to a glink stub.  As the latter carry synthetic @plt
+	 symbols, find_solib_trampoline_target should be able to resolve them.  */
       target = find_solib_trampoline_target (frame, pc);
       return target ? target : pc;
   }
@@ -561,7 +749,7 @@ ppc64_convert_from_func_ptr_addr (struct gdbarch *gdbarch,
 					struct target_ops *targ)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
-  struct target_section *s = target_section_by_addr (targ, addr);
+  const struct target_section *s = target_section_by_addr (targ, addr);
 
   /* Check if ADDR points to a function descriptor.  */
   if (s && strcmp (s->the_bfd_section->name, ".opd") == 0)
@@ -593,8 +781,8 @@ ppc64_convert_from_func_ptr_addr (struct gdbarch *gdbarch,
 				      s->the_bfd_section,
 				      &buf, addr - s->addr, 8);
       if (res != 0)
-	return extract_unsigned_integer (buf, 8, byte_order)
-		- bfd_section_vma (s->bfd, s->the_bfd_section) + s->addr;
+	return (extract_unsigned_integer (buf, 8, byte_order)
+		- bfd_section_vma (s->the_bfd_section) + s->addr);
    }
 
   return addr;

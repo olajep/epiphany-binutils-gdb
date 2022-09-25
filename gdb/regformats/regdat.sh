@@ -1,7 +1,7 @@
 #!/bin/sh -u
 
 # Register protocol definitions for GDB, the GNU debugger.
-# Copyright (C) 2001-2018 Free Software Foundation, Inc.
+# Copyright (C) 2001-2022 Free Software Foundation, Inc.
 #
 # This file is part of GDB.
 #
@@ -127,6 +127,10 @@ do
 
     echo "const struct target_desc *tdesc_${name};"
     echo ""
+
+    # This is necessary for -Wmissing-declarations.
+    echo "void init_registers_${name} (void);"
+
     echo "void"
     echo "init_registers_${name} (void)"
     echo "{"
@@ -163,6 +167,8 @@ done
 
 echo
 echo "static const char *expedite_regs_${name}[] = { \"`echo ${expedite} | sed 's/,/", "/g'`\", 0 };"
+
+echo "#ifndef IN_PROCESS_AGENT"
 if test "${feature}" != x; then
   echo "static const char *xmltarget_${name} = 0;"
 elif test "${xmltarget}" = x; then
@@ -184,7 +190,6 @@ fi
 echo
 
 cat <<EOF
-#ifndef IN_PROCESS_AGENT
   result->xmltarget = xmltarget_${name};
 #endif
 

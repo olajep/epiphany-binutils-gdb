@@ -1,6 +1,6 @@
 /* Target-dependent code for FreeBSD/mips.
 
-   Copyright (C) 2017-2018 Free Software Foundation, Inc.
+   Copyright (C) 2017-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -342,11 +342,11 @@ static const struct tramp_frame mips_fbsd_sigframe =
   SIGTRAMP_FRAME,
   MIPS_INSN32_SIZE,
   {
-    { MIPS_INST_ADDIU_A0_SP_O32, -1 },	/* addiu   a0, sp, SIGF_UC */
-    { MIPS_INST_LI_V0_SIGRETURN, -1 },	/* li      v0, SYS_sigreturn */
-    { MIPS_INST_SYSCALL, -1 },		/* syscall */
-    { MIPS_INST_BREAK, -1 },		/* break */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { MIPS_INST_ADDIU_A0_SP_O32, ULONGEST_MAX },	/* addiu   a0, sp, SIGF_UC */
+    { MIPS_INST_LI_V0_SIGRETURN, ULONGEST_MAX },	/* li      v0, SYS_sigreturn */
+    { MIPS_INST_SYSCALL, ULONGEST_MAX },		/* syscall */
+    { MIPS_INST_BREAK, ULONGEST_MAX },		/* break */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   mips_fbsd_sigframe_init
 };
@@ -434,11 +434,11 @@ static const struct tramp_frame mipsn32_fbsd_sigframe =
   SIGTRAMP_FRAME,
   MIPS_INSN32_SIZE,
   {
-    { MIPS_INST_ADDIU_A0_SP_N32, -1 },	/* addiu   a0, sp, SIGF_UC */
-    { MIPS_INST_LI_V0_SIGRETURN, -1 },	/* li      v0, SYS_sigreturn */
-    { MIPS_INST_SYSCALL, -1 },		/* syscall */
-    { MIPS_INST_BREAK, -1 },		/* break */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { MIPS_INST_ADDIU_A0_SP_N32, ULONGEST_MAX },	/* addiu   a0, sp, SIGF_UC */
+    { MIPS_INST_LI_V0_SIGRETURN, ULONGEST_MAX },	/* li      v0, SYS_sigreturn */
+    { MIPS_INST_SYSCALL, ULONGEST_MAX },		/* syscall */
+    { MIPS_INST_BREAK, ULONGEST_MAX },		/* break */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   mips64_fbsd_sigframe_init
 };
@@ -451,16 +451,30 @@ static const struct tramp_frame mips64_fbsd_sigframe =
   SIGTRAMP_FRAME,
   MIPS_INSN32_SIZE,
   {
-    { MIPS_INST_DADDIU_A0_SP_N64, -1 },	/* daddiu  a0, sp, SIGF_UC */
-    { MIPS_INST_LI_V0_SIGRETURN, -1 },	/* li      v0, SYS_sigreturn */
-    { MIPS_INST_SYSCALL, -1 },		/* syscall */
-    { MIPS_INST_BREAK, -1 },		/* break */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { MIPS_INST_DADDIU_A0_SP_N64, ULONGEST_MAX },	/* daddiu  a0, sp, SIGF_UC */
+    { MIPS_INST_LI_V0_SIGRETURN, ULONGEST_MAX },	/* li      v0, SYS_sigreturn */
+    { MIPS_INST_SYSCALL, ULONGEST_MAX },		/* syscall */
+    { MIPS_INST_BREAK, ULONGEST_MAX },		/* break */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   mips64_fbsd_sigframe_init
 };
 
 /* Shared library support.  */
+
+/* FreeBSD/mips can use an alternate routine in the runtime linker to
+   resolve functions.  */
+
+static CORE_ADDR
+mips_fbsd_skip_solib_resolver (struct gdbarch *gdbarch, CORE_ADDR pc)
+{
+  struct bound_minimal_symbol msym
+    = lookup_bound_minimal_symbol ("_mips_rtld_bind");
+  if (msym.minsym != nullptr && BMSYMBOL_VALUE_ADDRESS (msym) == pc)
+    return frame_unwind_caller_pc (get_current_frame ());
+
+  return fbsd_skip_solib_resolver (gdbarch, pc);
+}
 
 /* FreeBSD/mips uses a slightly different `struct link_map' than the
    other FreeBSD platforms as it includes an additional `l_off'
@@ -546,6 +560,8 @@ mips_fbsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   set_gdbarch_iterate_over_regset_sections
     (gdbarch, mips_fbsd_iterate_over_regset_sections);
 
+  set_gdbarch_skip_solib_resolver (gdbarch, mips_fbsd_skip_solib_resolver);
+
   /* FreeBSD/mips has SVR4-style shared libraries.  */
   set_solib_svr4_fetch_link_map_offsets
     (gdbarch, (gdbarch_ptr_bit (gdbarch) == 32 ?
@@ -553,8 +569,9 @@ mips_fbsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 	       mips_fbsd_lp64_fetch_link_map_offsets));
 }
 
+void _initialize_mips_fbsd_tdep ();
 void
-_initialize_mips_fbsd_tdep (void)
+_initialize_mips_fbsd_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_mips, 0, GDB_OSABI_FREEBSD,
 			  mips_fbsd_init_abi);

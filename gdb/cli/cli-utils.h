@@ -1,6 +1,6 @@
 /* CLI utilities.
 
-   Copyright (C) 2011-2018 Free Software Foundation, Inc.
+   Copyright (C) 2011-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,8 +17,12 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef CLI_UTILS_H
-#define CLI_UTILS_H
+#ifndef CLI_CLI_UTILS_H
+#define CLI_CLI_UTILS_H
+
+#include "completer.h"
+
+struct cmd_list_element;
 
 /* *PP is a string denoting a number.  Get the number.  Advance *PP
    after the string and any trailing whitespace.
@@ -38,6 +42,26 @@ extern int get_number (const char **);
 /* Like the above, but takes a non-const "char **".  */
 
 extern int get_number (char **);
+
+/* Like get_number_trailer, but works with ULONGEST, and throws on
+   error instead of returning 0.  */
+extern ULONGEST get_ulongest (const char **pp, int trailer = '\0');
+
+/* Throws an error telling the user that ARGS starts with an option
+   unrecognized by COMMAND.  */
+
+extern void report_unrecognized_option_error (const char *command,
+					      const char *args);
+
+
+/* Builds the help string for a command documented by PREFIX,
+   followed by the extract_info_print_args help for ENTITY_KIND.  If
+   DOCUMENT_N_FLAG is true then help text describing the -n flag is also
+   included.  */
+
+const char *info_print_args_help (const char *prefix,
+				  const char *entity_kind,
+				  bool document_n_flag);
 
 /* Parse a number or a range.
    A number will be of the form handled by get_number.
@@ -75,8 +99,7 @@ public:
 		    const char *end_ptr);
 
   /* Returns true if parsing has completed.  */
-  bool finished () const
-  { return m_finished; }
+  bool finished () const;
 
   /* Return the string being parsed.  When parsing has finished, this
      points past the last parsed token.  */
@@ -96,15 +119,13 @@ public:
   {
     gdb_assert (m_in_range);
     m_cur_tok = m_end_ptr;
+    m_in_range = false;
   }
 
 private:
   /* No need for these.  They are intentionally not defined anywhere.  */
   number_or_range_parser (const number_or_range_parser &);
   number_or_range_parser &operator= (const number_or_range_parser &);
-
-  /* True if parsing has completed.  */
-  bool m_finished;
 
   /* The string being parsed.  When parsing has finished, this points
      past the last parsed token.  */
@@ -161,8 +182,18 @@ extern std::string extract_arg (const char **arg);
 /* A helper function that looks for an argument at the start of a
    string.  The argument must also either be at the end of the string,
    or be followed by whitespace.  Returns 1 if it finds the argument,
-   0 otherwise.  If the argument is found, it updates *STR.  */
+   0 otherwise.  If the argument is found, it updates *STR to point
+   past the argument and past any whitespace following the
+   argument.  */
 extern int check_for_argument (const char **str, const char *arg, int arg_len);
+
+/* Same as above, but ARG's length is computed.  */
+
+static inline int
+check_for_argument (const char **str, const char *arg)
+{
+  return check_for_argument (str, arg, strlen (arg));
+}
 
 /* Same, for non-const STR.  */
 
@@ -173,4 +204,25 @@ check_for_argument (char **str, const char *arg, int arg_len)
 			     arg, arg_len);
 }
 
-#endif /* CLI_UTILS_H */
+static inline int
+check_for_argument (char **str, const char *arg)
+{
+  return check_for_argument (str, arg, strlen (arg));
+}
+
+/* qcs_flags struct groups the -q, -c, and -s flags parsed by "thread
+   apply" and "frame apply" commands */
+
+struct qcs_flags
+{
+  bool quiet = false;
+  bool cont = false;
+  bool silent = false;
+};
+
+/* Validate FLAGS.  Throws an error if both FLAGS->CONT and
+   FLAGS->SILENT are true.  WHICH_COMMAND is included in the error
+   message.  */
+extern void validate_flags_qcs (const char *which_command, qcs_flags *flags);
+
+#endif /* CLI_CLI_UTILS_H */

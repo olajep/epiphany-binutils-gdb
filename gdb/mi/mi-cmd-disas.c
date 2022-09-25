@@ -1,5 +1,5 @@
 /* MI Command Set - disassemble commands.
-   Copyright (C) 2000-2018 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
    Contributed by Cygnus Solutions (a Red Hat company).
 
    This file is part of GDB.
@@ -36,7 +36,7 @@
 
    FILENAME: The name of the file where we want disassemble from.
    LINE: The line around which we want to disassemble. It will
-   disassemble the function that contins that line.
+   disassemble the function that contains that line.
    HOW_MANY: Number of disassembly lines to display. With source, it
    is the number of disassembly lines only, not counting the source
    lines.  
@@ -44,11 +44,11 @@
    always required:
 
    MODE: 0 -- disassembly.
-         1 -- disassembly and source (with deprecated source-centric view).
-         2 -- disassembly and opcodes.
-         3 -- disassembly, source-centric and opcodes.
-         4 -- disassembly, and source (with pc-centric view).
-         5 -- disassembly, source (pc-centric) and opcodes.  */
+	 1 -- disassembly and source (with deprecated source-centric view).
+	 2 -- disassembly and opcodes.
+	 3 -- disassembly, source-centric and opcodes.
+	 4 -- disassembly, and source (with pc-centric view).
+	 5 -- disassembly, source (pc-centric) and opcodes.  */
 
 void
 mi_cmd_disassemble (const char *command, char **argv, int argc)
@@ -67,6 +67,7 @@ mi_cmd_disassemble (const char *command, char **argv, int argc)
   int num_seen = 0;
   int start_seen = 0;
   int end_seen = 0;
+  int addr_seen = 0;
 
   /* ... and their corresponding value. */
   char *file_string = NULL;
@@ -74,13 +75,14 @@ mi_cmd_disassemble (const char *command, char **argv, int argc)
   int how_many = -1;
   CORE_ADDR low = 0;
   CORE_ADDR high = 0;
+  CORE_ADDR addr = 0;
 
   /* Options processing stuff.  */
   int oind = 0;
   char *oarg;
   enum opt
   {
-    FILE_OPT, LINE_OPT, NUM_OPT, START_OPT, END_OPT
+    FILE_OPT, LINE_OPT, NUM_OPT, START_OPT, END_OPT, ADDR_OPT
   };
   static const struct mi_opt opts[] =
     {
@@ -89,6 +91,7 @@ mi_cmd_disassemble (const char *command, char **argv, int argc)
       {"n", NUM_OPT, 1},
       {"s", START_OPT, 1},
       {"e", END_OPT, 1},
+      {"a", ADDR_OPT, 1},
       { 0, 0, 0 }
     };
 
@@ -122,23 +125,30 @@ mi_cmd_disassemble (const char *command, char **argv, int argc)
 	  high = parse_and_eval_address (oarg);
 	  end_seen = 1;
 	  break;
+	case ADDR_OPT:
+	  addr = parse_and_eval_address (oarg);
+	  addr_seen = 1;
+	  break;
 	}
     }
   argv += oind;
   argc -= oind;
 
   /* Allow only filename + linenum (with how_many which is not
-     required) OR start_addr + end_addr.  */
+     required) OR start_addr + end_addr OR addr.  */
 
-  if (!((line_seen && file_seen && num_seen && !start_seen && !end_seen)
-	|| (line_seen && file_seen && !num_seen && !start_seen && !end_seen)
-	|| (!line_seen && !file_seen && !num_seen && start_seen && end_seen)))
-    error (_("-data-disassemble: Usage: ( [-f filename -l linenum [-n "
-	     "howmany]] | [-s startaddr -e endaddr]) [--] mode."));
+  if (!(
+	  ( line_seen &&  file_seen &&              !start_seen && !end_seen
+								&& !addr_seen)
 
-  if (argc != 1)
-    error (_("-data-disassemble: Usage: [-f filename -l linenum "
-	     "[-n howmany]] [-s startaddr -e endaddr] [--] mode."));
+       || (!line_seen && !file_seen && !num_seen &&  start_seen &&  end_seen
+								&& !addr_seen)
+
+       || (!line_seen && !file_seen && !num_seen && !start_seen && !end_seen
+								&&  addr_seen))
+      || argc != 1)
+    error (_("-data-disassemble: Usage: ( [-f filename -l linenum "
+	     "[-n howmany]] | [-s startaddr -e endaddr] | [-a addr] ) [--] mode."));
 
   mode = atoi (argv[0]);
   if (mode < 0 || mode > 5)
@@ -184,8 +194,14 @@ mi_cmd_disassemble (const char *command, char **argv, int argc)
 	error (_("-data-disassemble: "
 		 "No function contains specified address"));
     }
+  else if (addr_seen)
+    {
+      if (find_pc_partial_function (addr, NULL, &low, &high) == 0)
+	error (_("-data-disassemble: "
+		 "No function contains specified address"));
+    }
 
   gdb_disassembly (gdbarch, uiout,
-  		   disasm_flags,
+		   disasm_flags,
 		   how_many, low, high);
 }

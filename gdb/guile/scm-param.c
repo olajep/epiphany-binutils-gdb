@@ -1,6 +1,6 @@
 /* GDB parameters implemented in Guile.
 
-   Copyright (C) 2008-2018 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -31,7 +31,10 @@
 
 union pascm_variable
 {
-  /* Hold an integer value, for boolean and integer types.  */
+  /* Hold an boolean value.  */
+  bool boolval;
+
+  /* Hold an integer value.  */
   int intval;
 
   /* Hold an auto_boolean.  */
@@ -59,7 +62,7 @@ union pascm_variable
    N.B. There is no free function for this smob.
    All objects pointed to by this smob must live in GC space.  */
 
-typedef struct _param_smob
+struct param_smob
 {
   /* This always appears first.  */
   gdb_smob base;
@@ -86,8 +89,7 @@ typedef struct _param_smob
   /* The corresponding gdb command objects.
      These are NULL if the parameter has not been registered yet, or
      is no longer registered.  */
-  struct cmd_list_element *set_command;
-  struct cmd_list_element *show_command;
+  set_show_commands commands;
 
   /* The value of the parameter.  */
   union pascm_variable value;
@@ -109,7 +111,7 @@ typedef struct _param_smob
      protect/unprotect the object since a reference to it comes from
      non-gc-managed space (the command context pointer).  */
   SCM containing_scm;
-} param_smob;
+};
 
 static const char param_smob_name[] = "gdb:parameter";
 
@@ -229,7 +231,7 @@ pascm_get_param_smob_arg_unsafe (SCM self, int arg_pos, const char *func_name)
 static int
 pascm_is_valid (param_smob *p_smob)
 {
-  return p_smob->set_command != NULL;
+  return p_smob->commands.set != nullptr;
 }
 
 /* A helper function which return the default documentation string for
@@ -251,10 +253,10 @@ pascm_signal_setshow_error (SCM exception, const char *msg)
      itself.  */
   if (gdbscm_user_error_p (gdbscm_exception_key (exception)))
     {
-      char *excp_text = gdbscm_exception_message_to_string (exception);
+      gdb::unique_xmalloc_ptr<char> excp_text
+	= gdbscm_exception_message_to_string (exception);
 
-      make_cleanup (xfree, excp_text);
-      error ("%s", excp_text);
+      error ("%s", excp_text.get ());
     }
   else
     {
@@ -271,10 +273,8 @@ pascm_signal_setshow_error (SCM exception, const char *msg)
 static void
 pascm_set_func (const char *args, int from_tty, struct cmd_list_element *c)
 {
-  param_smob *p_smob = (param_smob *) get_cmd_context (c);
+  param_smob *p_smob = (param_smob *) c->context ();
   SCM self, result, exception;
-  char *msg;
-  struct cleanup *cleanups;
 
   gdb_assert (gdbscm_is_procedure (p_smob->set_func));
 
@@ -291,18 +291,17 @@ pascm_set_func (const char *args, int from_tty, struct cmd_list_element *c)
   if (!scm_is_string (result))
     error (_("Result of %s set-func is not a string."), p_smob->name);
 
-  msg = gdbscm_scm_to_host_string (result, NULL, &exception);
+  gdb::unique_xmalloc_ptr<char> msg = gdbscm_scm_to_host_string (result, NULL,
+								 &exception);
   if (msg == NULL)
     {
       gdbscm_print_gdb_exception (SCM_BOOL_F, exception);
       error (_("Error converting show text to host string."));
     }
 
-  cleanups = make_cleanup (xfree, msg);
   /* GDB is usually silent when a parameter is set.  */
-  if (*msg != '\0')
-    fprintf_filtered (gdb_stdout, "%s\n", msg);
-  do_cleanups (cleanups);
+  if (*msg.get () != '\0')
+    fprintf_filtered (gdb_stdout, "%s\n", msg.get ());
 }
 
 /* A callback function that is registered against the respective
@@ -314,10 +313,8 @@ static void
 pascm_show_func (struct ui_file *file, int from_tty,
 		 struct cmd_list_element *c, const char *value)
 {
-  param_smob *p_smob = (param_smob *) get_cmd_context (c);
+  param_smob *p_smob = (param_smob *) c->context ();
   SCM value_scm, self, result, exception;
-  char *msg;
-  struct cleanup *cleanups;
 
   gdb_assert (gdbscm_is_procedure (p_smob->show_func));
 
@@ -338,126 +335,114 @@ pascm_show_func (struct ui_file *file, int from_tty,
 				  _("Error occurred showing parameter."));
     }
 
-  msg = gdbscm_scm_to_host_string (result, NULL, &exception);
+  gdb::unique_xmalloc_ptr<char> msg = gdbscm_scm_to_host_string (result, NULL,
+								 &exception);
   if (msg == NULL)
     {
       gdbscm_print_gdb_exception (SCM_BOOL_F, exception);
       error (_("Error converting show text to host string."));
     }
 
-  cleanups = make_cleanup (xfree, msg);
-  fprintf_filtered (file, "%s\n", msg);
-  do_cleanups (cleanups);
+  fprintf_filtered (file, "%s\n", msg.get ());
 }
 
 /* A helper function that dispatches to the appropriate add_setshow
    function.  */
 
-static void
+static set_show_commands
 add_setshow_generic (enum var_types param_type, enum command_class cmd_class,
 		     char *cmd_name, param_smob *self,
 		     char *set_doc, char *show_doc, char *help_doc,
 		     cmd_const_sfunc_ftype *set_func,
 		     show_value_ftype *show_func,
 		     struct cmd_list_element **set_list,
-		     struct cmd_list_element **show_list,
-		     struct cmd_list_element **set_cmd,
-		     struct cmd_list_element **show_cmd)
+		     struct cmd_list_element **show_list)
 {
-  struct cmd_list_element *param = NULL;
-  const char *tmp_name = NULL;
+  set_show_commands commands;
 
   switch (param_type)
     {
     case var_boolean:
-      add_setshow_boolean_cmd (cmd_name, cmd_class,
-			       &self->value.intval,
-			       set_doc, show_doc, help_doc,
-			       set_func, show_func,
-			       set_list, show_list);
-
+      commands = add_setshow_boolean_cmd (cmd_name, cmd_class,
+					  &self->value.boolval, set_doc,
+					  show_doc, help_doc, set_func,
+					  show_func, set_list, show_list);
       break;
 
     case var_auto_boolean:
-      add_setshow_auto_boolean_cmd (cmd_name, cmd_class,
-				    &self->value.autoboolval,
-				    set_doc, show_doc, help_doc,
-				    set_func, show_func,
-				    set_list, show_list);
+      commands = add_setshow_auto_boolean_cmd (cmd_name, cmd_class,
+					       &self->value.autoboolval,
+					       set_doc, show_doc, help_doc,
+					       set_func, show_func, set_list,
+					       show_list);
       break;
 
     case var_uinteger:
-      add_setshow_uinteger_cmd (cmd_name, cmd_class,
-				&self->value.uintval,
-				set_doc, show_doc, help_doc,
-				set_func, show_func,
-				set_list, show_list);
+      commands = add_setshow_uinteger_cmd (cmd_name, cmd_class,
+					   &self->value.uintval, set_doc,
+					   show_doc, help_doc, set_func,
+					   show_func, set_list, show_list);
       break;
 
     case var_zinteger:
-      add_setshow_zinteger_cmd (cmd_name, cmd_class,
-				&self->value.intval,
-				set_doc, show_doc, help_doc,
-				set_func, show_func,
-				set_list, show_list);
+      commands = add_setshow_zinteger_cmd (cmd_name, cmd_class,
+					   &self->value.intval, set_doc,
+					   show_doc, help_doc, set_func,
+					   show_func, set_list, show_list);
       break;
 
     case var_zuinteger:
-      add_setshow_zuinteger_cmd (cmd_name, cmd_class,
-				 &self->value.uintval,
-				 set_doc, show_doc, help_doc,
-				 set_func, show_func,
-				 set_list, show_list);
+      commands = add_setshow_zuinteger_cmd (cmd_name, cmd_class,
+					    &self->value.uintval, set_doc,
+					    show_doc, help_doc, set_func,
+					    show_func, set_list, show_list);
       break;
 
     case var_zuinteger_unlimited:
-      add_setshow_zuinteger_unlimited_cmd (cmd_name, cmd_class,
-					   &self->value.intval,
-					   set_doc, show_doc, help_doc,
-					   set_func, show_func,
-					   set_list, show_list);
+      commands = add_setshow_zuinteger_unlimited_cmd (cmd_name, cmd_class,
+						      &self->value.intval,
+						      set_doc, show_doc,
+						      help_doc, set_func,
+						      show_func, set_list,
+						      show_list);
       break;
 
     case var_string:
-      add_setshow_string_cmd (cmd_name, cmd_class,
-			      &self->value.stringval,
-			      set_doc, show_doc, help_doc,
-			      set_func, show_func,
-			      set_list, show_list);
+      commands = add_setshow_string_cmd (cmd_name, cmd_class,
+					 &self->value.stringval, set_doc,
+					 show_doc, help_doc, set_func,
+					 show_func, set_list, show_list);
       break;
 
     case var_string_noescape:
-      add_setshow_string_noescape_cmd (cmd_name, cmd_class,
-				       &self->value.stringval,
-				       set_doc, show_doc, help_doc,
-				       set_func, show_func,
-				       set_list, show_list);
+      commands = add_setshow_string_noescape_cmd (cmd_name, cmd_class,
+						  &self->value.stringval,
+						  set_doc, show_doc, help_doc,
+						  set_func, show_func, set_list,
+						  show_list);
 
       break;
 
     case var_optional_filename:
-      add_setshow_optional_filename_cmd (cmd_name, cmd_class,
-					 &self->value.stringval,
-					 set_doc, show_doc, help_doc,
-					 set_func, show_func,
-					 set_list, show_list);
+      commands = add_setshow_optional_filename_cmd (cmd_name, cmd_class,
+						    &self->value.stringval,
+						    set_doc, show_doc, help_doc,
+						    set_func, show_func,
+						    set_list, show_list);
       break;
 
     case var_filename:
-      add_setshow_filename_cmd (cmd_name, cmd_class,
-				&self->value.stringval,
-				set_doc, show_doc, help_doc,
-				set_func, show_func,
-				set_list, show_list);
+      commands = add_setshow_filename_cmd (cmd_name, cmd_class,
+					   &self->value.stringval, set_doc,
+					   show_doc, help_doc, set_func,
+					   show_func, set_list, show_list);
       break;
 
     case var_enum:
-      add_setshow_enum_cmd (cmd_name, cmd_class,
-			    self->enumeration,
-			    &self->value.cstringval,
-			    set_doc, show_doc, help_doc,
-			    set_func, show_func,
-			    set_list, show_list);
+      commands = add_setshow_enum_cmd (cmd_name, cmd_class, self->enumeration,
+				       &self->value.cstringval, set_doc,
+				       show_doc, help_doc, set_func, show_func,
+				       set_list, show_list);
       /* Initialize the value, just in case.  */
       self->value.cstringval = self->enumeration[0];
       break;
@@ -466,19 +451,12 @@ add_setshow_generic (enum var_types param_type, enum command_class cmd_class,
       gdb_assert_not_reached ("bad param_type value");
     }
 
-  /* Lookup created parameter, and register Scheme object against the
-     parameter context.  Perform this task against both lists.  */
-  tmp_name = cmd_name;
-  param = lookup_cmd (&tmp_name, *show_list, "", 0, 1);
-  gdb_assert (param != NULL);
-  set_cmd_context (param, self);
-  *set_cmd = param;
+  /* Register Scheme object against the commandsparameter context.  Perform this
+     task against both lists.  */
+  commands.set->set_context (self);
+  commands.show->set_context (self);
 
-  tmp_name = cmd_name;
-  param = lookup_cmd (&tmp_name, *set_list, "", 0, 1);
-  gdb_assert (param != NULL);
-  set_cmd_context (param, self);
-  *show_cmd = param;
+  return commands;
 }
 
 /* Return an array of strings corresponding to the enum values for
@@ -516,7 +494,8 @@ compute_enum_list (SCM enum_values_scm, int arg_pos, const char *func_name)
 	  freeargv (enum_values);
 	  SCM_ASSERT_TYPE (0, value, arg_pos, func_name, _("string"));
 	}
-      enum_values[i] = gdbscm_scm_to_host_string (value, NULL, &exception);
+      enum_values[i] = gdbscm_scm_to_host_string (value, NULL,
+						  &exception).release ();
       if (enum_values[i] == NULL)
 	{
 	  freeargv (enum_values);
@@ -611,7 +590,7 @@ pascm_param_value (enum var_types type, void *var,
 
     case var_boolean:
       {
-	if (* (int *) var)
+	if (* (bool *) var)
 	  return SCM_BOOL_T;
 	else
 	  return SCM_BOOL_F;
@@ -683,34 +662,33 @@ pascm_set_param_value_x (enum var_types type, union pascm_variable *var,
 	}
       else
 	{
-	  char *string;
 	  SCM exception;
 
-	  string = gdbscm_scm_to_host_string (value, NULL, &exception);
+	  gdb::unique_xmalloc_ptr<char> string
+	    = gdbscm_scm_to_host_string (value, NULL, &exception);
 	  if (string == NULL)
 	    gdbscm_throw (exception);
 	  xfree (var->stringval);
-	  var->stringval = string;
+	  var->stringval = string.release ();
 	}
       break;
 
     case var_enum:
       {
 	int i;
-	char *str;
 	SCM exception;
 
 	SCM_ASSERT_TYPE (scm_is_string (value), value, arg_pos, func_name,
 		       _("string"));
-	str = gdbscm_scm_to_host_string (value, NULL, &exception);
+	gdb::unique_xmalloc_ptr<char> str
+	  = gdbscm_scm_to_host_string (value, NULL, &exception);
 	if (str == NULL)
 	  gdbscm_throw (exception);
 	for (i = 0; enumeration[i]; ++i)
 	  {
-	    if (strcmp (enumeration[i], str) == 0)
+	    if (strcmp (enumeration[i], str.get ()) == 0)
 	      break;
 	  }
-	xfree (str);
 	if (enumeration[i] == NULL)
 	  {
 	    gdbscm_out_of_range_error (func_name, arg_pos, value,
@@ -723,7 +701,7 @@ pascm_set_param_value_x (enum var_types type, union pascm_variable *var,
     case var_boolean:
       SCM_ASSERT_TYPE (gdbscm_is_bool (value), value, arg_pos, func_name,
 		       _("boolean"));
-      var->intval = gdbscm_is_true (value);
+      var->boolval = gdbscm_is_true (value);
       break;
 
     case var_auto_boolean:
@@ -972,7 +950,7 @@ pascm_parameter_defined_p (const char *name, struct cmd_list_element *list)
 {
   struct cmd_list_element *c;
 
-  c = lookup_cmd_1 (&name, list, NULL, 1);
+  c = lookup_cmd_1 (&name, list, NULL, NULL, 1);
 
   /* If the name is ambiguous that's ok, it's a new parameter still.  */
   return c != NULL && c != CMD_LIST_AMBIGUOUS;
@@ -1012,24 +990,22 @@ gdbscm_register_parameter_x (SCM self)
 		_("parameter exists, \"show\" command is already defined"));
     }
 
-  TRY
+  gdbscm_gdb_exception exc {};
+  try
     {
-      add_setshow_generic (p_smob->type, p_smob->cmd_class,
-			   p_smob->cmd_name, p_smob,
-			   p_smob->set_doc, p_smob->show_doc, p_smob->doc,
-			   (gdbscm_is_procedure (p_smob->set_func)
-			    ? pascm_set_func : NULL),
-			   (gdbscm_is_procedure (p_smob->show_func)
-			    ? pascm_show_func : NULL),
-			   set_list, show_list,
-			   &p_smob->set_command, &p_smob->show_command);
+      p_smob->commands = add_setshow_generic
+	(p_smob->type, p_smob->cmd_class, p_smob->cmd_name, p_smob,
+	 p_smob->set_doc, p_smob->show_doc, p_smob->doc,
+	 (gdbscm_is_procedure (p_smob->set_func) ? pascm_set_func : NULL),
+	 (gdbscm_is_procedure (p_smob->show_func) ? pascm_show_func : NULL),
+	 set_list, show_list);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      GDBSCM_HANDLE_GDB_EXCEPTION (except);
+      exc = unpack (except);
     }
-  END_CATCH
 
+  GDBSCM_HANDLE_GDB_EXCEPTION (exc);
   /* Note: At this point the parameter exists in gdb.
      So no more errors after this point.  */
 
@@ -1059,28 +1035,26 @@ gdbscm_parameter_value (SCM self)
     }
   else
     {
-      char *name;
       SCM except_scm;
       struct cmd_list_element *alias, *prefix, *cmd;
       char *newarg;
       int found = -1;
-      struct gdb_exception except = exception_none;
+      gdbscm_gdb_exception except {};
 
-      name = gdbscm_scm_to_host_string (self, NULL, &except_scm);
+      gdb::unique_xmalloc_ptr<char> name
+	= gdbscm_scm_to_host_string (self, NULL, &except_scm);
       if (name == NULL)
 	gdbscm_throw (except_scm);
-      newarg = concat ("show ", name, (char *) NULL);
-      TRY
+      newarg = concat ("show ", name.get (), (char *) NULL);
+      try
 	{
 	  found = lookup_cmd_composition (newarg, &alias, &prefix, &cmd);
 	}
-      CATCH (ex, RETURN_MASK_ALL)
+      catch (const gdb_exception &ex)
 	{
-	  except = ex;
+	  except = unpack (ex);
 	}
-      END_CATCH
 
-      xfree (name);
       xfree (newarg);
       GDBSCM_HANDLE_GDB_EXCEPTION (except);
       if (!found)

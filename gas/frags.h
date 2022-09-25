@@ -1,5 +1,5 @@
 /* frags.h - Header file for the frag concept.
-   Copyright (C) 1987-2018 Free Software Foundation, Inc.
+   Copyright (C) 1987-2021 Free Software Foundation, Inc.
 
    This file is part of GAS, the GNU Assembler.
 
@@ -45,7 +45,7 @@ struct frag {
   addressT last_fr_address;
 
   /* (Fixed) number of octets we know we have.  May be 0.  */
-  offsetT fr_fix;
+  valueT fr_fix;
   /* May be used for (Variable) number of octets after above.
      The generic frag handling code no longer makes any use of fr_var.  */
   offsetT fr_var;
@@ -153,7 +153,9 @@ char *frag_var (relax_stateT type,
 		offsetT offset,
 		char *opcode);
 
-bfd_boolean frag_offset_fixed_p (const fragS *, const fragS *, offsetT *);
+bool frag_offset_fixed_p (const fragS *, const fragS *, offsetT *);
+bool frag_offset_ignore_align_p (const fragS *, const fragS *, offsetT *);
+bool frag_gtoffset_p (valueT, const fragS *, valueT, const fragS *, offsetT *);
 
 int get_frag_count (void);
 void clear_frag_count (void);

@@ -1,6 +1,6 @@
 /* Target-dependent code for Renesas M32R, for GDB.
 
-   Copyright (C) 1996-2018 Free Software Foundation, Inc.
+   Copyright (C) 1996-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -35,7 +35,6 @@
 #include "regcache.h"
 #include "trad-frame.h"
 #include "dis-asm.h"
-#include "objfiles.h"
 #include "m32r-tdep.h"
 #include <algorithm>
 
@@ -203,7 +202,7 @@ m32r_sw_breakpoint_from_kind (struct gdbarch *gdbarch, int kind, int *size)
     }
 }
 
-static const char *m32r_register_names[] = {
+static const char * const m32r_register_names[] = {
   "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
   "r8", "r9", "r10", "r11", "r12", "fp", "lr", "sp",
   "psw", "cbr", "spi", "spu", "bpc", "pc", "accl", "acch",
@@ -294,7 +293,7 @@ decode_prologue (struct gdbarch *gdbarch,
 	break;
 
       /* If this is a 32 bit instruction, we dont want to examine its
-         immediate data as though it were an instruction.  */
+	 immediate data as though it were an instruction.  */
       if (current_pc & 0x02)
 	{
 	  /* Decode this instruction further.  */
@@ -368,7 +367,7 @@ decode_prologue (struct gdbarch *gdbarch,
 	      framesize -= stack_adjust;
 	      after_prologue = 0;
 	      /* A frameless function may have no "mv fp, sp".
-	         In that case, this is the end of the prologue.  */
+		 In that case, this is the end of the prologue.  */
 	      after_stack_adjust = current_pc + 2;
 	    }
 	  continue;
@@ -510,7 +509,7 @@ struct m32r_unwind_cache
   LONGEST r13_offset;
   int uses_frame;
   /* Table indicating the location of each and every register.  */
-  struct trad_frame_saved_reg *saved_regs;
+  trad_frame_saved_reg *saved_regs;
 };
 
 /* Put here the code to store, into fi->saved_regs, the addresses of
@@ -582,7 +581,7 @@ m32r_frame_unwind_cache (struct frame_info *this_frame,
 	  /* st rn, @-sp */
 	  int regno = ((op >> 8) & 0xf);
 	  info->sp_offset -= 4;
-	  info->saved_regs[regno].addr = info->sp_offset;
+	  info->saved_regs[regno].set_addr (info->sp_offset);
 	}
       else if ((op & 0xff00) == 0x4f00)
 	{
@@ -611,17 +610,17 @@ m32r_frame_unwind_cache (struct frame_info *this_frame,
   if (info->uses_frame)
     {
       /* The SP was moved to the FP.  This indicates that a new frame
-         was created.  Get THIS frame's FP value by unwinding it from
-         the next frame.  */
+	 was created.  Get THIS frame's FP value by unwinding it from
+	 the next frame.  */
       this_base = get_frame_register_unsigned (this_frame, M32R_FP_REGNUM);
       /* The FP points at the last saved register.  Adjust the FP back
-         to before the first saved register giving the SP.  */
+	 to before the first saved register giving the SP.  */
       prev_sp = this_base + info->size;
     }
   else
     {
       /* Assume that the FP is this frame's SP but with that pushed
-         stack space added back.  */
+	 stack space added back.  */
       this_base = get_frame_register_unsigned (this_frame, M32R_SP_REGNUM);
       prev_sp = this_base + info->size;
     }
@@ -633,8 +632,9 @@ m32r_frame_unwind_cache (struct frame_info *this_frame,
   /* Adjust all the saved registers so that they contain addresses and
      not offsets.  */
   for (i = 0; i < gdbarch_num_regs (get_frame_arch (this_frame)) - 1; i++)
-    if (trad_frame_addr_p (info->saved_regs, i))
-      info->saved_regs[i].addr = (info->prev_sp + info->saved_regs[i].addr);
+    if (info->saved_regs[i].is_addr ())
+      info->saved_regs[i].set_addr (info->prev_sp
+				    + info->saved_regs[i].addr ());
 
   /* The call instruction moves the caller's PC in the callee's LR.
      Since this is an unwind, do the reverse.  Copy the location of LR
@@ -644,22 +644,16 @@ m32r_frame_unwind_cache (struct frame_info *this_frame,
 
   /* The previous frame's SP needed to be computed.  Save the computed
      value.  */
-  trad_frame_set_value (info->saved_regs, M32R_SP_REGNUM, prev_sp);
+  info->saved_regs[M32R_SP_REGNUM].set_value (prev_sp);
 
   return info;
 }
 
 static CORE_ADDR
-m32r_unwind_sp (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, M32R_SP_REGNUM);
-}
-
-
-static CORE_ADDR
 m32r_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 		      struct regcache *regcache, CORE_ADDR bp_addr, int nargs,
-		      struct value **args, CORE_ADDR sp, int struct_return,
+		      struct value **args, CORE_ADDR sp,
+		      function_call_return_method return_method,
 		      CORE_ADDR struct_addr)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
@@ -683,7 +677,7 @@ m32r_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
   /* If STRUCT_RETURN is true, then the struct return address (in
      STRUCT_ADDR) will consume the first argument-passing register.
      Both adjust the register count and store that value.  */
-  if (struct_return)
+  if (return_method == return_method_struct)
     {
       regcache_cooked_write_unsigned (regcache, argreg, struct_addr);
       argreg++;
@@ -697,7 +691,7 @@ m32r_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
   for (argnum = 0, stack_offset = 0; argnum < nargs; argnum++)
     {
       type = value_type (args[argnum]);
-      typecode = TYPE_CODE (type);
+      typecode = type->code ();
       len = TYPE_LENGTH (type);
 
       memset (valbuf, 0, sizeof (valbuf));
@@ -798,14 +792,6 @@ m32r_return_value (struct gdbarch *gdbarch, struct value *function,
     }
 }
 
-
-
-static CORE_ADDR
-m32r_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, M32R_PC_REGNUM);
-}
-
 /* Given a GDB frame, determine the address of the calling function's
    frame.  This will be used to create a new GDB frame struct.  */
 
@@ -849,6 +835,7 @@ m32r_frame_prev_register (struct frame_info *this_frame,
 }
 
 static const struct frame_unwind m32r_frame_unwind = {
+  "m32r prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   m32r_frame_this_id,
@@ -872,18 +859,6 @@ static const struct frame_base m32r_frame_base = {
   m32r_frame_base_address
 };
 
-/* Assuming THIS_FRAME is a dummy, return the frame ID of that dummy
-   frame.  The frame ID's base needs to match the TOS value saved by
-   save_dummy_frame_tos(), and the PC match the dummy frame's breakpoint.  */
-
-static struct frame_id
-m32r_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
-{
-  CORE_ADDR sp = get_frame_register_unsigned (this_frame, M32R_SP_REGNUM);
-  return frame_id_build (sp, get_frame_pc (this_frame));
-}
-
-
 static gdbarch_init_ftype m32r_gdbarch_init;
 
 static struct gdbarch *
@@ -903,8 +878,6 @@ m32r_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 
   set_gdbarch_wchar_bit (gdbarch, 16);
   set_gdbarch_wchar_signed (gdbarch, 0);
-
-  set_gdbarch_unwind_sp (gdbarch, m32r_unwind_sp);
 
   set_gdbarch_num_regs (gdbarch, M32R_NUM_REGS);
   set_gdbarch_pc_regnum (gdbarch, M32R_PC_REGNUM);
@@ -928,14 +901,6 @@ m32r_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 
   frame_base_set_default (gdbarch, &m32r_frame_base);
 
-  /* Methods for saving / extracting a dummy frame's ID.  The ID's
-     stack address must match the SP value returned by
-     PUSH_DUMMY_CALL, and saved by generic_save_dummy_frame_tos.  */
-  set_gdbarch_dummy_id (gdbarch, m32r_dummy_id);
-
-  /* Return the unwound PC value.  */
-  set_gdbarch_unwind_pc (gdbarch, m32r_unwind_pc);
-
   /* Hook in ABI-specific overrides, if they have been registered.  */
   gdbarch_init_osabi (info, gdbarch);
 
@@ -948,8 +913,9 @@ m32r_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   return gdbarch;
 }
 
+void _initialize_m32r_tdep ();
 void
-_initialize_m32r_tdep (void)
+_initialize_m32r_tdep ()
 {
   register_gdbarch_init (bfd_arch_m32r, m32r_gdbarch_init);
 }

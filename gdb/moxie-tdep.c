@@ -1,6 +1,6 @@
 /* Target-dependent code for Moxie.
 
-   Copyright (C) 2009-2018 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -70,7 +70,7 @@ typedef BP_MANIPULATION (moxie_break_insn) moxie_breakpoint;
 
 /* Moxie register names.  */
 
-static const char *moxie_register_names[] = {
+static const char * const moxie_register_names[] = {
   "$fp",  "$sp",  "$r0",  "$r1",  "$r2",
   "$r3",  "$r4",  "$r5", "$r6", "$r7",
   "$r8", "$r9", "$r10", "$r11", "$r12",
@@ -232,7 +232,7 @@ moxie_skip_prologue (struct gdbarch *gdbarch, CORE_ADDR pc)
 	  sym = lookup_symbol (func_name, NULL, VAR_DOMAIN, NULL).symbol;
 	  /* Don't use line number debug info for assembly source
 	     files.  */
-	  if (sym && SYMBOL_LANGUAGE (sym) != language_asm)
+	  if (sym && sym->language () != language_asm)
 	    {
 	      sal = find_pc_line (func_addr, 0);
 	      if (sal.end && sal.end < func_end)
@@ -267,11 +267,11 @@ struct moxie_unwind_cache
   LONGEST r13_offset;
   int uses_frame;
   /* Table indicating the location of each and every register.  */
-  struct trad_frame_saved_reg *saved_regs;
+  trad_frame_saved_reg *saved_regs;
 };
 
 /* Read an unsigned integer from the inferior, and adjust
-   endianess.  */
+   endianness.  */
 static ULONGEST
 moxie_process_readu (CORE_ADDR addr, gdb_byte *buf,
 		     int length, enum bfd_endian byte_order)
@@ -447,14 +447,6 @@ moxie_software_single_step (struct regcache *regcache)
   return next_pcs;
 }
 
-/* Implement the "unwind_sp" gdbarch method.  */
-
-static CORE_ADDR
-moxie_unwind_sp (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, MOXIE_SP_REGNUM);
-}
-
 /* Given a return value in `regbuf' with a type `valtype', 
    extract and copy its value into `valbuf'.  */
 
@@ -556,14 +548,6 @@ moxie_frame_cache (struct frame_info *this_frame, void **this_cache)
   return cache;
 }
 
-/* Implement the "unwind_pc" gdbarch method.  */
-
-static CORE_ADDR
-moxie_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, MOXIE_PC_REGNUM);
-}
-
 /* Given a GDB frame, determine the address of the calling function's
    frame.  This will be used to create a new GDB frame struct.  */
 
@@ -603,6 +587,7 @@ moxie_frame_prev_register (struct frame_info *this_frame,
 }
 
 static const struct frame_unwind moxie_frame_unwind = {
+  "moxie prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   moxie_frame_this_id,
@@ -629,14 +614,6 @@ static const struct frame_base moxie_frame_base = {
   moxie_frame_base_address
 };
 
-static struct frame_id
-moxie_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
-{
-  CORE_ADDR sp = get_frame_register_unsigned (this_frame, MOXIE_SP_REGNUM);
-
-  return frame_id_build (sp, get_frame_pc (this_frame));
-}
-
 /* Parse the current instruction and record the values of the registers and
    memory that will be changed in current instruction to "record_arch_list".
    Return -1 if something wrong.  */
@@ -652,7 +629,7 @@ moxie_process_record (struct gdbarch *gdbarch, struct regcache *regcache,
 
   if (record_debug > 1)
     fprintf_unfiltered (gdb_stdlog, "Process record: moxie_process_record "
-			            "addr = 0x%s\n",
+				    "addr = 0x%s\n",
 			paddress (target_gdbarch (), addr));
 
   inst = (uint16_t) moxie_process_readu (addr, buf, 2, byte_order);
@@ -1089,8 +1066,6 @@ moxie_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_wchar_bit (gdbarch, 32);
   set_gdbarch_wchar_signed (gdbarch, 0);
 
-  set_gdbarch_unwind_sp (gdbarch, moxie_unwind_sp);
-
   set_gdbarch_num_regs (gdbarch, MOXIE_NUM_REGS);
   set_gdbarch_sp_regnum (gdbarch, MOXIE_SP_REGNUM);
   set_gdbarch_pc_regnum (gdbarch, MOXIE_PC_REGNUM);
@@ -1108,13 +1083,6 @@ moxie_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_frame_align (gdbarch, moxie_frame_align);
 
   frame_base_set_default (gdbarch, &moxie_frame_base);
-
-  /* Methods for saving / extracting a dummy frame's ID.  The ID's
-     stack address must match the SP value returned by
-     PUSH_DUMMY_CALL, and saved by generic_save_dummy_frame_tos.  */
-  set_gdbarch_dummy_id (gdbarch, moxie_dummy_id);
-
-  set_gdbarch_unwind_pc (gdbarch, moxie_unwind_pc);
 
   /* Hook in ABI-specific overrides, if they have been registered.  */
   gdbarch_init_osabi (info, gdbarch);
@@ -1136,8 +1104,9 @@ moxie_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 
 /* Register this machine's init routine.  */
 
+void _initialize_moxie_tdep ();
 void
-_initialize_moxie_tdep (void)
+_initialize_moxie_tdep ()
 {
   register_gdbarch_init (bfd_arch_moxie, moxie_gdbarch_init);
 }

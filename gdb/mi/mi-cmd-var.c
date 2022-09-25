@@ -1,5 +1,5 @@
 /* MI Command Set - varobj commands.
-   Copyright (C) 2000-2018 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
 
    Contributed by Cygnus Solutions (a Red Hat company).
 
@@ -30,10 +30,8 @@
 #include "mi-getopt.h"
 #include "gdbthread.h"
 #include "mi-parse.h"
-#include "common/gdb_optional.h"
+#include "gdbsupport/gdb_optional.h"
 #include "inferior.h"
-
-extern unsigned int varobjdebug;		/* defined in varobj.c.  */
 
 static void varobj_update_one (struct varobj *var,
 			       enum print_values print_values,
@@ -58,34 +56,34 @@ print_varobj (struct varobj *var, enum print_values print_values,
     {
       std::string exp = varobj_get_expression (var);
 
-      uiout->field_string ("exp", exp.c_str ());
+      uiout->field_string ("exp", exp);
     }
-  uiout->field_int ("numchild", varobj_get_num_children (var));
+  uiout->field_signed ("numchild", varobj_get_num_children (var));
   
   if (mi_print_value_p (var, print_values))
     {
       std::string val = varobj_get_value (var);
 
-      uiout->field_string ("value", val.c_str ());
+      uiout->field_string ("value", val);
     }
 
   std::string type = varobj_get_type (var);
   if (!type.empty ())
-    uiout->field_string ("type", type.c_str ());
+    uiout->field_string ("type", type);
 
   thread_id = varobj_get_thread_id (var);
   if (thread_id > 0)
-    uiout->field_int ("thread-id", thread_id);
+    uiout->field_signed ("thread-id", thread_id);
 
   if (varobj_get_frozen (var))
-    uiout->field_int ("frozen", 1);
+    uiout->field_signed ("frozen", 1);
 
   gdb::unique_xmalloc_ptr<char> display_hint = varobj_get_display_hint (var);
   if (display_hint)
     uiout->field_string ("displayhint", display_hint.get ());
 
   if (varobj_is_dynamic_p (var))
-    uiout->field_int ("dynamic", 1);
+    uiout->field_signed ("dynamic", 1);
 }
 
 /* VAROBJ operations */
@@ -138,7 +136,7 @@ mi_cmd_var_create (const char *command, char **argv, int argc)
 
   print_varobj (var, PRINT_ALL_VALUES, 0 /* don't print expression */);
 
-  uiout->field_int ("has_more", varobj_has_more (var, 0));
+  uiout->field_signed ("has_more", varobj_has_more (var, 0));
 }
 
 void
@@ -183,7 +181,7 @@ mi_cmd_var_delete (const char *command, char **argv, int argc)
 
   numdel = varobj_delete (var, children_only_p);
 
-  uiout->field_int ("ndeleted", numdel);
+  uiout->field_signed ("ndeleted", numdel);
 }
 
 /* Parse a string argument into a format value.  */
@@ -238,7 +236,7 @@ mi_cmd_var_set_format (const char *command, char **argv, int argc)
  
   /* Report the value in the new format.  */
   std::string val = varobj_get_value (var);
-  uiout->field_string ("value", val.c_str ());
+  uiout->field_string ("value", val);
 }
 
 void
@@ -313,7 +311,7 @@ mi_cmd_var_info_num_children (const char *command, char **argv, int argc)
   /* Get varobj handle, if a valid var obj name was specified.  */
   var = varobj_get_handle (argv[0]);
 
-  uiout->field_int ("numchild", varobj_get_num_children (var));
+  uiout->field_signed ("numchild", varobj_get_num_children (var));
 }
 
 /* Return 1 if given the argument PRINT_VALUES we should display
@@ -342,9 +340,9 @@ mi_print_value_p (struct varobj *var, enum print_values print_values)
 
       /* For PRINT_SIMPLE_VALUES, only print the value if it has a type
 	 and that type is not a compound type.  */
-      return (TYPE_CODE (type) != TYPE_CODE_ARRAY
-	      && TYPE_CODE (type) != TYPE_CODE_STRUCT
-	      && TYPE_CODE (type) != TYPE_CODE_UNION);
+      return (type->code () != TYPE_CODE_ARRAY
+	      && type->code () != TYPE_CODE_STRUCT
+	      && type->code () != TYPE_CODE_UNION);
     }
 }
 
@@ -380,7 +378,7 @@ mi_cmd_var_list_children (const char *command, char **argv, int argc)
   const std::vector<varobj *> &children
     = varobj_list_children (var, &from, &to);
 
-  uiout->field_int ("numchild", to - from);
+  uiout->field_signed ("numchild", to - from);
   if (argc == 2 || argc == 4)
     print_values = mi_parse_print_values (argv[0]);
   else
@@ -409,7 +407,7 @@ mi_cmd_var_list_children (const char *command, char **argv, int argc)
 	}
     }
 
-  uiout->field_int ("has_more", varobj_has_more (var, to));
+  uiout->field_signed ("has_more", varobj_has_more (var, to));
 }
 
 void
@@ -425,7 +423,7 @@ mi_cmd_var_info_type (const char *command, char **argv, int argc)
   var = varobj_get_handle (argv[0]);
 
   std::string type_name = varobj_get_type (var);
-  uiout->field_string ("type", type_name.c_str ());
+  uiout->field_string ("type", type_name);
 }
 
 void
@@ -460,10 +458,10 @@ mi_cmd_var_info_expression (const char *command, char **argv, int argc)
 
   lang = varobj_get_language (var);
 
-  uiout->field_string ("lang", lang->la_natural_name);
+  uiout->field_string ("lang", lang->natural_name ());
 
   std::string exp = varobj_get_expression (var);
-  uiout->field_string ("exp", exp.c_str ());
+  uiout->field_string ("exp", exp);
 }
 
 void
@@ -547,13 +545,13 @@ mi_cmd_var_evaluate_expression (const char *command, char **argv, int argc)
     {
       std::string val = varobj_get_formatted_value (var, format);
 
-      uiout->field_string ("value", val.c_str ());
+      uiout->field_string ("value", val);
     }
   else
     {
       std::string val = varobj_get_value (var);
 
-      uiout->field_string ("value", val.c_str ());
+      uiout->field_string ("value", val);
     }
 }
 
@@ -584,23 +582,15 @@ mi_cmd_var_assign (const char *command, char **argv, int argc)
 	     "expression to variable object"));
 
   std::string val = varobj_get_value (var);
-  uiout->field_string ("value", val.c_str ());
+  uiout->field_string ("value", val);
 }
-
-/* Type used for parameters passing to mi_cmd_var_update_iter.  */
-
-struct mi_cmd_var_update
-  {
-    int only_floating;
-    enum print_values print_values;
-  };
 
 /* Helper for mi_cmd_var_update - update each VAR.  */
 
 static void
-mi_cmd_var_update_iter (struct varobj *var, void *data_pointer)
+mi_cmd_var_update_iter (struct varobj *var, bool only_floating,
+			enum print_values print_values)
 {
-  struct mi_cmd_var_update *data = (struct mi_cmd_var_update *) data_pointer;
   bool thread_stopped;
 
   int thread_id = varobj_get_thread_id (var);
@@ -619,8 +609,8 @@ mi_cmd_var_update_iter (struct varobj *var, void *data_pointer)
     }
 
   if (thread_stopped
-      && (!data->only_floating || varobj_floating_p (var)))
-    varobj_update_one (var, data->print_values, false /* implicit */);
+      && (!only_floating || varobj_floating_p (var)))
+    varobj_update_one (var, print_values, false /* implicit */);
 }
 
 void
@@ -658,16 +648,14 @@ mi_cmd_var_update (const char *command, char **argv, int argc)
 
   if ((*name == '*' || *name == '@') && (*(name + 1) == '\0'))
     {
-      struct mi_cmd_var_update data;
-
-      data.only_floating = (*name == '@');
-      data.print_values = print_values;
-
       /* varobj_update_one automatically updates all the children of
 	 VAROBJ.  Therefore update each VAROBJ only once by iterating
 	 only the root VAROBJs.  */
 
-      all_root_varobjs (mi_cmd_var_update_iter, &data);
+      all_root_varobjs ([=] (varobj *var)
+        {
+	  mi_cmd_var_update_iter (var, *name == '0', print_values);
+	});
     }
   else
     {
@@ -704,16 +692,16 @@ varobj_update_one (struct varobj *var, enum print_values print_values,
 	    {
 	      std::string val = varobj_get_value (r.varobj);
 
-	      uiout->field_string ("value", val.c_str ());
+	      uiout->field_string ("value", val);
 	    }
 	  uiout->field_string ("in_scope", "true");
 	  break;
-        case VAROBJ_NOT_IN_SCOPE:
-          uiout->field_string ("in_scope", "false");
+	case VAROBJ_NOT_IN_SCOPE:
+	  uiout->field_string ("in_scope", "false");
 	  break;
-        case VAROBJ_INVALID:
-          uiout->field_string ("in_scope", "invalid");
- 	  break;
+	case VAROBJ_INVALID:
+	  uiout->field_string ("in_scope", "invalid");
+	  break;
 	}
 
       if (r.status != VAROBJ_INVALID)
@@ -728,12 +716,12 @@ varobj_update_one (struct varobj *var, enum print_values print_values,
 	{
 	  std::string type_name = varobj_get_type (r.varobj);
 
-	  uiout->field_string ("new_type", type_name.c_str ());
+	  uiout->field_string ("new_type", type_name);
 	}
 
       if (r.type_changed || r.children_changed)
-	uiout->field_int ("new_num_children",
-			  varobj_get_num_children (r.varobj));
+	uiout->field_signed ("new_num_children",
+			     varobj_get_num_children (r.varobj));
 
       gdb::unique_xmalloc_ptr<char> display_hint
 	= varobj_get_display_hint (r.varobj);
@@ -741,10 +729,10 @@ varobj_update_one (struct varobj *var, enum print_values print_values,
 	uiout->field_string ("displayhint", display_hint.get ());
 
       if (varobj_is_dynamic_p (r.varobj))
-	uiout->field_int ("dynamic", 1);
+	uiout->field_signed ("dynamic", 1);
 
       varobj_get_child_range (r.varobj, &from, &to);
-      uiout->field_int ("has_more", varobj_has_more (r.varobj, to));
+      uiout->field_signed ("has_more", varobj_has_more (r.varobj, to));
 
       if (!r.newobj.empty ())
 	{
@@ -752,7 +740,7 @@ varobj_update_one (struct varobj *var, enum print_values print_values,
 
 	  for (varobj *child : r.newobj)
 	    {
-	      ui_out_emit_tuple tuple_emitter (uiout, NULL);
+	      ui_out_emit_tuple inner_tuple_emitter (uiout, NULL);
 	      print_varobj (child, print_values, 1 /* print_expression */);
 	    }
 	}

@@ -1,4 +1,4 @@
-/* Copyright (C) 2013-2018 Free Software Foundation, Inc.
+/* Copyright (C) 2013-2022 Free Software Foundation, Inc.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,39 +17,47 @@
 #include "python-internal.h"
 #include "varobj.h"
 #include "varobj-iter.h"
-#include "py-ref.h"
 
 /* A dynamic varobj iterator "class" for python pretty-printed
    varobjs.  This inherits struct varobj_iter.  */
 
-struct py_varobj_iter
+struct py_varobj_iter : public varobj_iter
 {
-  /* The 'base class'.  */
-  struct varobj_iter base;
+  py_varobj_iter (struct varobj *var, gdbpy_ref<> &&pyiter);
+  ~py_varobj_iter () override;
+
+  std::unique_ptr<varobj_item> next () override;
+
+private:
+
+  /* The varobj this iterator is listing children for.  */
+  struct varobj *m_var;
+
+  /* The next raw index we will try to check is available.  If it is
+     equal to number_of_children, then we've already iterated the
+     whole set.  */
+  int m_next_raw_index = 0;
 
   /* The python iterator returned by the printer's 'children' method,
      or NULL if not available.  */
-  PyObject *iter;
+  PyObject *m_iter;
 };
 
 /* Implementation of the 'dtor' method of pretty-printed varobj
    iterators.  */
 
-static void
-py_varobj_iter_dtor (struct varobj_iter *self)
+py_varobj_iter::~py_varobj_iter ()
 {
-  struct py_varobj_iter *dis = (struct py_varobj_iter *) self;
-  gdbpy_enter_varobj enter_py (self->var);
-  Py_XDECREF (dis->iter);
+  gdbpy_enter_varobj enter_py (m_var);
+  Py_XDECREF (m_iter);
 }
 
 /* Implementation of the 'next' method of pretty-printed varobj
    iterators.  */
 
-static varobj_item *
-py_varobj_iter_next (struct varobj_iter *self)
+std::unique_ptr<varobj_item>
+py_varobj_iter::next ()
 {
-  struct py_varobj_iter *t = (struct py_varobj_iter *) self;
   PyObject *py_v;
   varobj_item *vitem;
   const char *name = NULL;
@@ -57,9 +65,9 @@ py_varobj_iter_next (struct varobj_iter *self)
   if (!gdb_python_initialized)
     return NULL;
 
-  gdbpy_enter_varobj enter_py (self->var);
+  gdbpy_enter_varobj enter_py (m_var);
 
-  gdbpy_ref<> item (PyIter_Next (t->iter));
+  gdbpy_ref<> item (PyIter_Next (m_iter));
 
   if (item == NULL)
     {
@@ -70,14 +78,8 @@ py_varobj_iter_next (struct varobj_iter *self)
       /* If we got a memory error, just use the text as the item.  */
       if (PyErr_ExceptionMatches (gdbpy_gdb_memory_error))
 	{
-	  PyObject *type, *value, *trace;
-
-	  PyErr_Fetch (&type, &value, &trace);
-	  gdb::unique_xmalloc_ptr<char>
-	    value_str (gdbpy_exception_to_string (type, value));
-	  Py_XDECREF (type);
-	  Py_XDECREF (value);
-	  Py_XDECREF (trace);
+	  gdbpy_err_fetch fetched_error;
+	  gdb::unique_xmalloc_ptr<char> value_str = fetched_error.to_string ();
 	  if (value_str == NULL)
 	    {
 	      gdbpy_print_stack ();
@@ -85,7 +87,7 @@ py_varobj_iter_next (struct varobj_iter *self)
 	    }
 
 	  std::string name_str = string_printf ("<error at %d>",
-						self->next_raw_index++);
+						m_next_raw_index++);
 	  item.reset (Py_BuildValue ("(ss)", name_str.c_str (),
 				     value_str.get ()));
 	  if (item == NULL)
@@ -109,61 +111,31 @@ py_varobj_iter_next (struct varobj_iter *self)
     }
 
   vitem = new varobj_item ();
-  vitem->value = convert_value_from_python (py_v);
+  vitem->value = release_value (convert_value_from_python (py_v));
   if (vitem->value == NULL)
     gdbpy_print_stack ();
   vitem->name = name;
 
-  self->next_raw_index++;
-  return vitem;
+  m_next_raw_index++;
+  return std::unique_ptr<varobj_item> (vitem);
 }
-
-/* The 'vtable' of pretty-printed python varobj iterators.  */
-
-static const struct varobj_iter_ops py_varobj_iter_ops =
-{
-  py_varobj_iter_dtor,
-  py_varobj_iter_next
-};
 
 /* Constructor of pretty-printed varobj iterators.  VAR is the varobj
    whose children the iterator will be iterating over.  PYITER is the
    python iterator actually responsible for the iteration.  */
 
-static void CPYCHECKER_STEALS_REFERENCE_TO_ARG (3)
-py_varobj_iter_ctor (struct py_varobj_iter *self,
-		      struct varobj *var, PyObject *pyiter)
+py_varobj_iter::py_varobj_iter (struct varobj *var, gdbpy_ref<> &&pyiter)
+  : m_var (var),
+    m_iter (pyiter.release ())
 {
-  self->base.var = var;
-  self->base.ops = &py_varobj_iter_ops;
-  self->base.next_raw_index = 0;
-  self->iter = pyiter;
-}
-
-/* Allocate and construct a pretty-printed varobj iterator.  VAR is
-   the varobj whose children the iterator will be iterating over.
-   PYITER is the python iterator actually responsible for the
-   iteration.  */
-
-static struct py_varobj_iter * CPYCHECKER_STEALS_REFERENCE_TO_ARG (2)
-py_varobj_iter_new (struct varobj *var, PyObject *pyiter)
-{
-  struct py_varobj_iter *self;
-
-  self = XNEW (struct py_varobj_iter);
-  py_varobj_iter_ctor (self, var, pyiter);
-  return self;
 }
 
 /* Return a new pretty-printed varobj iterator suitable to iterate
    over VAR's children.  */
 
-struct varobj_iter *
+std::unique_ptr<varobj_iter>
 py_varobj_get_iterator (struct varobj *var, PyObject *printer)
 {
-  PyObject *iter;
-  struct py_varobj_iter *py_iter;
-
   gdbpy_enter_varobj enter_py (var);
 
   if (!PyObject_HasAttr (printer, gdbpy_children_cst))
@@ -177,14 +149,13 @@ py_varobj_get_iterator (struct varobj *var, PyObject *printer)
       error (_("Null value returned for children"));
     }
 
-  iter = PyObject_GetIter (children.get ());
+  gdbpy_ref<> iter (PyObject_GetIter (children.get ()));
   if (iter == NULL)
     {
       gdbpy_print_stack ();
       error (_("Could not get children iterator"));
     }
 
-  py_iter = py_varobj_iter_new (var, iter);
-
-  return &py_iter->base;
+  return std::unique_ptr<varobj_iter> (new py_varobj_iter (var,
+							   std::move (iter)));
 }

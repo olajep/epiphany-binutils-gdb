@@ -1,6 +1,6 @@
 /* Code dealing with dummy stack frames, for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -29,6 +29,7 @@
 #include "observable.h"
 #include "gdbthread.h"
 #include "infcall.h"
+#include "gdbarch.h"
 
 struct dummy_frame_id
 {
@@ -125,11 +126,9 @@ remove_dummy_frame (struct dummy_frame **dummy_ptr)
 /* Delete any breakpoint B which is a momentary breakpoint for return from
    inferior call matching DUMMY_VOIDP.  */
 
-static int
-pop_dummy_frame_bpt (struct breakpoint *b, void *dummy_voidp)
+static bool
+pop_dummy_frame_bpt (struct breakpoint *b, struct dummy_frame *dummy)
 {
-  struct dummy_frame *dummy = (struct dummy_frame *) dummy_voidp;
-
   if (b->thread == dummy->id.thread->global_num
       && b->disposition == disp_del && frame_id_eq (b->frame_id, dummy->id.id))
     {
@@ -139,11 +138,11 @@ pop_dummy_frame_bpt (struct breakpoint *b, void *dummy_voidp)
       delete_breakpoint (b);
 
       /* Stop the traversal.  */
-      return 1;
+      return true;
     }
 
   /* Continue the traversal.  */
-  return 0;
+  return false;
 }
 
 /* Pop *DUMMY_PTR, restoring program state to that before the
@@ -167,7 +166,9 @@ pop_dummy_frame (struct dummy_frame **dummy_ptr)
 
   restore_infcall_suspend_state (dummy->caller_state);
 
-  iterate_over_breakpoints (pop_dummy_frame_bpt, dummy);
+  for (breakpoint *bp : all_breakpoints_safe ())
+    if (pop_dummy_frame_bpt (bp, dummy))
+      break;
 
   /* restore_infcall_control_state frees inf_state,
      all that remains is to pop *dummy_ptr.  */
@@ -271,7 +272,7 @@ find_dummy_frame_dtor (dummy_frame_dtor_ftype *dtor, void *dtor_data)
    them up at least once whenever we start a new inferior.  */
 
 static void
-cleanup_dummy_frames (struct target_ops *target, int from_tty)
+cleanup_dummy_frames (inferior *inf)
 {
   while (dummy_frame_stack != NULL)
     remove_dummy_frame (&dummy_frame_stack);
@@ -377,6 +378,7 @@ dummy_frame_this_id (struct frame_info *this_frame,
 
 const struct frame_unwind dummy_frame_unwind =
 {
+  "dummy",
   DUMMY_FRAME,
   default_frame_unwind_stop_reason,
   dummy_frame_this_id,
@@ -384,6 +386,18 @@ const struct frame_unwind dummy_frame_unwind =
   NULL,
   dummy_frame_sniffer,
 };
+
+/* See dummy-frame.h.  */
+
+struct frame_id
+default_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
+{
+  CORE_ADDR sp, pc;
+
+  sp = get_frame_sp (this_frame);
+  pc = get_frame_pc (this_frame);
+  return frame_id_build (sp, pc);
+}
 
 static void
 fprint_dummy_frames (struct ui_file *file)
@@ -394,10 +408,9 @@ fprint_dummy_frames (struct ui_file *file)
     {
       gdb_print_host_address (s, file);
       fprintf_unfiltered (file, ":");
-      fprintf_unfiltered (file, " id=");
-      fprint_frame_id (file, s->id.id);
+      fprintf_unfiltered (file, " id=%s", s->id.id.to_string ().c_str ());
       fprintf_unfiltered (file, ", ptid=%s",
-			  target_pid_to_str (s->id.thread->ptid));
+			  target_pid_to_str (s->id.thread->ptid).c_str ());
       fprintf_unfiltered (file, "\n");
     }
 }
@@ -417,12 +430,13 @@ maintenance_print_dummy_frames (const char *args, int from_tty)
     }
 }
 
+void _initialize_dummy_frame ();
 void
-_initialize_dummy_frame (void)
+_initialize_dummy_frame ()
 {
   add_cmd ("dummy-frames", class_maintenance, maintenance_print_dummy_frames,
 	   _("Print the contents of the internal dummy-frame stack."),
 	   &maintenanceprintlist);
 
-  gdb::observers::inferior_created.attach (cleanup_dummy_frames);
+  gdb::observers::inferior_created.attach (cleanup_dummy_frames, "dummy-frame");
 }

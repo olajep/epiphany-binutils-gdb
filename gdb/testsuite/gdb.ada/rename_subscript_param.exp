@@ -1,4 +1,4 @@
-# Copyright 2016-2018 Free Software Foundation, Inc.
+# Copyright 2016-2022 Free Software Foundation, Inc.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -15,6 +15,12 @@
 
 load_lib "ada.exp"
 
+if { [skip_ada_tests] } { return -1 }
+
+if { ![gnatmake_version_at_least 8] } {
+    return -1
+}
+
 standard_ada_testfile pb30_012
 
 if {[gdb_compile_ada "${srcfile}" "${binfile}" executable [list debug]] != "" } {
@@ -26,9 +32,9 @@ clean_restart ${testfile}
 set bp_location [gdb_get_line_number "BREAK" ${testdir}/pkg.adb]
 runto "pkg.adb:$bp_location"
 
-gdb_test "print b" \
+gdb_test "print rename_subscript_param_b" \
          " = false" \
-         "print b before changing its value"
+         "print rename_subscript_param_b before changing its value"
 
 set bp_location [gdb_get_line_number "Do_Nothing" ${testdir}/pkg.adb]
 gdb_test "break pkg.adb:$bp_location" \
@@ -39,6 +45,6 @@ gdb_test "cont" \
          "Breakpoint \[0-9\]+, pkg.flip \\(.*" \
          "Continuing to breakpoint on call to Do_Nothing"
 
-gdb_test "print b" \
+gdb_test "print rename_subscript_param_b" \
          " = true" \
-         "print b before changing its value"
+         "print rename_subscript_param_b after changing its value"

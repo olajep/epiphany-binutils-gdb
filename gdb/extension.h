@@ -1,6 +1,6 @@
 /* Interface between gdb and its extension languages.
 
-   Copyright (C) 2014-2018 Free Software Foundation, Inc.
+   Copyright (C) 2014-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,7 +21,8 @@
 #define EXTENSION_H
 
 #include "mi/mi-cmds.h" /* For PRINT_NO_VALUES, etc.  */
-#include "common/vec.h"
+#include "gdbsupport/array-view.h"
+#include "gdbsupport/gdb_optional.h"
 
 struct breakpoint;
 struct command_line;
@@ -124,7 +125,10 @@ enum ext_lang_frame_args
     CLI_SCALAR_VALUES,
 
     /* Print all values for arguments when invoked from the CLI. */
-    CLI_ALL_VALUES
+    CLI_ALL_VALUES,
+
+    /* Only indicate the presence of arguments when invoked from the CLI.  */
+    CLI_PRESENCE
   };
 
 /* The possible results of
@@ -186,38 +190,35 @@ struct xmethod_worker
   virtual ~xmethod_worker () = default;
 
   /* Invoke the xmethod encapsulated in this worker and return the result.
-     The method is invoked on OBJ with arguments in the ARGS array.  NARGS is
-     the length of the this array.  */
+     The method is invoked on OBJ with arguments in the ARGS array.  */
 
-  virtual value *invoke (value *obj, value **args, int nargs) = 0;
+  virtual value *invoke (value *obj, gdb::array_view<value *> args) = 0;
 
   /* Return the arg types of the xmethod encapsulated in this worker.
-     An array of arg types is returned.  The length of the array is returned in
-     NARGS.  The type of the 'this' object is returned as the first element of
-     array.  */
+     The type of the 'this' object is returned as the first element of
+     the vector.  */
 
-  type **get_arg_types (int *nargs);
+  std::vector<type *> get_arg_types ();
 
   /* Return the type of the result of the xmethod encapsulated in this worker.
-     OBJECT, ARGS, NARGS are the same as for invoke.  */
+     OBJECT and ARGS are the same as for invoke.  */
 
-  type *get_result_type (value *object, value **args, int nargs);
+  type *get_result_type (value *object, gdb::array_view<value *> args);
 
 private:
 
-  /* Return the types of the arguments the method takes.  The number of
-     arguments is returned in NARGS, and their types are returned in the array
-     ARGTYPES.  */
+  /* Return the types of the arguments the method takes.  The types
+     are returned in TYPE_ARGS, one per argument.  */
 
   virtual enum ext_lang_rc do_get_arg_types
-    (int *nargs, struct type ***arg_types) = 0;
+    (std::vector<type *> *type_args) = 0;
 
-  /* Fetch the type of the result of the method implemented by this worker.
-     OBJECT, ARGS, NARGS are the same as for the invoked method.  The result
-     type is stored in *RESULT_TYPE.  */
+  /* Fetch the type of the result of the method implemented by this
+     worker.  OBJECT and ARGS are the same as for the invoked method.
+     The result type is stored in *RESULT_TYPE.  */
 
   virtual enum ext_lang_rc do_get_result_type
-    (struct value *obj, struct value **args, int nargs,
+    (struct value *obj, gdb::array_view<value *> args,
      struct type **result_type_ptr) = 0;
 
   /* The language the xmethod worker is implemented in.  */
@@ -267,12 +268,15 @@ extern objfile_script_sourcer_func *ext_lang_objfile_script_sourcer
 extern objfile_script_executor_func *ext_lang_objfile_script_executor
   (const struct extension_language_defn *);
 
-extern int ext_lang_auto_load_enabled (const struct extension_language_defn *);
+/* Return true if auto-loading of EXTLANG scripts is enabled.
+   False is returned if support for this language isn't compiled in.  */
+
+extern bool ext_lang_auto_load_enabled (const struct extension_language_defn *);
 
 /* Wrappers for each extension language API function that iterate over all
    extension languages.  */
 
-extern void finish_ext_lang_initialization (void);
+extern void ext_lang_initialization (void);
 
 extern void eval_ext_lang_from_control_command (struct command_line *cmd);
 
@@ -282,10 +286,8 @@ extern char *apply_ext_lang_type_printers (struct ext_lang_type_printers *,
 					   struct type *);
 
 extern int apply_ext_lang_val_pretty_printer
-  (struct type *type,
-   LONGEST embedded_offset, CORE_ADDR address,
-   struct ui_file *stream, int recurse,
-   struct value *val, const struct value_print_options *options,
+  (struct value *value, struct ui_file *stream, int recurse,
+   const struct value_print_options *options,
    const struct language_defn *language);
 
 extern enum ext_lang_bt_status apply_ext_lang_frame_filter
@@ -308,5 +310,13 @@ extern int breakpoint_ext_lang_cond_says_stop (struct breakpoint *);
 extern void get_matching_xmethod_workers
   (struct type *type, const char *method_name,
    std::vector<xmethod_worker_up> *workers);
+
+/* Try to colorize some source code.  FILENAME is the name of the file
+   holding the code.  CONTENTS is the source code itself.  This will
+   either a colorized (using ANSI terminal escapes) version of the
+   source code, or an empty value if colorizing could not be done.  */
+
+extern gdb::optional<std::string> ext_lang_colorize
+  (const std::string &filename, const std::string &contents);
 
 #endif /* EXTENSION_H */

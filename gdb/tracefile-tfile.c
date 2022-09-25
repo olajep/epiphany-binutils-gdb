@@ -1,6 +1,6 @@
 /* Trace file TFILE format support in GDB.
 
-   Copyright (C) 1997-2018 Free Software Foundation, Inc.
+   Copyright (C) 1997-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,18 +20,19 @@
 #include "defs.h"
 #include "tracefile.h"
 #include "readline/tilde.h"
-#include "filestuff.h"
-#include "rsp-low.h" /* bin2hex */
+#include "gdbsupport/filestuff.h"
+#include "gdbsupport/rsp-low.h" /* bin2hex */
 #include "regcache.h"
 #include "inferior.h"
 #include "gdbthread.h"
-#include "exec.h" /* exec_bfd */
+#include "exec.h"
 #include "completer.h"
 #include "filenames.h"
 #include "remote.h"
 #include "xml-tdesc.h"
 #include "target-descriptions.h"
-#include "buffer.h"
+#include "gdbsupport/buffer.h"
+#include "gdbsupport/pathstuff.h"
 #include <algorithm>
 
 #ifndef O_LARGEFILE
@@ -43,7 +44,8 @@
 static const target_info tfile_target_info = {
   "tfile",
   N_("Local trace dump file"),
-  N_("Use a trace file as a target.  Specify the filename of the trace file.")
+  N_("Use a trace file as a target.\n\
+Specify the filename of the trace file.")
 };
 
 class tfile_target final : public tracefile_target
@@ -262,31 +264,32 @@ tfile_write_uploaded_tp (struct trace_file_writer *self,
     fprintf (writer->fp, ":F%x", utp->orig_size);
   if (utp->cond)
     fprintf (writer->fp,
-	     ":X%x,%s", (unsigned int) strlen (utp->cond) / 2,
-	     utp->cond);
+	     ":X%x,%s", (unsigned int) strlen (utp->cond.get ()) / 2,
+	     utp->cond.get ());
   fprintf (writer->fp, "\n");
-  for (char *act : utp->actions)
+  for (const auto &act : utp->actions)
     fprintf (writer->fp, "tp A%x:%s:%s\n",
-	     utp->number, phex_nz (utp->addr, sizeof (utp->addr)), act);
-  for (char *act : utp->step_actions)
+	     utp->number, phex_nz (utp->addr, sizeof (utp->addr)), act.get ());
+  for (const auto &act : utp->step_actions)
     fprintf (writer->fp, "tp S%x:%s:%s\n",
-	     utp->number, phex_nz (utp->addr, sizeof (utp->addr)), act);
+	     utp->number, phex_nz (utp->addr, sizeof (utp->addr)), act.get ());
   if (utp->at_string)
     {
       encode_source_string (utp->number, utp->addr,
-			    "at", utp->at_string, buf, MAX_TRACE_UPLOAD);
+			    "at", utp->at_string.get (),
+			    buf, MAX_TRACE_UPLOAD);
       fprintf (writer->fp, "tp Z%s\n", buf);
     }
   if (utp->cond_string)
     {
       encode_source_string (utp->number, utp->addr,
-			    "cond", utp->cond_string,
+			    "cond", utp->cond_string.get (),
 			    buf, MAX_TRACE_UPLOAD);
       fprintf (writer->fp, "tp Z%s\n", buf);
     }
-  for (char *act : utp->cmd_strings)
+  for (const auto &act : utp->cmd_strings)
     {
-      encode_source_string (utp->number, utp->addr, "cmd", act,
+      encode_source_string (utp->number, utp->addr, "cmd", act.get (),
 			    buf, MAX_TRACE_UPLOAD);
       fprintf (writer->fp, "tp Z%s\n", buf);
     }
@@ -307,7 +310,7 @@ tfile_write_tdesc (struct trace_file_writer *self)
     = (struct tfile_trace_file_writer *) self;
 
   gdb::optional<std::string> tdesc
-    = target_fetch_description_xml (current_top_target ());
+    = target_fetch_description_xml (current_inferior ()->top_target ());
 
   if (!tdesc)
     return;
@@ -468,8 +471,7 @@ tfile_target_open (const char *arg, int from_tty)
 
   gdb::unique_xmalloc_ptr<char> filename (tilde_expand (arg));
   if (!IS_ABSOLUTE_PATH (filename.get ()))
-    filename.reset (concat (current_directory, "/", filename.get (),
-			    (char *) NULL));
+    filename = gdb_abspath (filename.get ());
 
   flags = O_BINARY | O_LARGEFILE;
   flags |= O_RDONLY;
@@ -479,7 +481,7 @@ tfile_target_open (const char *arg, int from_tty)
 
   /* Looks semi-reasonable.  Toss the old trace file and work on the new.  */
 
-  unpush_target (&tfile_ops);
+  current_inferior ()->unpush_target (&tfile_ops);
 
   trace_filename = filename.release ();
   trace_fd = scratch_chan;
@@ -496,7 +498,7 @@ tfile_target_open (const char *arg, int from_tty)
 	&& (startswith (header + 1, "TRACE0\n"))))
     error (_("File is not a valid trace file."));
 
-  push_target (&tfile_ops);
+  current_inferior ()->push_target (&tfile_ops);
 
   trace_regblock_size = 0;
   ts = current_trace_status ();
@@ -510,7 +512,7 @@ tfile_target_open (const char *arg, int from_tty)
   ts->disconnected_tracing = 0;
   ts->circular_buffer = 0;
 
-  TRY
+  try
     {
       /* Read through a section of newline-terminated lines that
 	 define things like tracepoints.  */
@@ -546,17 +548,17 @@ tfile_target_open (const char *arg, int from_tty)
       if (trace_regblock_size == 0)
 	error (_("No register block size recorded in trace file"));
     }
-  CATCH (ex, RETURN_MASK_ALL)
+  catch (const gdb_exception &ex)
     {
       /* Remove the partially set up target.  */
-      unpush_target (&tfile_ops);
-      throw_exception (ex);
+      current_inferior ()->unpush_target (&tfile_ops);
+      throw;
     }
-  END_CATCH
 
   inferior_appeared (current_inferior (), TFILE_PID);
-  inferior_ptid = ptid_t (TFILE_PID);
-  add_thread_silent (inferior_ptid);
+
+  thread_info *thr = add_thread_silent (&tfile_ops, ptid_t (TFILE_PID));
+  switch_to_thread (thr);
 
   if (ts->traceframe_count <= 0)
     warning (_("No traceframes present in this file."));
@@ -569,7 +571,7 @@ tfile_target_open (const char *arg, int from_tty)
 
   merge_uploaded_tracepoints (&uploaded_tps);
 
-  post_create_inferior (&tfile_ops, from_tty);
+  post_create_inferior (from_tty);
 }
 
 /* Interpret the given line from the definitions part of the trace
@@ -615,10 +617,9 @@ tfile_interp_line (char *line, struct uploaded_tp **utpp,
 void
 tfile_target::close ()
 {
-  if (trace_fd < 0)
-    return;
+  gdb_assert (trace_fd != -1);
 
-  inferior_ptid = null_ptid;	/* Avoid confusion from thread stuff.  */
+  switch_to_no_thread ();	/* Avoid confusion from thread stuff.  */
   exit_inferior_silent (current_inferior ());
 
   ::close (trace_fd);
@@ -695,7 +696,7 @@ tfile_target::trace_find (enum trace_find_type type, int num,
   if (num == -1)
     {
       if (tpp)
-        *tpp = -1;
+	*tpp = -1;
       return -1;
     }
 
@@ -713,7 +714,7 @@ tfile_target::trace_find (enum trace_find_type type, int num,
 	break;
       tfile_read ((gdb_byte *) &data_size, 4);
       data_size = (unsigned int) extract_unsigned_integer
-                                     ((gdb_byte *) &data_size, 4,
+				     ((gdb_byte *) &data_size, 4,
 				      gdbarch_byte_order (target_gdbarch ()));
       offset += 4;
 
@@ -830,10 +831,10 @@ traceframe_walk_blocks (walk_blocks_callback_func callback,
 	case 'M':
 	  lseek (trace_fd, cur_offset + pos + 8, SEEK_SET);
 	  tfile_read ((gdb_byte *) &mlen, 2);
-          mlen = (unsigned short)
-                extract_unsigned_integer ((gdb_byte *) &mlen, 2,
-                                          gdbarch_byte_order
-                                              (target_gdbarch ()));
+	  mlen = (unsigned short)
+		extract_unsigned_integer ((gdb_byte *) &mlen, 2,
+					  gdbarch_byte_order
+					      (target_gdbarch ()));
 	  lseek (trace_fd, mlen, SEEK_CUR);
 	  pos += (8 + 2 + mlen);
 	  break;
@@ -986,7 +987,7 @@ tfile_target::xfer_partial (enum target_object object,
 		amt = len;
 
 	      if (maddr != offset)
-	        lseek (trace_fd, offset - maddr, SEEK_CUR);
+		lseek (trace_fd, offset - maddr, SEEK_CUR);
 	      tfile_read (readbuf, amt);
 	      *xfered_len = amt;
 	      return TARGET_XFER_OK;
@@ -1131,8 +1132,9 @@ tfile_append_tdesc_line (const char *line)
   buffer_grow_str (&trace_tdesc, "\n");
 }
 
+void _initialize_tracefile_tfile ();
 void
-_initialize_tracefile_tfile (void)
+_initialize_tracefile_tfile ()
 {
   add_target (tfile_target_info, tfile_target_open, filename_completer);
 }

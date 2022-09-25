@@ -1,6 +1,6 @@
 /* Native-dependent code for GNU/Linux AArch64.
 
-   Copyright (C) 2011-2018 Free Software Foundation, Inc.
+   Copyright (C) 2011-2022 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of GDB.
@@ -30,6 +30,8 @@
 #include "aarch64-tdep.h"
 #include "aarch64-linux-tdep.h"
 #include "aarch32-linux-nat.h"
+#include "aarch32-tdep.h"
+#include "arch/arm.h"
 #include "nat/aarch64-linux.h"
 #include "nat/aarch64-linux-hw-point.h"
 #include "nat/aarch64-sve-linux-ptrace.h"
@@ -42,9 +44,15 @@
 #include <asm/ptrace.h>
 
 #include "gregset.h"
+#include "linux-tdep.h"
 
 /* Defines ps_err_e, struct ps_prochandle.  */
 #include "gdb_proc_service.h"
+#include "arch-utils.h"
+
+#include "arch/aarch64-mte-linux.h"
+
+#include "nat/aarch64-mte-linux-ptrace.h"
 
 #ifndef TRAP_HWBKPT
 #define TRAP_HWBKPT 0x0004
@@ -94,6 +102,18 @@ public:
   /* Add our siginfo layout converter.  */
   bool low_siginfo_fixup (siginfo_t *ptrace, gdb_byte *inf, int direction)
     override;
+
+  struct gdbarch *thread_architecture (ptid_t) override;
+
+  bool supports_memory_tagging () override;
+
+  /* Read memory allocation tags from memory via PTRACE.  */
+  bool fetch_memtags (CORE_ADDR address, size_t len,
+		      gdb::byte_vector &tags, int type) override;
+
+  /* Write allocation tags to memory via PTRACE.  */
+  bool store_memtags (CORE_ADDR address, size_t len,
+		      const gdb::byte_vector &tags, int type) override;
 };
 
 static aarch64_linux_nat_target the_aarch64_linux_nat_target;
@@ -290,7 +310,7 @@ fetch_fpregs_from_thread (struct regcache *regcache)
 
   /* Make sure REGS can hold all VFP registers contents on both aarch64
      and arm.  */
-  gdb_static_assert (sizeof regs >= VFP_REGS_SIZE);
+  gdb_static_assert (sizeof regs >= ARM_VFP3_REGS_SIZE);
 
   tid = regcache->ptid ().lwp ();
 
@@ -298,7 +318,7 @@ fetch_fpregs_from_thread (struct regcache *regcache)
 
   if (gdbarch_bfd_arch_info (gdbarch)->bits_per_word == 32)
     {
-      iovec.iov_len = VFP_REGS_SIZE;
+      iovec.iov_len = ARM_VFP3_REGS_SIZE;
 
       ret = ptrace (PTRACE_GETREGSET, tid, NT_ARM_VFP, &iovec);
       if (ret < 0)
@@ -337,14 +357,14 @@ store_fpregs_to_thread (const struct regcache *regcache)
 
   /* Make sure REGS can hold all VFP registers contents on both aarch64
      and arm.  */
-  gdb_static_assert (sizeof regs >= VFP_REGS_SIZE);
+  gdb_static_assert (sizeof regs >= ARM_VFP3_REGS_SIZE);
   tid = regcache->ptid ().lwp ();
 
   iovec.iov_base = &regs;
 
   if (gdbarch_bfd_arch_info (gdbarch)->bits_per_word == 32)
     {
-      iovec.iov_len = VFP_REGS_SIZE;
+      iovec.iov_len = ARM_VFP3_REGS_SIZE;
 
       ret = ptrace (PTRACE_GETREGSET, tid, NT_ARM_VFP, &iovec);
       if (ret < 0)
@@ -408,6 +428,11 @@ store_sveregs_to_thread (struct regcache *regcache)
   struct iovec iovec;
   int tid = regcache->ptid ().lwp ();
 
+  /* First store vector length to the thread.  This is done first to ensure the
+     ptrace buffers read from the kernel are the correct size.  */
+  if (!aarch64_sve_set_vq (tid, regcache))
+    perror_with_name (_("Unable to set VG register."));
+
   /* Obtain a dump of SVE registers from ptrace.  */
   std::unique_ptr<gdb_byte[]> base = aarch64_sve_get_sveregs (tid);
 
@@ -421,6 +446,83 @@ store_sveregs_to_thread (struct regcache *regcache)
 
   if (ret < 0)
     perror_with_name (_("Unable to store sve registers"));
+}
+
+/* Fill GDB's register array with the pointer authentication mask values from
+   the current thread.  */
+
+static void
+fetch_pauth_masks_from_thread (struct regcache *regcache)
+{
+  struct gdbarch_tdep *tdep = gdbarch_tdep (regcache->arch ());
+  int ret;
+  struct iovec iovec;
+  uint64_t pauth_regset[2] = {0, 0};
+  int tid = regcache->ptid ().lwp ();
+
+  iovec.iov_base = &pauth_regset;
+  iovec.iov_len = sizeof (pauth_regset);
+
+  ret = ptrace (PTRACE_GETREGSET, tid, NT_ARM_PAC_MASK, &iovec);
+  if (ret != 0)
+    perror_with_name (_("unable to fetch pauth registers."));
+
+  regcache->raw_supply (AARCH64_PAUTH_DMASK_REGNUM (tdep->pauth_reg_base),
+			&pauth_regset[0]);
+  regcache->raw_supply (AARCH64_PAUTH_CMASK_REGNUM (tdep->pauth_reg_base),
+			&pauth_regset[1]);
+}
+
+/* Fill GDB's register array with the MTE register values from
+   the current thread.  */
+
+static void
+fetch_mteregs_from_thread (struct regcache *regcache)
+{
+  struct gdbarch_tdep *tdep = gdbarch_tdep (regcache->arch ());
+  int regno = tdep->mte_reg_base;
+
+  gdb_assert (regno != -1);
+
+  uint64_t tag_ctl = 0;
+  struct iovec iovec;
+
+  iovec.iov_base = &tag_ctl;
+  iovec.iov_len = sizeof (tag_ctl);
+
+  int tid = get_ptrace_pid (regcache->ptid ());
+  if (ptrace (PTRACE_GETREGSET, tid, NT_ARM_TAGGED_ADDR_CTRL, &iovec) != 0)
+      perror_with_name (_("unable to fetch MTE registers."));
+
+  regcache->raw_supply (regno, &tag_ctl);
+}
+
+/* Store to the current thread the valid MTE register set in the GDB's
+   register array.  */
+
+static void
+store_mteregs_to_thread (struct regcache *regcache)
+{
+  struct gdbarch_tdep *tdep = gdbarch_tdep (regcache->arch ());
+  int regno = tdep->mte_reg_base;
+
+  gdb_assert (regno != -1);
+
+  uint64_t tag_ctl = 0;
+
+  if (REG_VALID != regcache->get_register_status (regno))
+    return;
+
+  regcache->raw_collect (regno, (char *) &tag_ctl);
+
+  struct iovec iovec;
+
+  iovec.iov_base = &tag_ctl;
+  iovec.iov_len = sizeof (tag_ctl);
+
+  int tid = get_ptrace_pid (regcache->ptid ());
+  if (ptrace (PTRACE_SETREGSET, tid, NT_ARM_TAGGED_ADDR_CTRL, &iovec) != 0)
+    perror_with_name (_("unable to store MTE registers."));
 }
 
 /* Implement the "fetch_registers" target_ops method.  */
@@ -438,6 +540,12 @@ aarch64_linux_nat_target::fetch_registers (struct regcache *regcache,
 	fetch_sveregs_from_thread (regcache);
       else
 	fetch_fpregs_from_thread (regcache);
+
+      if (tdep->has_pauth ())
+	fetch_pauth_masks_from_thread (regcache);
+
+      if (tdep->has_mte ())
+	fetch_mteregs_from_thread (regcache);
     }
   else if (regno < AARCH64_V0_REGNUM)
     fetch_gregs_from_thread (regcache);
@@ -445,6 +553,18 @@ aarch64_linux_nat_target::fetch_registers (struct regcache *regcache,
     fetch_sveregs_from_thread (regcache);
   else
     fetch_fpregs_from_thread (regcache);
+
+  if (tdep->has_pauth ())
+    {
+      if (regno == AARCH64_PAUTH_DMASK_REGNUM (tdep->pauth_reg_base)
+	  || regno == AARCH64_PAUTH_CMASK_REGNUM (tdep->pauth_reg_base))
+	fetch_pauth_masks_from_thread (regcache);
+    }
+
+  /* Fetch individual MTE registers.  */
+  if (tdep->has_mte ()
+      && (regno == tdep->mte_reg_base))
+    fetch_mteregs_from_thread (regcache);
 }
 
 /* Implement the "store_registers" target_ops method.  */
@@ -462,6 +582,9 @@ aarch64_linux_nat_target::store_registers (struct regcache *regcache,
 	store_sveregs_to_thread (regcache);
       else
 	store_fpregs_to_thread (regcache);
+
+      if (tdep->has_mte ())
+	store_mteregs_to_thread (regcache);
     }
   else if (regno < AARCH64_V0_REGNUM)
     store_gregs_to_thread (regcache);
@@ -469,6 +592,11 @@ aarch64_linux_nat_target::store_registers (struct regcache *regcache,
     store_sveregs_to_thread (regcache);
   else
     store_fpregs_to_thread (regcache);
+
+  /* Store MTE registers.  */
+  if (tdep->has_mte ()
+      && (regno == tdep->mte_reg_base))
+    store_mteregs_to_thread (regcache);
 }
 
 /* Fill register REGNO (if it is a general-purpose register) in
@@ -586,27 +714,31 @@ aarch64_linux_nat_target::post_attach (int pid)
   linux_nat_target::post_attach (pid);
 }
 
-extern struct target_desc *tdesc_arm_with_neon;
-
 /* Implement the "read_description" target_ops method.  */
 
 const struct target_desc *
 aarch64_linux_nat_target::read_description ()
 {
   int ret, tid;
-  gdb_byte regbuf[VFP_REGS_SIZE];
+  gdb_byte regbuf[ARM_VFP3_REGS_SIZE];
   struct iovec iovec;
 
-  tid = inferior_ptid.lwp ();
+  tid = inferior_ptid.pid ();
 
   iovec.iov_base = regbuf;
-  iovec.iov_len = VFP_REGS_SIZE;
+  iovec.iov_len = ARM_VFP3_REGS_SIZE;
 
   ret = ptrace (PTRACE_GETREGSET, tid, NT_ARM_VFP, &iovec);
   if (ret == 0)
-    return tdesc_arm_with_neon;
-  else
-    return aarch64_read_description (aarch64_sve_get_vq (tid));
+    return aarch32_read_description ();
+
+  CORE_ADDR hwcap = linux_get_hwcap (this);
+  CORE_ADDR hwcap2 = linux_get_hwcap2 (this);
+
+  bool pauth_p = hwcap & AARCH64_HWCAP_PACA;
+  bool mte_p = hwcap2 & HWCAP2_MTE;
+
+  return aarch64_read_description (aarch64_sve_get_vq (tid), pauth_p, mte_p);
 }
 
 /* Convert a native/host siginfo object, into/from the siginfo in the
@@ -819,7 +951,7 @@ bool
 aarch64_linux_nat_target::stopped_data_address (CORE_ADDR *addr_p)
 {
   siginfo_t siginfo;
-  int i, tid;
+  int i;
   struct aarch64_debug_reg_state *state;
 
   if (!linux_nat_get_siginfo (inferior_ptid, &siginfo))
@@ -830,6 +962,13 @@ aarch64_linux_nat_target::stopped_data_address (CORE_ADDR *addr_p)
       || (siginfo.si_code & 0xffff) != TRAP_HWBKPT)
     return false;
 
+  /* Make sure to ignore the top byte, otherwise we may not recognize a
+     hardware watchpoint hit.  The stopped data addresses coming from the
+     kernel can potentially be tagged addresses.  */
+  struct gdbarch *gdbarch = thread_architecture (inferior_ptid);
+  const CORE_ADDR addr_trap
+    = address_significant (gdbarch, (CORE_ADDR) siginfo.si_addr);
+
   /* Check if the address matches any watched address.  */
   state = aarch64_get_debug_reg_state (inferior_ptid.pid ());
   for (i = aarch64_num_wp_regs - 1; i >= 0; --i)
@@ -837,7 +976,6 @@ aarch64_linux_nat_target::stopped_data_address (CORE_ADDR *addr_p)
       const unsigned int offset
 	= aarch64_watchpoint_offset (state->dr_ctrl_wp[i]);
       const unsigned int len = aarch64_watchpoint_length (state->dr_ctrl_wp[i]);
-      const CORE_ADDR addr_trap = (CORE_ADDR) siginfo.si_addr;
       const CORE_ADDR addr_watch = state->dr_addr_wp[i] + offset;
       const CORE_ADDR addr_watch_aligned = align_down (state->dr_addr_wp[i], 8);
       const CORE_ADDR addr_orig = state->dr_addr_orig_wp[i];
@@ -900,6 +1038,71 @@ aarch64_linux_nat_target::can_do_single_step ()
   return 1;
 }
 
+/* Implement the "thread_architecture" target_ops method.  */
+
+struct gdbarch *
+aarch64_linux_nat_target::thread_architecture (ptid_t ptid)
+{
+  /* Return the gdbarch for the current thread.  If the vector length has
+     changed since the last time this was called, then do a further lookup.  */
+
+  uint64_t vq = aarch64_sve_get_vq (ptid.lwp ());
+
+  /* Find the current gdbarch the same way as process_stratum_target.  Only
+     return it if the current vector length matches the one in the tdep.  */
+  inferior *inf = find_inferior_ptid (this, ptid);
+  gdb_assert (inf != NULL);
+  if (vq == gdbarch_tdep (inf->gdbarch)->vq)
+    return inf->gdbarch;
+
+  /* We reach here if the vector length for the thread is different from its
+     value at process start.  Lookup gdbarch via info (potentially creating a
+     new one), stashing the vector length inside id.  Use -1 for when SVE
+     unavailable, to distinguish from an unset value of 0.  */
+  struct gdbarch_info info;
+  info.bfd_arch_info = bfd_lookup_arch (bfd_arch_aarch64, bfd_mach_aarch64);
+  info.id = (int *) (vq == 0 ? -1 : vq);
+  return gdbarch_find_by_info (info);
+}
+
+/* Implement the "supports_memory_tagging" target_ops method.  */
+
+bool
+aarch64_linux_nat_target::supports_memory_tagging ()
+{
+  return (linux_get_hwcap2 (this) & HWCAP2_MTE) != 0;
+}
+
+/* Implement the "fetch_memtags" target_ops method.  */
+
+bool
+aarch64_linux_nat_target::fetch_memtags (CORE_ADDR address, size_t len,
+					 gdb::byte_vector &tags, int type)
+{
+  int tid = get_ptrace_pid (inferior_ptid);
+
+  /* Allocation tags?  */
+  if (type == static_cast<int> (aarch64_memtag_type::mte_allocation))
+    return aarch64_mte_fetch_memtags (tid, address, len, tags);
+
+  return false;
+}
+
+/* Implement the "store_memtags" target_ops method.  */
+
+bool
+aarch64_linux_nat_target::store_memtags (CORE_ADDR address, size_t len,
+					 const gdb::byte_vector &tags, int type)
+{
+  int tid = get_ptrace_pid (inferior_ptid);
+
+  /* Allocation tags?  */
+  if (type == static_cast<int> (aarch64_memtag_type::mte_allocation))
+    return aarch64_mte_store_memtags (tid, address, len, tags);
+
+  return false;
+}
+
 /* Define AArch64 maintenance commands.  */
 
 static void
@@ -921,8 +1124,9 @@ triggers a breakpoint or watchpoint."),
 			   &maintenance_show_cmdlist);
 }
 
+void _initialize_aarch64_linux_nat ();
 void
-_initialize_aarch64_linux_nat (void)
+_initialize_aarch64_linux_nat ()
 {
   add_show_debug_regs_command ();
 

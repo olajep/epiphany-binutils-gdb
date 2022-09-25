@@ -1,6 +1,6 @@
 /* Solaris threads debugging interface.
 
-   Copyright (C) 1996-2018 Free Software Foundation, Inc.
+   Copyright (C) 1996-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -22,7 +22,7 @@
    to provide access to the Solaris user-mode thread implementation.
 
    Solaris threads are true user-mode threads, which are invoked via
-   the thr_* and pthread_* (native and POSIX respectivly) interfaces.
+   the thr_* and pthread_* (native and POSIX respectively) interfaces.
    These are mostly implemented in user-space, with all thread context
    kept in various structures that live in the user's heap.  These
    should not be confused with lightweight processes (LWPs), which are
@@ -78,17 +78,16 @@ static const target_info thread_db_target_info = {
 class sol_thread_target final : public target_ops
 {
 public:
-  sol_thread_target ()
-  { this->to_stratum = thread_stratum; }
-
   const target_info &info () const override
   { return thread_db_target_info; }
 
+  strata stratum () const override { return thread_stratum; }
+
   void detach (inferior *, int) override;
-  ptid_t wait (ptid_t, struct target_waitstatus *, int) override;
+  ptid_t wait (ptid_t, struct target_waitstatus *, target_wait_flags) override;
   void resume (ptid_t, int, enum gdb_signal) override;
   void mourn_inferior () override;
-  const char *pid_to_str (ptid_t) override;
+  std::string pid_to_str (ptid_t) override;
   ptid_t get_ada_task_ptid (long lwp, long thread) override;
 
   void fetch_registers (struct regcache *, int) override;
@@ -254,7 +253,7 @@ td_err_string (td_err_e errcode)
   return buf;
 }
 
-/* Return the libthread_db state string assicoated with STATECODE.
+/* Return the libthread_db state string associated with STATECODE.
    If STATECODE is unknown, return an appropriate message.  */
 
 static const char *
@@ -388,11 +387,11 @@ sol_thread_target::detach (inferior *inf, int from_tty)
 
   sol_thread_active = 0;
   inferior_ptid = ptid_t (main_ph.ptid.pid ());
-  unpush_target (this);
+  inf->unpush_target (this);
   beneath->detach (inf, from_tty);
 }
 
-/* Resume execution of process PTID.  If STEP is nozero, then just
+/* Resume execution of process PTID.  If STEP is nonzero, then just
    single step it.  If SIGNAL is nonzero, restart it with that signal
    activated.  We may have to convert PTID from a thread ID to an LWP
    ID for procfs.  */
@@ -426,45 +425,40 @@ sol_thread_target::resume (ptid_t ptid, int step, enum gdb_signal signo)
 
 ptid_t
 sol_thread_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
-			 int options)
+			 target_wait_flags options)
 {
-  ptid_t rtnval;
-  ptid_t save_ptid;
-
-  save_ptid = inferior_ptid;
-  scoped_restore save_inferior_ptid = make_scoped_restore (&inferior_ptid);
-
-  inferior_ptid = thread_to_lwp (inferior_ptid, main_ph.ptid.pid ());
-  if (inferior_ptid.pid () == -1)
-    inferior_ptid = procfs_first_available ();
-
   if (ptid.pid () != -1)
     {
-      ptid_t save_ptid = ptid;
+      ptid_t ptid_for_warning = ptid;
 
       ptid = thread_to_lwp (ptid, -2);
       if (ptid.pid () == -2)		/* Inactive thread.  */
 	error (_("This version of Solaris can't start inactive threads."));
       if (info_verbose && ptid.pid () == -1)
 	warning (_("Specified thread %ld seems to have terminated"),
-		 save_ptid.tid ());
+		 ptid_for_warning.tid ());
     }
 
-  rtnval = beneath ()->wait (ptid, ourstatus, options);
+  ptid_t rtnval = beneath ()->wait (ptid, ourstatus, options);
 
   if (ourstatus->kind != TARGET_WAITKIND_EXITED)
     {
       /* Map the LWP of interest back to the appropriate thread ID.  */
-      rtnval = lwp_to_thread (rtnval);
-      if (rtnval.pid () == -1)
-	rtnval = save_ptid;
+      ptid_t thr_ptid = lwp_to_thread (rtnval);
+      if (thr_ptid.pid () != -1)
+	rtnval = thr_ptid;
 
       /* See if we have a new thread.  */
-      if (rtnval.tid_p ()
-	  && rtnval != save_ptid
-	  && (!in_thread_list (rtnval)
-	      || is_exited (rtnval)))
-	add_thread (rtnval);
+      if (rtnval.tid_p ())
+	{
+	  thread_info *thr = find_thread_ptid (current_inferior (), rtnval);
+	  if (thr == NULL || thr->state == THREAD_EXITED)
+	    {
+	      process_stratum_target *proc_target
+		= current_inferior ()->process_target ();
+	      add_thread (proc_target, rtnval);
+	    }
+	}
     }
 
   /* During process initialization, we may get here without the thread
@@ -594,7 +588,7 @@ sol_thread_target::xfer_partial (enum target_object object,
   if (inferior_ptid.tid_p () || !target_thread_alive (inferior_ptid))
     {
       /* It's either a thread or an LWP that isn't alive.  Any live
-         LWP will do so use the first available.
+	 LWP will do so use the first available.
 
 	 NOTE: We don't need to call switch_to_thread; we're just
 	 reading memory.  */
@@ -647,7 +641,7 @@ check_for_thread_db (void)
       printf_unfiltered (_("[Thread debugging using libthread_db enabled]\n"));
 
       /* The thread library was detected.  Activate the sol_thread target.  */
-      push_target (&sol_thread_ops);
+      current_inferior ()->push_target (&sol_thread_ops);
       sol_thread_active = 1;
 
       main_ph.ptid = inferior_ptid; /* Save for xfer_memory.  */
@@ -687,7 +681,7 @@ sol_thread_target::mourn_inferior ()
 
   sol_thread_active = 0;
 
-  unpush_target (this);
+  current_inferior ()->unpush_target (this);
 
   beneath->mourn_inferior ();
 }
@@ -705,9 +699,11 @@ sol_thread_target::thread_alive (ptid_t ptid)
       int pid;
 
       pid = ptid.tid ();
-      if ((val = p_td_ta_map_id2thr (main_ta, pid, &th)) != TD_OK)
+      val = p_td_ta_map_id2thr (main_ta, pid, &th);
+      if (val != TD_OK)
 	return false;		/* Thread not found.  */
-      if ((val = p_td_thr_validate (&th)) != TD_OK)
+      val = p_td_thr_validate (&th);
+      if (val != TD_OK)
 	return false;		/* Thread not valid.  */
       return true;		/* Known thread.  */
     }
@@ -788,7 +784,7 @@ rw_common (int dowrite, const struct ps_prochandle *ph, psaddr_t addr,
   if (inferior_ptid.tid_p () || !target_thread_alive (inferior_ptid))
     {
       /* It's either a thread or an LWP that isn't alive.  Any live
-         LWP will do so use the first available.
+	 LWP will do so use the first available.
 
 	 NOTE: We don't need to call switch_to_thread; we're just
 	 reading memory.  */
@@ -798,7 +794,7 @@ rw_common (int dowrite, const struct ps_prochandle *ph, psaddr_t addr,
 #if defined (__sparcv9)
   /* For Sparc64 cross Sparc32, make sure the address has not been
      accidentally sign-extended (or whatever) to beyond 32 bits.  */
-  if (bfd_get_arch_size (exec_bfd) == 32)
+  if (bfd_get_arch_size (current_program_space->exec_bfd ()) == 32)
     addr &= 0xffffffff;
 #endif
 
@@ -849,9 +845,10 @@ ps_ptwrite (struct ps_prochandle *ph, psaddr_t addr,
 ps_err_e
 ps_lgetregs (struct ps_prochandle *ph, lwpid_t lwpid, prgregset_t gregset)
 {
-  ptid_t ptid = ptid_t (inferior_ptid.pid (), lwpid, 0);
+  ptid_t ptid = ptid_t (current_inferior ()->pid, lwpid, 0);
   struct regcache *regcache
-    = get_thread_arch_regcache (ptid, target_gdbarch ());
+    = get_thread_arch_regcache (current_inferior ()->process_target (),
+				ptid, target_gdbarch ());
 
   target_fetch_registers (regcache, -1);
   fill_gregset (regcache, (gdb_gregset_t *) gregset, -1);
@@ -865,9 +862,10 @@ ps_err_e
 ps_lsetregs (struct ps_prochandle *ph, lwpid_t lwpid,
 	     const prgregset_t gregset)
 {
-  ptid_t ptid = ptid_t (inferior_ptid.pid (), lwpid, 0);
+  ptid_t ptid = ptid_t (current_inferior ()->pid, lwpid, 0);
   struct regcache *regcache
-    = get_thread_arch_regcache (ptid, target_gdbarch ());
+    = get_thread_arch_regcache (current_inferior ()->process_target (),
+				ptid, target_gdbarch ());
 
   supply_gregset (regcache, (const gdb_gregset_t *) gregset);
   target_store_registers (regcache, -1);
@@ -917,9 +915,10 @@ ps_err_e
 ps_lgetfpregs (struct ps_prochandle *ph, lwpid_t lwpid,
 	       prfpregset_t *fpregset)
 {
-  ptid_t ptid = ptid_t (inferior_ptid.pid (), lwpid, 0);
+  ptid_t ptid = ptid_t (current_inferior ()->pid, lwpid, 0);
   struct regcache *regcache
-    = get_thread_arch_regcache (ptid, target_gdbarch ());
+    = get_thread_arch_regcache (current_inferior ()->process_target (),
+				ptid, target_gdbarch ());
 
   target_fetch_registers (regcache, -1);
   fill_fpregset (regcache, (gdb_fpregset_t *) fpregset, -1);
@@ -933,9 +932,10 @@ ps_err_e
 ps_lsetfpregs (struct ps_prochandle *ph, lwpid_t lwpid,
 	       const prfpregset_t * fpregset)
 {
-  ptid_t ptid = ptid_t (inferior_ptid.pid (), lwpid, 0);
+  ptid_t ptid = ptid_t (current_inferior ()->pid, lwpid, 0);
   struct regcache *regcache
-    = get_thread_arch_regcache (ptid, target_gdbarch ());
+    = get_thread_arch_regcache (current_inferior ()->process_target (),
+				ptid, target_gdbarch ());
 
   supply_fpregset (regcache, (const gdb_fpregset_t *) fpregset);
   target_store_registers (regcache, -1);
@@ -943,7 +943,6 @@ ps_lsetfpregs (struct ps_prochandle *ph, lwpid_t lwpid,
   return PS_OK;
 }
 
-#ifdef PR_MODEL_LP64
 /* Identify process as 32-bit or 64-bit.  At the moment we're using
    BFD to do this.  There might be a more Solaris-specific
    (e.g. procfs) method, but this ought to work.  */
@@ -951,58 +950,22 @@ ps_lsetfpregs (struct ps_prochandle *ph, lwpid_t lwpid,
 ps_err_e
 ps_pdmodel (struct ps_prochandle *ph, int *data_model)
 {
-  if (exec_bfd == 0)
+  if (current_program_space->exec_bfd () == 0)
     *data_model = PR_MODEL_UNKNOWN;
-  else if (bfd_get_arch_size (exec_bfd) == 32)
+  else if (bfd_get_arch_size (current_program_space->exec_bfd ()) == 32)
     *data_model = PR_MODEL_ILP32;
   else
     *data_model = PR_MODEL_LP64;
 
   return PS_OK;
 }
-#endif /* PR_MODEL_LP64 */
-
-#if (defined(__i386__) || defined(__x86_64__)) && defined (sun)
-
-/* Reads the local descriptor table of a LWP.
-
-   This function is necessary on x86-solaris only.  Without it, the loading
-   of libthread_db would fail because of ps_lgetLDT being undefined.  */
-
-ps_err_e
-ps_lgetLDT (struct ps_prochandle *ph, lwpid_t lwpid,
-	    struct ssd *pldt)
-{
-  /* NOTE: only used on Solaris, therefore OK to refer to procfs.c.  */
-  struct ssd *ret;
-
-  /* FIXME: can't I get the process ID from the prochandle or
-     something?  */
-
-  if (inferior_ptid.pid () <= 0 || lwpid <= 0)
-    return PS_BADLID;
-
-  ret = procfs_find_LDT_entry (ptid_t (inferior_ptid.pid (),
-			       lwpid, 0));
-  if (ret)
-    {
-      memcpy (pldt, ret, sizeof (struct ssd));
-      return PS_OK;
-    }
-  else
-    /* LDT not found.  */
-    return PS_ERR;
-}
-#endif
 
 
 /* Convert PTID to printable form.  */
 
-const char *
+std::string
 sol_thread_target::pid_to_str (ptid_t ptid)
 {
-  static char buf[100];
-
   if (ptid.tid_p ())
     {
       ptid_t lwp;
@@ -1010,21 +973,19 @@ sol_thread_target::pid_to_str (ptid_t ptid)
       lwp = thread_to_lwp (ptid, -2);
 
       if (lwp.pid () == -1)
-	xsnprintf (buf, sizeof (buf), "Thread %ld (defunct)",
-		   ptid.tid ());
+	return string_printf ("Thread %ld (defunct)",
+			      ptid.tid ());
       else if (lwp.pid () != -2)
-	xsnprintf (buf, sizeof (buf), "Thread %ld (LWP %ld)",
-		 ptid.tid (), lwp.lwp ());
+	return string_printf ("Thread %ld (LWP %ld)",
+			      ptid.tid (), lwp.lwp ());
       else
-	xsnprintf (buf, sizeof (buf), "Thread %ld        ",
-		   ptid.tid ());
+	return string_printf ("Thread %ld        ",
+			      ptid.tid ());
     }
   else if (ptid.lwp () != 0)
-    xsnprintf (buf, sizeof (buf), "LWP    %ld        ", ptid.lwp ());
+    return string_printf ("LWP    %ld        ", ptid.lwp ());
   else
-    xsnprintf (buf, sizeof (buf), "process %d    ", ptid.pid ());
-
-  return buf;
+    return string_printf ("process %d    ", ptid.pid ());
 }
 
 
@@ -1036,15 +997,19 @@ sol_update_thread_list_callback (const td_thrhandle_t *th, void *ignored)
 {
   td_err_e retval;
   td_thrinfo_t ti;
-  ptid_t ptid;
 
   retval = p_td_thr_get_info (th, &ti);
   if (retval != TD_OK)
     return -1;
 
-  ptid = ptid_t (inferior_ptid.pid (), 0, ti.ti_tid);
-  if (!in_thread_list (ptid) || is_exited (ptid))
-    add_thread (ptid);
+  ptid_t ptid = ptid_t (current_inferior ()->pid, 0, ti.ti_tid);
+  thread_info *thr = find_thread_ptid (current_inferior (), ptid);
+  if (thr == NULL || thr->state == THREAD_EXITED)
+    {
+      process_stratum_target *proc_target
+	= current_inferior ()->process_target ();
+      add_thread (proc_target, ptid);
+    }
 
   return 0;
 }
@@ -1114,7 +1079,7 @@ info_cb (const td_thrhandle_t *th, void *s)
 
 	  printf_filtered ("   startfunc=%s",
 			   msym.minsym
-			   ? MSYMBOL_PRINT_NAME (msym.minsym)
+			   ? msym.minsym->print_name ()
 			   : paddress (target_gdbarch (), ti.ti_startfunc));
 	}
 
@@ -1126,7 +1091,7 @@ info_cb (const td_thrhandle_t *th, void *s)
 
 	  printf_filtered ("   sleepfunc=%s",
 			   msym.minsym
-			   ? MSYMBOL_PRINT_NAME (msym.minsym)
+			   ? msym.minsym->print_name ()
 			   : paddress (target_gdbarch (), ti.ti_pc));
 	}
 
@@ -1172,10 +1137,10 @@ sol_thread_target::get_ada_task_ptid (long lwp, long thread)
   if (thread_info == NULL)
     {
       /* The list of threads is probably not up to date.  Find any
-         thread that is missing from the list, and try again.  */
+	 thread that is missing from the list, and try again.  */
       update_thread_list ();
       thread_info = iterate_over_threads (thread_db_find_thread_from_tid,
-                                          &thread);
+					  &thread);
     }
 
   gdb_assert (thread_info != NULL);
@@ -1183,8 +1148,9 @@ sol_thread_target::get_ada_task_ptid (long lwp, long thread)
   return (thread_info->ptid);
 }
 
+void _initialize_sol_thread ();
 void
-_initialize_sol_thread (void)
+_initialize_sol_thread ()
 {
   void *dlhandle;
 
@@ -1224,7 +1190,7 @@ _initialize_sol_thread (void)
 	   _("Show info on Solaris user threads."), &maintenanceinfolist);
 
   /* Hook into new_objfile notification.  */
-  gdb::observers::new_objfile.attach (sol_thread_new_objfile);
+  gdb::observers::new_objfile.attach (sol_thread_new_objfile, "sol-thread");
   return;
 
  die:

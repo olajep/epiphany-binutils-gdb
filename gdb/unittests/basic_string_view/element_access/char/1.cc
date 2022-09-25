@@ -1,6 +1,6 @@
 // { dg-options "-std=gnu++17" }
 
-// Copyright (C) 2013-2018 Free Software Foundation, Inc.
+// Copyright (C) 2013-2022 Free Software Foundation, Inc.
 //
 // This file is part of the GNU ISO C++ Library.  This library is free
 // software; you can redistribute it and/or modify it under the
@@ -21,13 +21,13 @@
 
 namespace element_access_1 {
 
-void
-test01()
+static void
+test01 ()
 {
   typedef gdb::string_view::size_type csize_type;
   typedef gdb::string_view::const_reference cref;
   typedef gdb::string_view::reference ref;
-  csize_type csz01, csz02;
+  csize_type csz01;
 
   const gdb::string_view str01("tamarindo, costa rica");
   gdb::string_view str02("41st street beach, capitola, california");
@@ -60,8 +60,8 @@ test01()
   }
 }
 
-int
-main()
+static int
+main ()
 { 
   test01();
   return 0;

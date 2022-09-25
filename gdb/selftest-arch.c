@@ -1,5 +1,5 @@
 /* GDB self-test for each gdbarch.
-   Copyright (C) 2017-2018 Free Software Foundation, Inc.
+   Copyright (C) 2017-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,7 +19,7 @@
 #include "defs.h"
 
 #if GDB_SELF_TEST
-#include "selftest.h"
+#include "gdbsupport/selftest.h"
 #include "selftest-arch.h"
 #include "arch-utils.h"
 
@@ -60,11 +60,10 @@ struct gdbarch_selftest : public selftest
 
 	QUIT;
 
-	TRY
+	try
 	  {
 	    struct gdbarch_info info;
 
-	    gdbarch_info_init (&info);
 	    info.bfd_arch_info = bfd_scan_arch (arches[i]);
 
 	    struct gdbarch *gdbarch = gdbarch_find_by_info (info);
@@ -72,13 +71,12 @@ struct gdbarch_selftest : public selftest
 
 	    function (gdbarch);
 	  }
-	CATCH (ex, RETURN_MASK_ERROR)
+	catch (const gdb_exception_error &ex)
 	  {
 	    pass = false;
 	    exception_fprintf (gdb_stderr, ex,
 			       _("Self test failed: arch %s: "), arches[i]);
 	  }
-	END_CATCH
 
 	reset ();
       }

@@ -1,4 +1,4 @@
-# Copyright (C) 2007-2018 Free Software Foundation, Inc.
+# Copyright (C) 2007-2022 Free Software Foundation, Inc.
 
 # This file is part of GDB.
 
@@ -38,41 +38,28 @@
 #
 #   make GDB=/path/to/gdb clean-cfiles cfiles
 #
-# To generate specific C files, you can override the XMLTOC make
-# variable:
+# To generate specific C files, you can override the XMLTOC and
+# FEATURE_XMLFILES make variables:
 #
-#   make GDB=/path/to/gdb XMLTOC="xml files" cfiles
+#   make GDB=/path/to/gdb XMLTOC="xml files" FEATURE_XMLFILES="xml files" cfiles
 
-WHICH = aarch64 \
-	arm/arm-with-iwmmxt arm/arm-with-vfpv2 arm/arm-with-vfpv3 \
-	arm/arm-with-neon \
-	i386/i386 i386/i386-linux \
-	i386/i386-mmx-linux \
-	i386/amd64 i386/amd64-linux \
-	i386/i386-avx-linux \
-	i386/i386-mpx-linux \
-	i386/i386-avx-mpx-linux \
-	i386/i386-avx-avx512-linux \
-	i386/i386-avx-mpx-avx512-pku-linux \
-	i386/amd64-avx-linux \
-	i386/amd64-mpx-linux \
-	i386/amd64-avx-mpx-linux \
-	i386/amd64-avx-avx512-linux \
-	i386/amd64-avx-mpx-avx512-pku-linux \
-	i386/x32-linux \
-	i386/x32-avx-linux \
-	i386/x32-avx-avx512-linux \
-	mips-linux mips-dsp-linux \
+# List of .dat files to create in ../regformats/
+WHICH = mips-linux mips-dsp-linux \
 	microblaze-with-stack-protect \
 	mips64-linux mips64-dsp-linux \
 	nios2-linux \
 	rs6000/powerpc-32 \
 	rs6000/powerpc-32l rs6000/powerpc-altivec32l rs6000/powerpc-e500l \
 	rs6000/powerpc-64l rs6000/powerpc-altivec64l rs6000/powerpc-vsx32l \
-	rs6000/powerpc-vsx64l rs6000/powerpc-cell32l rs6000/powerpc-cell64l \
+	rs6000/powerpc-vsx64l \
 	rs6000/powerpc-isa205-32l rs6000/powerpc-isa205-64l \
 	rs6000/powerpc-isa205-altivec32l rs6000/powerpc-isa205-altivec64l \
 	rs6000/powerpc-isa205-vsx32l rs6000/powerpc-isa205-vsx64l \
+	rs6000/powerpc-isa205-ppr-dscr-vsx32l \
+	rs6000/powerpc-isa205-ppr-dscr-vsx64l \
+	rs6000/powerpc-isa207-vsx32l rs6000/powerpc-isa207-vsx64l \
+	rs6000/powerpc-isa207-htm-vsx32l \
+	rs6000/powerpc-isa207-htm-vsx64l \
 	s390-linux32 s390-linux64 s390x-linux64 \
 	s390-linux32v1 s390-linux64v1 s390x-linux64v1 \
 	s390-linux32v2 s390-linux64v2 s390x-linux64v2 \
@@ -95,8 +82,6 @@ microblaze-expedite = r1,rpc
 nios2-linux-expedite = sp,pc
 or1k-expedite = r1,npc
 powerpc-expedite = r1,pc
-rs6000/powerpc-cell32l-expedite = r1,pc,r0,orig_r3,r4
-rs6000/powerpc-cell64l-expedite = r1,pc,r0,orig_r3,r4
 s390-linux32-expedite = r14,r15,pswa
 s390-linux32v1-expedite = r14,r15,pswa
 s390-linux32v2-expedite = r14,r15,pswa
@@ -115,20 +100,12 @@ XSLTPROC = xsltproc
 outdir = ../regformats
 OUTPUTS = $(patsubst %,$(outdir)/%.dat,$(WHICH))
 
-# The set of xml files we'll generate .c files for GDB from.  By
+# For targets without feature based target descriptions,
+# the set of xml files we'll generate .c files for GDB from.  By
 # default we'll build all .c files, which requires an
 # --enable-targets=all GDB.  You can override this by passing XMLTOC
 # to make on the command line.
 XMLTOC = \
-	arc-v2.xml \
-	arc-arcompact.xml \
-	arm/arm-with-iwmmxt.xml \
-	arm/arm-with-m-fpa-layout.xml \
-	arm/arm-with-m-vfp-d16.xml \
-	arm/arm-with-m.xml \
-	arm/arm-with-neon.xml \
-	arm/arm-with-vfpv2.xml \
-	arm/arm-with-vfpv3.xml \
 	microblaze-with-stack-protect.xml \
 	microblaze.xml \
 	mips-dsp-linux.xml \
@@ -157,8 +134,6 @@ XMLTOC = \
 	rs6000/powerpc-altivec32l.xml \
 	rs6000/powerpc-altivec64.xml \
 	rs6000/powerpc-altivec64l.xml \
-	rs6000/powerpc-cell32l.xml \
-	rs6000/powerpc-cell64l.xml \
 	rs6000/powerpc-e500.xml \
 	rs6000/powerpc-e500l.xml \
 	rs6000/powerpc-isa205-32l.xml \
@@ -167,11 +142,18 @@ XMLTOC = \
 	rs6000/powerpc-isa205-altivec64l.xml \
 	rs6000/powerpc-isa205-vsx32l.xml \
 	rs6000/powerpc-isa205-vsx64l.xml \
+	rs6000/powerpc-isa205-ppr-dscr-vsx32l.xml \
+	rs6000/powerpc-isa205-ppr-dscr-vsx64l.xml \
+	rs6000/powerpc-isa207-vsx32l.xml \
+	rs6000/powerpc-isa207-vsx64l.xml \
+	rs6000/powerpc-isa207-htm-vsx32l.xml \
+	rs6000/powerpc-isa207-htm-vsx64l.xml \
 	rs6000/powerpc-vsx32.xml \
 	rs6000/powerpc-vsx32l.xml \
 	rs6000/powerpc-vsx64.xml \
 	rs6000/powerpc-vsx64l.xml \
 	rs6000/rs6000.xml \
+	rx.xml \
 	s390-linux32.xml \
 	s390-linux32v1.xml \
 	s390-linux32v2.xml \
@@ -188,14 +170,17 @@ XMLTOC = \
 	s390x-tevx-linux64.xml \
 	s390x-vx-linux64.xml \
 	s390-gs-linux64.xml \
-	s390x-gs-linux64.xml
+	s390x-gs-linux64.xml \
+	z80.xml
 
 TDESC_CFILES = $(patsubst %.xml,%.c,$(XMLTOC))
 GDB = false
 
 #Targets which use feature based target descriptions.
 aarch64-feature = 1
+arm-feature = 1
 i386-feature = 1
+riscv-feature = 1
 tic6x-feature = 1
 
 all: $(OUTPUTS)
@@ -213,8 +198,23 @@ $(outdir)/%.dat: %.xml number-regs.xsl sort-regs.xsl gdbserver-regs.xsl
 	  $(XSLTPROC) gdbserver-regs.xsl - >> $(outdir)/$*.tmp
 	sh ../../move-if-change $(outdir)/$*.tmp $(outdir)/$*.dat
 
+# For targets with feature based target descriptions,
+# the set of xml files we'll generate .c files for GDB from.
 FEATURE_XMLFILES = aarch64-core.xml \
 	aarch64-fpu.xml \
+	aarch64-pauth.xml \
+	aarch64-mte.xml \
+	arc/v1-core.xml \
+	arc/v1-aux.xml \
+	arc/v2-core.xml \
+	arc/v2-aux.xml \
+	arm/arm-core.xml \
+	arm/arm-fpa.xml \
+	arm/arm-m-profile.xml \
+	arm/arm-m-profile-with-fpa.xml \
+	arm/arm-vfpv2.xml \
+	arm/arm-vfpv3.xml \
+	arm/xscale-iwmmxt.xml \
 	i386/32bit-core.xml \
 	i386/32bit-sse.xml \
 	i386/32bit-linux.xml \
@@ -231,6 +231,11 @@ FEATURE_XMLFILES = aarch64-core.xml \
 	i386/64bit-pkeys.xml \
 	i386/64bit-sse.xml \
 	i386/x32-core.xml \
+	riscv/rv32e-xregs.xml \
+	riscv/32bit-cpu.xml \
+	riscv/32bit-fpu.xml \
+	riscv/64bit-cpu.xml \
+	riscv/64bit-fpu.xml \
 	tic6x-c6xp.xml \
 	tic6x-core.xml \
 	tic6x-gp.xml
@@ -245,7 +250,7 @@ $(TDESC_CFILES): %.c: %.xml
 
 $(FEATURE_CFILES): %.c: %.xml.tmp
 	$(GDB) -nx -q -batch \
-	  -ex 'maint print c-tdesc $<' > $@.tmp
+	  -ex 'maint print c-tdesc -single-feature $<' > $@.tmp
 	sh ../../move-if-change $@.tmp $@
 	rm $<
 
@@ -260,73 +265,6 @@ $(FEATURE_CFILES): %.c: %.xml.tmp
 	echo "  <xi:include href=\"$(notdir $<)\"/>" >> $@.tmp
 	echo "</target>" >> $@.tmp
 	sh ../../move-if-change $@.tmp $@
-
-# Other dependencies.
-$(outdir)/arm/arm-with-iwmmxt.dat: arm/arm-core.xml arm/xscale-iwmmxt.xml
-$(outdir)/i386/i386.dat: i386/32bit-core.xml i386/32bit-sse.xml
-$(outdir)/i386/i386-linux.dat: i386/32bit-core.xml i386/32bit-sse.xml \
-			       i386/32bit-linux.xml
-$(outdir)/i386/amd64.dat: i386/64bit-core.xml i386/64bit-sse.xml \
-			       i386/64bit-segments.xml
-$(outdir)/i386/amd64-linux.dat: i386/64bit-core.xml i386/64bit-sse.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml
-$(outdir)/i386/i386-avx.dat: i386/32bit-core.xml i386/32bit-avx.xml
-$(outdir)/i386/i386-avx-linux.dat: i386/32bit-core.xml i386/32bit-avx.xml \
-			       i386/32bit-linux.xml
-$(outdir)/i386/i386-mpx.dat: i386/32bit-core.xml i386/32bit-avx.xml \
-			       i386/32bit-mpx.xml
-$(outdir)/i386/i386-mpx-linux.dat: i386/32bit-core.xml 	i386/32bit-avx.xml \
-			       i386/32bit-linux.xml i386/32bit-mpx.xml
-$(outdir)/i386/i386-mpx-linux.dat: i386/32bit-core.xml \
-			       i386/32bit-linux.xml i386/32bit-mpx.xml
-$(outdir)/i386/i386-avx-mpx-linux.dat: i386/32bit-core.xml \
-			       i386/32bit-linux.xml i386/32bit-mpx.xml
-$(outdir)/i386/i386-avx-avx512.dat: i386/32bit-core.xml i386/32bit-avx.xml \
-			       i386/32bit-avx512.xml
-$(outdir)/i386/i386-avx-avx512-linux.dat: i386/32bit-core.xml i386/32bit-avx.xml \
-			       i386/32bit-linux.xml i386/32bit-avx512.xml
-$(outdir)/i386/i386-avx-mpx-avx512-pku.dat: i386/32bit-core.xml \
-			       i386/32bit-avx.xml i386/32bit-mpx.xml i386/32bit-avx512.xml \
-			       i386/32bit-pkeys.xml
-$(outdir)/i386/i386-avx-mpx-avx512-pku-linux.dat: i386/32bit-core.xml \
-			       i386/32bit-avx.xml i386/32bit-mpx.xml i386/32bit-avx512.xml \
-			       i386/32bit-pkeys.xml i386/32bit-linux.xml
-$(outdir)/i386/i386-mmx.dat: i386/32bit-core.xml 
-$(outdir)/i386/i386-mmx-linux.dat: i386/32bit-core.xml i386/32bit-linux.xml
-$(outdir)/i386/amd64-avx.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-segments.xml
-$(outdir)/i386/amd64-avx-linux.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml
-$(outdir)/i386/amd64-mpx-linux.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml i386/64bit-mpx.xml
-$(outdir)/i386/amd64-avx-mpx-linux.dat: i386/64bit-core.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml i386/64bit-mpx.xml
-$(outdir)/i386/amd64-mpx.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-segments.xml i386/64bit-mpx.xml
-$(outdir)/i386/amd64-avx-mpx.dat: i386/64bit-core.xml \
-			       i386/64bit-segments.xml i386/64bit-mpx.xml
-$(outdir)/i386/amd64-avx-avx512.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-avx512.xml i386/64bit-segments.xml
-$(outdir)/i386/amd64-avx-avx512-linux.dat: i386/64bit-core.xml i386/64bit-avx.xml \
-			       i386/64bit-avx512.xml i386/64bit-linux.xml
-$(outdir)/i386/amd64-avx-mpx-avx512-pku.dat: i386/64bit-core.xml \
-			       i386/64bit-avx.xml i386/64bit-mpx.xml i386/64bit-avx512.xml \
-			       i386/64bit-pkeys.xml i386/64bit-segments.xml
-$(outdir)/i386/amd64-avx-mpx-avx512-pku-linux.dat: i386/64bit-core.xml \
-			       i386/64bit-avx.xml i386/64bit-mpx.xml i386/64bit-avx512.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml \
-			       i386/64bit-pkeys.xml
-$(outdir)/i386/x32.dat: i386/x32-core.xml i386/64bit-sse.xml
-$(outdir)/i386/x32-linux.dat: i386/x32-core.xml i386/64bit-sse.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml
-$(outdir)/i386/x32-avx.dat: i386/x32-core.xml i386/64bit-avx.xml
-$(outdir)/i386/x32-avx-linux.dat: i386/x32-core.xml i386/64bit-avx.xml \
-			       i386/64bit-linux.xml i386/64bit-segments.xml
-$(outdir)/i386/x32-avx-avx512.dat: i386/x32-core.xml i386/64bit-avx.xml \
-			       i386/64bit-avx512.xml
-$(outdir)/i386/x32-avx-avx512-linux.dat: i386/x32-core.xml i386/64bit-avx.xml \
-			       i386/64bit-avx512.xml i386/64bit-linux.xml \
-			       i386/64bit-segments.xml
 
 # 'all' doesn't build the C files, so don't delete them in 'clean'
 # either.

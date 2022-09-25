@@ -1,6 +1,6 @@
 /* Everything about signal catchpoints, for GDB.
 
-   Copyright (C) 2011-2018 Free Software Foundation, Inc.
+   Copyright (C) 2011-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -28,6 +28,8 @@
 #include "valprint.h"
 #include "cli/cli-utils.h"
 #include "completer.h"
+#include "cli/cli-style.h"
+#include "cli/cli-decode.h"
 
 #include <string>
 
@@ -59,7 +61,7 @@ static struct breakpoint_ops signal_catchpoint_ops;
 
 /* Count of each signal.  */
 
-static unsigned int *signal_catch_counts;
+static unsigned int signal_catch_counts[GDB_SIGNAL_LAST];
 
 
 
@@ -180,12 +182,11 @@ static enum print_stop_action
 signal_catchpoint_print_it (bpstat bs)
 {
   struct breakpoint *b = bs->breakpoint_at;
-  ptid_t ptid;
   struct target_waitstatus last;
   const char *signal_name;
   struct ui_out *uiout = current_uiout;
 
-  get_last_target_status (&ptid, &last);
+  get_last_target_status (nullptr, nullptr, &last);
 
   signal_name = signal_to_name_or_int (last.value.sig);
 
@@ -228,7 +229,7 @@ signal_catchpoint_print_one (struct breakpoint *b,
 
       bool first = true;
       for (gdb_signal iter : c->signals_to_be_caught)
-        {
+	{
 	  const char *name = signal_to_name_or_int (iter);
 
 	  if (!first)
@@ -236,12 +237,13 @@ signal_catchpoint_print_one (struct breakpoint *b,
 	  first = false;
 
 	  text += name;
-        }
-      uiout->field_string ("what", text.c_str ());
+	}
+      uiout->field_string ("what", text);
     }
   else
     uiout->field_string ("what",
-			 c->catch_all ? "<any signal>" : "<standard signals>");
+			 c->catch_all ? "<any signal>" : "<standard signals>",
+			 metadata_style.style ());
   uiout->text ("\" ");
 
   if (uiout->is_mi_like_p ())
@@ -259,16 +261,16 @@ signal_catchpoint_print_mention (struct breakpoint *b)
   if (!c->signals_to_be_caught.empty ())
     {
       if (c->signals_to_be_caught.size () > 1)
-        printf_filtered (_("Catchpoint %d (signals"), b->number);
+	printf_filtered (_("Catchpoint %d (signals"), b->number);
       else
-        printf_filtered (_("Catchpoint %d (signal"), b->number);
+	printf_filtered (_("Catchpoint %d (signal"), b->number);
 
       for (gdb_signal iter : c->signals_to_be_caught)
-        {
+	{
 	  const char *name = signal_to_name_or_int (iter);
 
 	  printf_filtered (" %s", name);
-        }
+	}
       printf_filtered (")");
     }
   else if (c->catch_all)
@@ -388,7 +390,7 @@ catch_signal_command (const char *arg, int from_tty,
   bool catch_all = false;
   std::vector<gdb_signal> filter;
 
-  tempflag = get_cmd_context (command) == CATCH_TEMPORARY;
+  tempflag = command->context () == CATCH_TEMPORARY;
 
   arg = skip_spaces (arg);
 
@@ -423,12 +425,11 @@ initialize_signal_catchpoint_ops (void)
   ops->explains_signal = signal_catchpoint_explains_signal;
 }
 
+void _initialize_break_catch_sig ();
 void
-_initialize_break_catch_sig (void)
+_initialize_break_catch_sig ()
 {
   initialize_signal_catchpoint_ops ();
-
-  signal_catch_counts = XCNEWVEC (unsigned int, GDB_SIGNAL_LAST);
 
   add_catch_command ("signal", _("\
 Catch signals by their names and/or numbers.\n\

@@ -1,6 +1,6 @@
 /* Target-dependent code for GNU/Linux SPARC.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -18,7 +18,7 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "defs.h"
-#include "dwarf2-frame.h"
+#include "dwarf2/frame.h"
 #include "frame.h"
 #include "frame-unwind.h"
 #include "gdbtypes.h"
@@ -68,9 +68,9 @@ static const struct tramp_frame sparc32_linux_sigframe =
   SIGTRAMP_FRAME,
   4,
   {
-    { 0x821020d8, -1 },		/* mov __NR_sugreturn, %g1 */
-    { 0x91d02010, -1 },		/* ta  0x10 */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { 0x821020d8, ULONGEST_MAX },		/* mov __NR_sigreturn, %g1 */
+    { 0x91d02010, ULONGEST_MAX },		/* ta  0x10 */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   sparc32_linux_sigframe_init
 };
@@ -83,9 +83,9 @@ static const struct tramp_frame sparc32_linux_rt_sigframe =
   SIGTRAMP_FRAME,
   4,
   {
-    { 0x82102065, -1 },		/* mov __NR_rt_sigreturn, %g1 */
-    { 0x91d02010, -1 },		/* ta  0x10 */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { 0x82102065, ULONGEST_MAX },		/* mov __NR_rt_sigreturn, %g1 */
+    { 0x91d02010, ULONGEST_MAX },		/* ta  0x10 */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   sparc32_linux_sigframe_init
 };
@@ -422,7 +422,7 @@ sparc32_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 {
   struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
 
-  linux_init_abi (info, gdbarch);
+  linux_init_abi (info, gdbarch, 0);
 
   tdep->gregset = &sparc32_linux_gregset;
   tdep->sizeof_gregset = 152;
@@ -444,7 +444,7 @@ sparc32_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 
   /* Enable TLS support.  */
   set_gdbarch_fetch_tls_load_module_address (gdbarch,
-                                             svr4_fetch_objfile_link_map);
+					     svr4_fetch_objfile_link_map);
 
   /* Make sure we can single-step over signal return system calls.  */
   tdep->step_trap = sparc32_linux_step_trap;
@@ -457,7 +457,7 @@ sparc32_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   /* Functions for 'catch syscall'.  */
   set_xml_syscall_file_name (gdbarch, XML_SYSCALL_FILENAME_SPARC32);
   set_gdbarch_get_syscall_number (gdbarch,
-                                  sparc32_linux_get_syscall_number);
+				  sparc32_linux_get_syscall_number);
 
   set_gdbarch_gdb_signal_from_target (gdbarch,
 				      sparc32_linux_gdb_signal_from_target);
@@ -465,8 +465,9 @@ sparc32_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 				    sparc32_linux_gdb_signal_to_target);
 }
 
+void _initialize_sparc_linux_tdep ();
 void
-_initialize_sparc_linux_tdep (void)
+_initialize_sparc_linux_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_sparc, 0, GDB_OSABI_LINUX,
 			  sparc32_linux_init_abi);

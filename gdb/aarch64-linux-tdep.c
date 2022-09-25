@@ -1,6 +1,6 @@
 /* Target-dependent code for GNU/Linux AArch64.
 
-   Copyright (C) 2009-2018 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
    Contributed by ARM Ltd.
 
    This file is part of GDB.
@@ -21,7 +21,6 @@
 #include "defs.h"
 
 #include "gdbarch.h"
-#include "arch-utils.h"
 #include "glibc-tdep.h"
 #include "linux-tdep.h"
 #include "aarch64-tdep.h"
@@ -31,12 +30,13 @@
 #include "symtab.h"
 #include "tramp-frame.h"
 #include "trad-frame.h"
+#include "target.h"
+#include "target/target.h"
+#include "expop.h"
 
-#include "inferior.h"
 #include "regcache.h"
 #include "regset.h"
 
-#include "cli/cli-utils.h"
 #include "stap-probe.h"
 #include "parser-defs.h"
 #include "user-regs.h"
@@ -45,8 +45,13 @@
 
 #include "record-full.h"
 #include "linux-record.h"
-#include "auxv.h"
-#include "elf/common.h"
+
+#include "arch/aarch64-mte-linux.h"
+
+#include "arch-utils.h"
+#include "value.h"
+
+#include "gdbsupport/selftest.h"
 
 /* Signal frame handling.
 
@@ -85,11 +90,6 @@
     struct ucontext uc;
   };
 
-  typedef struct
-  {
-    ...                                    128 bytes
-  } siginfo_t;
-
   The ucontext has the following form:
   struct ucontext
   {
@@ -100,13 +100,6 @@
     struct sigcontext uc_mcontext;
   };
 
-  typedef struct sigaltstack
-  {
-    void *ss_sp;
-    int ss_flags;
-    size_t ss_size;
-  } stack_t;
-
   struct sigcontext
   {
     unsigned long fault_address;
@@ -115,6 +108,17 @@
     unsigned long pc;		/ * 32 * /
     unsigned long pstate;	/ * 33 * /
     __u8 __reserved[4096]
+  };
+
+  The reserved space in sigcontext contains additional structures, each starting
+  with a aarch64_ctx, which specifies a unique identifier and the total size of
+  the structure.  The final structure in reserved will start will a null
+  aarch64_ctx.  The penultimate entry in reserved may be a extra_context which
+  then points to a further block of reserved space.
+
+  struct aarch64_ctx {
+	u32 magic;
+	u32 size;
   };
 
   The restorer stub will always have the form:
@@ -136,6 +140,141 @@
 #define AARCH64_RT_SIGFRAME_UCONTEXT_OFFSET     128
 #define AARCH64_UCONTEXT_SIGCONTEXT_OFFSET      176
 #define AARCH64_SIGCONTEXT_XO_OFFSET            8
+#define AARCH64_SIGCONTEXT_RESERVED_OFFSET      288
+
+#define AARCH64_SIGCONTEXT_RESERVED_SIZE	4096
+
+/* Unique identifiers that may be used for aarch64_ctx.magic.  */
+#define AARCH64_EXTRA_MAGIC			0x45585401
+#define AARCH64_FPSIMD_MAGIC			0x46508001
+#define AARCH64_SVE_MAGIC			0x53564501
+
+/* Defines for the extra_context that follows an AARCH64_EXTRA_MAGIC.  */
+#define AARCH64_EXTRA_DATAP_OFFSET		8
+
+/* Defines for the fpsimd that follows an AARCH64_FPSIMD_MAGIC.  */
+#define AARCH64_FPSIMD_FPSR_OFFSET		8
+#define AARCH64_FPSIMD_FPCR_OFFSET		12
+#define AARCH64_FPSIMD_V0_OFFSET		16
+#define AARCH64_FPSIMD_VREG_SIZE		16
+
+/* Defines for the sve structure that follows an AARCH64_SVE_MAGIC.  */
+#define AARCH64_SVE_CONTEXT_VL_OFFSET		8
+#define AARCH64_SVE_CONTEXT_REGS_OFFSET		16
+#define AARCH64_SVE_CONTEXT_P_REGS_OFFSET(vq) (32 * vq * 16)
+#define AARCH64_SVE_CONTEXT_FFR_OFFSET(vq) \
+  (AARCH64_SVE_CONTEXT_P_REGS_OFFSET (vq) + (16 * vq * 2))
+#define AARCH64_SVE_CONTEXT_SIZE(vq) \
+  (AARCH64_SVE_CONTEXT_FFR_OFFSET (vq) + (vq * 2))
+
+
+/* Read an aarch64_ctx, returning the magic value, and setting *SIZE to the
+   size, or return 0 on error.  */
+
+static uint32_t
+read_aarch64_ctx (CORE_ADDR ctx_addr, enum bfd_endian byte_order,
+		  uint32_t *size)
+{
+  uint32_t magic = 0;
+  gdb_byte buf[4];
+
+  if (target_read_memory (ctx_addr, buf, 4) != 0)
+    return 0;
+  magic = extract_unsigned_integer (buf, 4, byte_order);
+
+  if (target_read_memory (ctx_addr + 4, buf, 4) != 0)
+    return 0;
+  *size = extract_unsigned_integer (buf, 4, byte_order);
+
+  return magic;
+}
+
+/* Given CACHE, use the trad_frame* functions to restore the FPSIMD
+   registers from a signal frame.
+
+   VREG_NUM is the number of the V register being restored, OFFSET is the
+   address containing the register value, BYTE_ORDER is the endianness and
+   HAS_SVE tells us if we have a valid SVE context or not.  */
+
+static void
+aarch64_linux_restore_vreg (struct trad_frame_cache *cache, int num_regs,
+			    int vreg_num, CORE_ADDR offset,
+			    enum bfd_endian byte_order, bool has_sve)
+{
+  /* WARNING: SIMD state is laid out in memory in target-endian format.
+
+     So we have a couple cases to consider:
+
+     1 - If the target is big endian, then SIMD state is big endian,
+     requiring a byteswap.
+
+     2 - If the target is little endian, then SIMD state is little endian, so
+     no byteswap is needed. */
+
+  if (byte_order == BFD_ENDIAN_BIG)
+    {
+      gdb_byte buf[V_REGISTER_SIZE];
+
+      if (target_read_memory (offset, buf, V_REGISTER_SIZE) != 0)
+	{
+	  size_t size = V_REGISTER_SIZE/2;
+
+	  /* Read the two halves of the V register in reverse byte order.  */
+	  CORE_ADDR u64 = extract_unsigned_integer (buf, size,
+						    byte_order);
+	  CORE_ADDR l64 = extract_unsigned_integer (buf + size, size,
+						    byte_order);
+
+	  /* Copy the reversed bytes to the buffer.  */
+	  store_unsigned_integer (buf, size, BFD_ENDIAN_LITTLE, l64);
+	  store_unsigned_integer (buf + size , size, BFD_ENDIAN_LITTLE, u64);
+
+	  /* Now we can store the correct bytes for the V register.  */
+	  trad_frame_set_reg_value_bytes (cache, AARCH64_V0_REGNUM + vreg_num,
+					  {buf, V_REGISTER_SIZE});
+	  trad_frame_set_reg_value_bytes (cache,
+					  num_regs + AARCH64_Q0_REGNUM
+					  + vreg_num, {buf, Q_REGISTER_SIZE});
+	  trad_frame_set_reg_value_bytes (cache,
+					  num_regs + AARCH64_D0_REGNUM
+					  + vreg_num, {buf, D_REGISTER_SIZE});
+	  trad_frame_set_reg_value_bytes (cache,
+					  num_regs + AARCH64_S0_REGNUM
+					  + vreg_num, {buf, S_REGISTER_SIZE});
+	  trad_frame_set_reg_value_bytes (cache,
+					  num_regs + AARCH64_H0_REGNUM
+					  + vreg_num, {buf, H_REGISTER_SIZE});
+	  trad_frame_set_reg_value_bytes (cache,
+					  num_regs + AARCH64_B0_REGNUM
+					  + vreg_num, {buf, B_REGISTER_SIZE});
+
+	  if (has_sve)
+	    trad_frame_set_reg_value_bytes (cache,
+					    num_regs + AARCH64_SVE_V0_REGNUM
+					    + vreg_num, {buf, V_REGISTER_SIZE});
+	}
+      return;
+    }
+
+  /* Little endian, just point at the address containing the register
+     value.  */
+  trad_frame_set_reg_addr (cache, AARCH64_V0_REGNUM + vreg_num, offset);
+  trad_frame_set_reg_addr (cache, num_regs + AARCH64_Q0_REGNUM + vreg_num,
+			   offset);
+  trad_frame_set_reg_addr (cache, num_regs + AARCH64_D0_REGNUM + vreg_num,
+			   offset);
+  trad_frame_set_reg_addr (cache, num_regs + AARCH64_S0_REGNUM + vreg_num,
+			   offset);
+  trad_frame_set_reg_addr (cache, num_regs + AARCH64_H0_REGNUM + vreg_num,
+			   offset);
+  trad_frame_set_reg_addr (cache, num_regs + AARCH64_B0_REGNUM + vreg_num,
+			   offset);
+
+  if (has_sve)
+    trad_frame_set_reg_addr (cache, num_regs + AARCH64_SVE_V0_REGNUM
+			     + vreg_num, offset);
+
+}
 
 /* Implement the "init" method of struct tramp_frame.  */
 
@@ -145,19 +284,28 @@ aarch64_linux_sigframe_init (const struct tramp_frame *self,
 			     struct trad_frame_cache *this_cache,
 			     CORE_ADDR func)
 {
+  struct gdbarch *gdbarch = get_frame_arch (this_frame);
+  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
   CORE_ADDR sp = get_frame_register_unsigned (this_frame, AARCH64_SP_REGNUM);
-  CORE_ADDR sigcontext_addr =
-    sp
-    + AARCH64_RT_SIGFRAME_UCONTEXT_OFFSET
-    + AARCH64_UCONTEXT_SIGCONTEXT_OFFSET;
-  int i;
+  CORE_ADDR sigcontext_addr = (sp + AARCH64_RT_SIGFRAME_UCONTEXT_OFFSET
+			       + AARCH64_UCONTEXT_SIGCONTEXT_OFFSET );
+  CORE_ADDR section = sigcontext_addr + AARCH64_SIGCONTEXT_RESERVED_OFFSET;
+  CORE_ADDR section_end = section + AARCH64_SIGCONTEXT_RESERVED_SIZE;
+  CORE_ADDR fpsimd = 0;
+  CORE_ADDR sve_regs = 0;
+  uint32_t size, magic;
+  bool extra_found = false;
+  int num_regs = gdbarch_num_regs (gdbarch);
 
-  for (i = 0; i < 31; i++)
+  /* Read in the integer registers.  */
+
+  for (int i = 0; i < 31; i++)
     {
       trad_frame_set_reg_addr (this_cache,
 			       AARCH64_X0_REGNUM + i,
 			       sigcontext_addr + AARCH64_SIGCONTEXT_XO_OFFSET
-			       + i * AARCH64_SIGCONTEXT_REG_SIZE);
+				 + i * AARCH64_SIGCONTEXT_REG_SIZE);
     }
   trad_frame_set_reg_addr (this_cache, AARCH64_SP_REGNUM,
 			   sigcontext_addr + AARCH64_SIGCONTEXT_XO_OFFSET
@@ -165,6 +313,132 @@ aarch64_linux_sigframe_init (const struct tramp_frame *self,
   trad_frame_set_reg_addr (this_cache, AARCH64_PC_REGNUM,
 			   sigcontext_addr + AARCH64_SIGCONTEXT_XO_OFFSET
 			     + 32 * AARCH64_SIGCONTEXT_REG_SIZE);
+
+  /* Search for the FP and SVE sections, stopping at null.  */
+  while ((magic = read_aarch64_ctx (section, byte_order, &size)) != 0
+	 && size != 0)
+    {
+      switch (magic)
+	{
+	case AARCH64_FPSIMD_MAGIC:
+	  fpsimd = section;
+	  section += size;
+	  break;
+
+	case AARCH64_SVE_MAGIC:
+	  {
+	    /* Check if the section is followed by a full SVE dump, and set
+	       sve_regs if it is.  */
+	    gdb_byte buf[4];
+	    uint16_t vq;
+
+	    if (!tdep->has_sve ())
+	      break;
+
+	    if (target_read_memory (section + AARCH64_SVE_CONTEXT_VL_OFFSET,
+				    buf, 2) != 0)
+	      {
+		section += size;
+		break;
+	      }
+	    vq = sve_vq_from_vl (extract_unsigned_integer (buf, 2, byte_order));
+
+	    if (vq != tdep->vq)
+	      error (_("Invalid vector length in signal frame %d vs %s."), vq,
+		     pulongest (tdep->vq));
+
+	    if (size >= AARCH64_SVE_CONTEXT_SIZE (vq))
+	      sve_regs = section + AARCH64_SVE_CONTEXT_REGS_OFFSET;
+
+	    section += size;
+	    break;
+	  }
+
+	case AARCH64_EXTRA_MAGIC:
+	  {
+	    /* Extra is always the last valid section in reserved and points to
+	       an additional block of memory filled with more sections. Reset
+	       the address to the extra section and continue looking for more
+	       structures.  */
+	    gdb_byte buf[8];
+
+	    if (target_read_memory (section + AARCH64_EXTRA_DATAP_OFFSET,
+				    buf, 8) != 0)
+	      {
+		section += size;
+		break;
+	      }
+
+	    section = extract_unsigned_integer (buf, 8, byte_order);
+	    extra_found = true;
+	    break;
+	  }
+
+	default:
+	  section += size;
+	  break;
+	}
+
+      /* Prevent searching past the end of the reserved section.  The extra
+	 section does not have a hard coded limit - we have to rely on it ending
+	 with nulls.  */
+      if (!extra_found && section > section_end)
+	break;
+    }
+
+  if (sve_regs != 0)
+    {
+      CORE_ADDR offset;
+
+      for (int i = 0; i < 32; i++)
+	{
+	  offset = sve_regs + (i * tdep->vq * 16);
+	  trad_frame_set_reg_addr (this_cache, AARCH64_SVE_Z0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache,
+				   num_regs + AARCH64_SVE_V0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache, num_regs + AARCH64_Q0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache, num_regs + AARCH64_D0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache, num_regs + AARCH64_S0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache, num_regs + AARCH64_H0_REGNUM + i,
+				   offset);
+	  trad_frame_set_reg_addr (this_cache, num_regs + AARCH64_B0_REGNUM + i,
+				   offset);
+	}
+
+      offset = sve_regs + AARCH64_SVE_CONTEXT_P_REGS_OFFSET (tdep->vq);
+      for (int i = 0; i < 16; i++)
+	trad_frame_set_reg_addr (this_cache, AARCH64_SVE_P0_REGNUM + i,
+				 offset + (i * tdep->vq * 2));
+
+      offset = sve_regs + AARCH64_SVE_CONTEXT_FFR_OFFSET (tdep->vq);
+      trad_frame_set_reg_addr (this_cache, AARCH64_SVE_FFR_REGNUM, offset);
+    }
+
+  if (fpsimd != 0)
+    {
+      trad_frame_set_reg_addr (this_cache, AARCH64_FPSR_REGNUM,
+			       fpsimd + AARCH64_FPSIMD_FPSR_OFFSET);
+      trad_frame_set_reg_addr (this_cache, AARCH64_FPCR_REGNUM,
+			       fpsimd + AARCH64_FPSIMD_FPCR_OFFSET);
+
+      /* If there was no SVE section then set up the V registers.  */
+      if (sve_regs == 0)
+	{
+	  for (int i = 0; i < 32; i++)
+	    {
+	      CORE_ADDR offset = (fpsimd + AARCH64_FPSIMD_V0_OFFSET
+				  + (i * AARCH64_FPSIMD_VREG_SIZE));
+
+	      aarch64_linux_restore_vreg (this_cache, num_regs, i, offset,
+					  byte_order, tdep->has_sve ());
+	    }
+	}
+    }
 
   trad_frame_set_id (this_cache, frame_id_build (sp, func));
 }
@@ -176,12 +450,12 @@ static const struct tramp_frame aarch64_linux_rt_sigframe =
   {
     /* movz x8, 0x8b (S=1,o=10,h=0,i=0x8b,r=8)
        Soo1 0010 1hhi iiii iiii iiii iiir rrrr  */
-    {0xd2801168, -1},
+    {0xd2801168, ULONGEST_MAX},
 
     /* svc  0x0      (o=0, l=1)
        1101 0100 oooi iiii iiii iiii iii0 00ll  */
-    {0xd4000001, -1},
-    {TRAMP_SENTINEL_INSN, -1}
+    {0xd4000001, ULONGEST_MAX},
+    {TRAMP_SENTINEL_INSN, ULONGEST_MAX}
   },
   aarch64_linux_sigframe_init
 };
@@ -259,7 +533,7 @@ aarch64_linux_core_read_vq (struct gdbarch *gdbarch, bfd *abfd)
       return 0;
     }
 
-  size_t size = bfd_section_size (abfd, sve_section);
+  size_t size = bfd_section_size (sve_section);
 
   /* Check extended state size.  */
   if (size < SVE_HEADER_SIZE)
@@ -282,12 +556,13 @@ aarch64_linux_core_read_vq (struct gdbarch *gdbarch, bfd *abfd)
   if (vq > AARCH64_MAX_SVE_VQ)
     {
       warning (_("SVE Vector length in core file not supported by this version"
-		 " of GDB.  (VQ=%ld)"), vq);
+		 " of GDB.  (VQ=%s)"), pulongest (vq));
       return 0;
     }
   else if (vq == 0)
     {
-      warning (_("SVE Vector length in core file is invalid. (VQ=%ld"), vq);
+      warning (_("SVE Vector length in core file is invalid. (VQ=%s"),
+	       pulongest (vq));
       return 0;
     }
 
@@ -315,7 +590,7 @@ aarch64_linux_supply_sve_regset (const struct regset *regset,
      passed in SVE regset or a NEON fpregset.  */
 
   /* Extract required fields from the header.  */
-  uint64_t vl = extract_unsigned_integer (header + SVE_HEADER_VL_OFFSET,
+  ULONGEST vl = extract_unsigned_integer (header + SVE_HEADER_VL_OFFSET,
 					  SVE_HEADER_VL_LENGTH, byte_order);
   uint16_t flags = extract_unsigned_integer (header + SVE_HEADER_FLAGS_OFFSET,
 					     SVE_HEADER_FLAGS_LENGTH,
@@ -392,7 +667,7 @@ aarch64_linux_collect_sve_regset (const struct regset *regset,
 			    size - SVE_HEADER_SIZE);
 }
 
-/* Implement the "regset_from_core_section" gdbarch method.  */
+/* Implement the "iterate_over_regset_sections" gdbarch method.  */
 
 static void
 aarch64_linux_iterate_over_regset_sections (struct gdbarch *gdbarch,
@@ -410,9 +685,9 @@ aarch64_linux_iterate_over_regset_sections (struct gdbarch *gdbarch,
       /* Create this on the fly in order to handle vector register sizes.  */
       const struct regcache_map_entry sve_regmap[] =
 	{
-	  { 32, AARCH64_SVE_Z0_REGNUM, tdep->vq * 16 },
-	  { 16, AARCH64_SVE_P0_REGNUM, tdep->vq * 16 / 8 },
-	  { 1, AARCH64_SVE_FFR_REGNUM, 4 },
+	  { 32, AARCH64_SVE_Z0_REGNUM, (int) (tdep->vq * 16) },
+	  { 16, AARCH64_SVE_P0_REGNUM, (int) (tdep->vq * 16 / 8) },
+	  { 1, AARCH64_SVE_FFR_REGNUM, (int) (tdep->vq * 16 / 8) },
 	  { 1, AARCH64_FPSR_REGNUM, 4 },
 	  { 1, AARCH64_FPCR_REGNUM, 4 },
 	  { 0 }
@@ -433,6 +708,46 @@ aarch64_linux_iterate_over_regset_sections (struct gdbarch *gdbarch,
   else
     cb (".reg2", AARCH64_LINUX_SIZEOF_FPREGSET, AARCH64_LINUX_SIZEOF_FPREGSET,
 	&aarch64_linux_fpregset, NULL, cb_data);
+
+
+  if (tdep->has_pauth ())
+    {
+      /* Create this on the fly in order to handle the variable location.  */
+      const struct regcache_map_entry pauth_regmap[] =
+	{
+	  { 2, AARCH64_PAUTH_DMASK_REGNUM (tdep->pauth_reg_base), 8},
+	  { 0 }
+	};
+
+      const struct regset aarch64_linux_pauth_regset =
+	{
+	  pauth_regmap, regcache_supply_regset, regcache_collect_regset
+	};
+
+      cb (".reg-aarch-pauth", AARCH64_LINUX_SIZEOF_PAUTH,
+	  AARCH64_LINUX_SIZEOF_PAUTH, &aarch64_linux_pauth_regset,
+	  "pauth registers", cb_data);
+    }
+
+  /* Handle MTE registers.  */
+  if (tdep->has_mte ())
+    {
+      /* Create this on the fly in order to handle the variable location.  */
+      const struct regcache_map_entry mte_regmap[] =
+	{
+	  { 1, tdep->mte_reg_base, 8},
+	  { 0 }
+	};
+
+      const struct regset aarch64_linux_mte_regset =
+	{
+	  mte_regmap, regcache_supply_regset, regcache_collect_regset
+	};
+
+      cb (".reg-aarch-mte", AARCH64_LINUX_SIZEOF_MTE_REGSET,
+	  AARCH64_LINUX_SIZEOF_MTE_REGSET, &aarch64_linux_mte_regset,
+	  "MTE registers", cb_data);
+    }
 }
 
 /* Implement the "core_read_description" gdbarch method.  */
@@ -441,12 +756,13 @@ static const struct target_desc *
 aarch64_linux_core_read_description (struct gdbarch *gdbarch,
 				     struct target_ops *target, bfd *abfd)
 {
-  CORE_ADDR aarch64_hwcap = 0;
+  CORE_ADDR hwcap = linux_get_hwcap (target);
+  CORE_ADDR hwcap2 = linux_get_hwcap2 (target);
 
-  if (target_auxv_search (target, AT_HWCAP, &aarch64_hwcap) != 1)
-    return NULL;
-
-  return aarch64_read_description (aarch64_linux_core_read_vq (gdbarch, abfd));
+  bool pauth_p = hwcap & AARCH64_HWCAP_PACA;
+  bool mte_p = hwcap2 & HWCAP2_MTE;
+  return aarch64_read_description (aarch64_linux_core_read_vq (gdbarch, abfd),
+				   pauth_p, mte_p);
 }
 
 /* Implementation of `gdbarch_stap_is_single_operand', as defined in
@@ -469,7 +785,7 @@ aarch64_stap_is_single_operand (struct gdbarch *gdbarch, const char *s)
    It returns one if the special token has been parsed successfully,
    or zero if the current token is not considered special.  */
 
-static int
+static expr::operation_up
 aarch64_stap_parse_special_token (struct gdbarch *gdbarch,
 				  struct stap_parse_info *p)
 {
@@ -480,11 +796,9 @@ aarch64_stap_parse_special_token (struct gdbarch *gdbarch,
       char *endp;
       /* Used to save the register name.  */
       const char *start;
-      char *regname;
       int len;
       int got_minus = 0;
       long displacement;
-      struct stoken str;
 
       ++tmp;
       start = tmp;
@@ -494,17 +808,14 @@ aarch64_stap_parse_special_token (struct gdbarch *gdbarch,
 	++tmp;
 
       if (*tmp != ',')
-	return 0;
+	return {};
 
       len = tmp - start;
-      regname = (char *) alloca (len + 2);
+      std::string regname (start, len);
 
-      strncpy (regname, start, len);
-      regname[len] = '\0';
-
-      if (user_reg_map_name_to_regnum (gdbarch, regname, len) == -1)
+      if (user_reg_map_name_to_regnum (gdbarch, regname.c_str (), len) == -1)
 	error (_("Invalid register name `%s' on expression `%s'."),
-	       regname, p->saved_arg);
+	       regname.c_str (), p->saved_arg);
 
       ++tmp;
       tmp = skip_spaces (tmp);
@@ -522,72 +833,44 @@ aarch64_stap_parse_special_token (struct gdbarch *gdbarch,
 	++tmp;
 
       if (!isdigit (*tmp))
-	return 0;
+	return {};
 
       displacement = strtol (tmp, &endp, 10);
       tmp = endp;
 
       /* Skipping last `]'.  */
       if (*tmp++ != ']')
-	return 0;
+	return {};
+      p->arg = tmp;
+
+      using namespace expr;
 
       /* The displacement.  */
-      write_exp_elt_opcode (&p->pstate, OP_LONG);
-      write_exp_elt_type (&p->pstate, builtin_type (gdbarch)->builtin_long);
-      write_exp_elt_longcst (&p->pstate, displacement);
-      write_exp_elt_opcode (&p->pstate, OP_LONG);
+      struct type *long_type = builtin_type (gdbarch)->builtin_long;
       if (got_minus)
-	write_exp_elt_opcode (&p->pstate, UNOP_NEG);
+	displacement = -displacement;
+      operation_up disp = make_operation<long_const_operation> (long_type,
+								displacement);
 
       /* The register name.  */
-      write_exp_elt_opcode (&p->pstate, OP_REGISTER);
-      str.ptr = regname;
-      str.length = len;
-      write_exp_string (&p->pstate, str);
-      write_exp_elt_opcode (&p->pstate, OP_REGISTER);
+      operation_up reg
+	= make_operation<register_operation> (std::move (regname));
 
-      write_exp_elt_opcode (&p->pstate, BINOP_ADD);
+      operation_up sum
+	= make_operation<add_operation> (std::move (reg), std::move (disp));
 
       /* Casting to the expected type.  */
-      write_exp_elt_opcode (&p->pstate, UNOP_CAST);
-      write_exp_elt_type (&p->pstate, lookup_pointer_type (p->arg_type));
-      write_exp_elt_opcode (&p->pstate, UNOP_CAST);
-
-      write_exp_elt_opcode (&p->pstate, UNOP_IND);
-
-      p->arg = tmp;
+      struct type *arg_ptr_type = lookup_pointer_type (p->arg_type);
+      sum = make_operation<unop_cast_operation> (std::move (sum),
+						 arg_ptr_type);
+      return make_operation<unop_ind_operation> (std::move (sum));
     }
-  else
-    return 0;
-
-  return 1;
-}
-
-/* Implement the "get_syscall_number" gdbarch method.  */
-
-static LONGEST
-aarch64_linux_get_syscall_number (struct gdbarch *gdbarch,
-				  thread_info *thread)
-{
-  struct regcache *regs = get_thread_regcache (thread);
-  enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
-
-  /* The content of register x8.  */
-  gdb_byte buf[X_REGISTER_SIZE];
-  /* The result.  */
-  LONGEST ret;
-
-  /* Getting the system call number from the register x8.  */
-  regs->cooked_read (AARCH64_DWARF_X0 + 8, buf);
-
-  ret = extract_signed_integer (buf, X_REGISTER_SIZE, byte_order);
-
-  return ret;
+  return {};
 }
 
 /* AArch64 process record-replay constructs: syscall, signal etc.  */
 
-struct linux_record_tdep aarch64_linux_record_tdep;
+static linux_record_tdep aarch64_linux_record_tdep;
 
 /* Enum that defines the AArch64 linux specific syscall identifiers used for
    process record/replay.  */
@@ -1140,6 +1423,40 @@ aarch64_canonicalize_syscall (enum aarch64_syscall syscall_number)
   }
 }
 
+/* Retrieve the syscall number at a ptrace syscall-stop, either on syscall entry
+   or exit.  Return -1 upon error.  */
+
+static LONGEST
+aarch64_linux_get_syscall_number (struct gdbarch *gdbarch, thread_info *thread)
+{
+  struct regcache *regs = get_thread_regcache (thread);
+  LONGEST ret;
+
+  /* Get the system call number from register x8.  */
+  regs->cooked_read (AARCH64_X0_REGNUM + 8, &ret);
+
+  /* On exit from a successful execve, we will be in a new process and all the
+     registers will be cleared - x0 to x30 will be 0, except for a 1 in x7.
+     This function will only ever get called when stopped at the entry or exit
+     of a syscall, so by checking for 0 in x0 (arg0/retval), x1 (arg1), x8
+     (syscall), x29 (FP) and x30 (LR) we can infer:
+     1) Either inferior is at exit from successful execve.
+     2) Or inferior is at entry to a call to io_setup with invalid arguments and
+	a corrupted FP and LR.
+     It should be safe enough to assume case 1.  */
+  if (ret == 0)
+    {
+      LONGEST x1 = -1, fp = -1, lr = -1;
+      regs->cooked_read (AARCH64_X0_REGNUM + 1, &x1);
+      regs->cooked_read (AARCH64_FP_REGNUM, &fp);
+      regs->cooked_read (AARCH64_LR_REGNUM, &lr);
+      if (x1 == 0 && fp ==0 && lr == 0)
+	return aarch64_sys_execve;
+    }
+
+  return ret;
+}
+
 /* Record all registers but PC register for process-record.  */
 
 static int
@@ -1205,11 +1522,261 @@ aarch64_linux_syscall_record (struct regcache *regcache,
 
 /* Implement the "gcc_target_options" gdbarch method.  */
 
-static char *
+static std::string
 aarch64_linux_gcc_target_options (struct gdbarch *gdbarch)
 {
   /* GCC doesn't know "-m64".  */
-  return NULL;
+  return {};
+}
+
+/* Helper to get the allocation tag from a 64-bit ADDRESS.
+
+   Return the allocation tag if successful and nullopt otherwise.  */
+
+static gdb::optional<CORE_ADDR>
+aarch64_mte_get_atag (CORE_ADDR address)
+{
+  gdb::byte_vector tags;
+
+  /* Attempt to fetch the allocation tag.  */
+  if (!target_fetch_memtags (address, 1, tags,
+			     static_cast<int> (memtag_type::allocation)))
+    return {};
+
+  /* Only one tag should've been returned.  Make sure we got exactly that.  */
+  if (tags.size () != 1)
+    error (_("Target returned an unexpected number of tags."));
+
+  /* Although our tags are 4 bits in size, they are stored in a
+     byte.  */
+  return tags[0];
+}
+
+/* Implement the tagged_address_p gdbarch method.  */
+
+static bool
+aarch64_linux_tagged_address_p (struct gdbarch *gdbarch, struct value *address)
+{
+  gdb_assert (address != nullptr);
+
+  CORE_ADDR addr = value_as_address (address);
+
+  /* Remove the top byte for the memory range check.  */
+  addr = address_significant (gdbarch, addr);
+
+  /* Check if the page that contains ADDRESS is mapped with PROT_MTE.  */
+  if (!linux_address_in_memtag_page (addr))
+    return false;
+
+  /* We have a valid tag in the top byte of the 64-bit address.  */
+  return true;
+}
+
+/* Implement the memtag_matches_p gdbarch method.  */
+
+static bool
+aarch64_linux_memtag_matches_p (struct gdbarch *gdbarch,
+				struct value *address)
+{
+  gdb_assert (address != nullptr);
+
+  /* Make sure we are dealing with a tagged address to begin with.  */
+  if (!aarch64_linux_tagged_address_p (gdbarch, address))
+    return true;
+
+  CORE_ADDR addr = value_as_address (address);
+
+  /* Fetch the allocation tag for ADDRESS.  */
+  gdb::optional<CORE_ADDR> atag
+    = aarch64_mte_get_atag (address_significant (gdbarch, addr));
+
+  if (!atag.has_value ())
+    return true;
+
+  /* Fetch the logical tag for ADDRESS.  */
+  gdb_byte ltag = aarch64_mte_get_ltag (addr);
+
+  /* Are the tags the same?  */
+  return ltag == *atag;
+}
+
+/* Implement the set_memtags gdbarch method.  */
+
+static bool
+aarch64_linux_set_memtags (struct gdbarch *gdbarch, struct value *address,
+			   size_t length, const gdb::byte_vector &tags,
+			   memtag_type tag_type)
+{
+  gdb_assert (!tags.empty ());
+  gdb_assert (address != nullptr);
+
+  CORE_ADDR addr = value_as_address (address);
+
+  /* Set the logical tag or the allocation tag.  */
+  if (tag_type == memtag_type::logical)
+    {
+      /* When setting logical tags, we don't care about the length, since
+	 we are only setting a single logical tag.  */
+      addr = aarch64_mte_set_ltag (addr, tags[0]);
+
+      /* Update the value's content with the tag.  */
+      enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
+      gdb_byte *srcbuf = value_contents_raw (address);
+      store_unsigned_integer (srcbuf, sizeof (addr), byte_order, addr);
+    }
+  else
+    {
+      /* Remove the top byte.  */
+      addr = address_significant (gdbarch, addr);
+
+      /* Make sure we are dealing with a tagged address to begin with.  */
+      if (!aarch64_linux_tagged_address_p (gdbarch, address))
+	return false;
+
+      /* With G being the number of tag granules and N the number of tags
+	 passed in, we can have the following cases:
+
+	 1 - G == N: Store all the N tags to memory.
+
+	 2 - G < N : Warn about having more tags than granules, but write G
+		     tags.
+
+	 3 - G > N : This is a "fill tags" operation.  We should use the tags
+		     as a pattern to fill the granules repeatedly until we have
+		     written G tags to memory.
+      */
+
+      size_t g = aarch64_mte_get_tag_granules (addr, length,
+					       AARCH64_MTE_GRANULE_SIZE);
+      size_t n = tags.size ();
+
+      if (g < n)
+	warning (_("Got more tags than memory granules.  Tags will be "
+		   "truncated."));
+      else if (g > n)
+	warning (_("Using tag pattern to fill memory range."));
+
+      if (!target_store_memtags (addr, length, tags,
+				 static_cast<int> (memtag_type::allocation)))
+	return false;
+    }
+  return true;
+}
+
+/* Implement the get_memtag gdbarch method.  */
+
+static struct value *
+aarch64_linux_get_memtag (struct gdbarch *gdbarch, struct value *address,
+			  memtag_type tag_type)
+{
+  gdb_assert (address != nullptr);
+
+  CORE_ADDR addr = value_as_address (address);
+  CORE_ADDR tag = 0;
+
+  /* Get the logical tag or the allocation tag.  */
+  if (tag_type == memtag_type::logical)
+    tag = aarch64_mte_get_ltag (addr);
+  else
+    {
+      /* Make sure we are dealing with a tagged address to begin with.  */
+      if (!aarch64_linux_tagged_address_p (gdbarch, address))
+	return nullptr;
+
+      /* Remove the top byte.  */
+      addr = address_significant (gdbarch, addr);
+      gdb::optional<CORE_ADDR> atag = aarch64_mte_get_atag (addr);
+
+      if (!atag.has_value ())
+	return nullptr;
+
+      tag = *atag;
+    }
+
+  /* Convert the tag to a value.  */
+  return value_from_ulongest (builtin_type (gdbarch)->builtin_unsigned_int,
+			      tag);
+}
+
+/* Implement the memtag_to_string gdbarch method.  */
+
+static std::string
+aarch64_linux_memtag_to_string (struct gdbarch *gdbarch, struct value *tag_value)
+{
+  if (tag_value == nullptr)
+    return "";
+
+  CORE_ADDR tag = value_as_address (tag_value);
+
+  return string_printf ("0x%s", phex_nz (tag, sizeof (tag)));
+}
+
+/* AArch64 Linux implementation of the report_signal_info gdbarch
+   hook.  Displays information about possible memory tag violations.  */
+
+static void
+aarch64_linux_report_signal_info (struct gdbarch *gdbarch,
+				  struct ui_out *uiout,
+				  enum gdb_signal siggnal)
+{
+  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+
+  if (!tdep->has_mte () || siggnal != GDB_SIGNAL_SEGV)
+    return;
+
+  CORE_ADDR fault_addr = 0;
+  long si_code = 0;
+
+  try
+    {
+      /* Sigcode tells us if the segfault is actually a memory tag
+	 violation.  */
+      si_code = parse_and_eval_long ("$_siginfo.si_code");
+
+      fault_addr
+	= parse_and_eval_long ("$_siginfo._sifields._sigfault.si_addr");
+    }
+  catch (const gdb_exception_error &exception)
+    {
+      exception_print (gdb_stderr, exception);
+      return;
+    }
+
+  /* If this is not a memory tag violation, just return.  */
+  if (si_code != SEGV_MTEAERR && si_code != SEGV_MTESERR)
+    return;
+
+  uiout->text ("\n");
+
+  uiout->field_string ("sigcode-meaning", _("Memory tag violation"));
+
+  /* For synchronous faults, show additional information.  */
+  if (si_code == SEGV_MTESERR)
+    {
+      uiout->text (_(" while accessing address "));
+      uiout->field_core_addr ("fault-addr", gdbarch, fault_addr);
+      uiout->text ("\n");
+
+      gdb::optional<CORE_ADDR> atag
+	= aarch64_mte_get_atag (address_significant (gdbarch, fault_addr));
+      gdb_byte ltag = aarch64_mte_get_ltag (fault_addr);
+
+      if (!atag.has_value ())
+	uiout->text (_("Allocation tag unavailable"));
+      else
+	{
+	  uiout->text (_("Allocation tag "));
+	  uiout->field_string ("allocation-tag", hex_string (*atag));
+	  uiout->text ("\n");
+	  uiout->text (_("Logical tag "));
+	  uiout->field_string ("logical-tag", hex_string (ltag));
+	}
+    }
+  else
+    {
+      uiout->text ("\n");
+      uiout->text (_("Fault address unavailable"));
+    }
 }
 
 static void
@@ -1225,14 +1792,14 @@ aarch64_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 
   tdep->lowest_pc = 0x8000;
 
-  linux_init_abi (info, gdbarch);
+  linux_init_abi (info, gdbarch, 1);
 
   set_solib_svr4_fetch_link_map_offsets (gdbarch,
 					 svr4_lp64_fetch_link_map_offsets);
 
   /* Enable TLS support.  */
   set_gdbarch_fetch_tls_load_module_address (gdbarch,
-                                             svr4_fetch_objfile_link_map);
+					     svr4_fetch_objfile_link_map);
 
   /* Shared library handling.  */
   set_gdbarch_skip_trampoline_code (gdbarch, find_solib_trampoline_target);
@@ -1268,6 +1835,34 @@ aarch64_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
      is ignored by the kernel and can be regarded as additional
      data associated with the address.  */
   set_gdbarch_significant_addr_bit (gdbarch, 56);
+
+  /* MTE-specific settings and hooks.  */
+  if (tdep->has_mte ())
+    {
+      /* Register a hook for checking if an address is tagged or not.  */
+      set_gdbarch_tagged_address_p (gdbarch, aarch64_linux_tagged_address_p);
+
+      /* Register a hook for checking if there is a memory tag match.  */
+      set_gdbarch_memtag_matches_p (gdbarch,
+				    aarch64_linux_memtag_matches_p);
+
+      /* Register a hook for setting the logical/allocation tags for
+	 a range of addresses.  */
+      set_gdbarch_set_memtags (gdbarch, aarch64_linux_set_memtags);
+
+      /* Register a hook for extracting the logical/allocation tag from an
+	 address.  */
+      set_gdbarch_get_memtag (gdbarch, aarch64_linux_get_memtag);
+
+      /* Set the allocation tag granule size to 16 bytes.  */
+      set_gdbarch_memtag_granule_size (gdbarch, AARCH64_MTE_GRANULE_SIZE);
+
+      /* Register a hook for converting a memory tag to a string.  */
+      set_gdbarch_memtag_to_string (gdbarch, aarch64_linux_memtag_to_string);
+
+      set_gdbarch_report_signal_info (gdbarch,
+				      aarch64_linux_report_signal_info);
+    }
 
   /* Initialize the aarch64_linux_record_tdep.  */
   /* These values are the size of the type that will be used in a system
@@ -1434,20 +2029,49 @@ aarch64_linux_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   set_gdbarch_get_syscall_number (gdbarch, aarch64_linux_get_syscall_number);
 
   /* Displaced stepping.  */
-  set_gdbarch_max_insn_length (gdbarch, 4 * DISPLACED_MODIFIED_INSNS);
+  set_gdbarch_max_insn_length (gdbarch, 4 * AARCH64_DISPLACED_MODIFIED_INSNS);
   set_gdbarch_displaced_step_copy_insn (gdbarch,
 					aarch64_displaced_step_copy_insn);
   set_gdbarch_displaced_step_fixup (gdbarch, aarch64_displaced_step_fixup);
-  set_gdbarch_displaced_step_location (gdbarch, linux_displaced_step_location);
   set_gdbarch_displaced_step_hw_singlestep (gdbarch,
 					    aarch64_displaced_step_hw_singlestep);
 
   set_gdbarch_gcc_target_options (gdbarch, aarch64_linux_gcc_target_options);
 }
 
+#if GDB_SELF_TEST
+
+namespace selftests {
+
+/* Verify functions to read and write logical tags.  */
+
+static void
+aarch64_linux_ltag_tests (void)
+{
+  /* We have 4 bits of tags, but we test writing all the bits of the top
+     byte of address.  */
+  for (int i = 0; i < 1 << 8; i++)
+    {
+      CORE_ADDR addr = ((CORE_ADDR) i << 56) | 0xdeadbeef;
+      SELF_CHECK (aarch64_mte_get_ltag (addr) == (i & 0xf));
+
+      addr = aarch64_mte_set_ltag (0xdeadbeef, i);
+      SELF_CHECK (addr = ((CORE_ADDR) (i & 0xf) << 56) | 0xdeadbeef);
+    }
+}
+
+} // namespace selftests
+#endif /* GDB_SELF_TEST */
+
+void _initialize_aarch64_linux_tdep ();
 void
-_initialize_aarch64_linux_tdep (void)
+_initialize_aarch64_linux_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_aarch64, 0, GDB_OSABI_LINUX,
 			  aarch64_linux_init_abi);
+
+#if GDB_SELF_TEST
+  selftests::register_test ("aarch64-linux-tagged-address",
+			    selftests::aarch64_linux_ltag_tests);
+#endif
 }

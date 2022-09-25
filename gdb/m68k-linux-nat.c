@@ -1,6 +1,6 @@
 /* Motorola m68k native support for GNU/Linux.
 
-   Copyright (C) 1996-2018 Free Software Foundation, Inc.
+   Copyright (C) 1996-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -25,6 +25,7 @@
 #include "regcache.h"
 #include "target.h"
 #include "linux-nat.h"
+#include "gdbarch.h"
 
 #include "m68k-tdep.h"
 
@@ -259,7 +260,7 @@ fetch_regs (struct regcache *regcache, int tid)
       if (errno == EIO)
 	{
 	  /* The kernel we're running on doesn't support the GETREGS
-             request.  Reset `have_ptrace_getregs'.  */
+	     request.  Reset `have_ptrace_getregs'.  */
 	  have_ptrace_getregs = 0;
 	  return;
 	}
@@ -510,8 +511,9 @@ ps_get_thread_area (struct ps_prochandle *ph,
   return PS_OK;
 }
 
+void _initialize_m68k_linux_nat ();
 void
-_initialize_m68k_linux_nat (void)
+_initialize_m68k_linux_nat ()
 {
   /* Register the target.  */
   linux_target = &the_m68k_linux_nat_target;

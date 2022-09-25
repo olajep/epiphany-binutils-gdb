@@ -1,6 +1,6 @@
 /* Wrapper implementation for waitpid for GNU/Linux (LWP layer).
 
-   Copyright (C) 2001-2018 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,61 +17,34 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "common-defs.h"
-
-#ifdef GDBSERVER
-/* FIXME: server.h is required for the definition of debug_threads
-   which is used in the gdbserver-specific debug printing in
-   linux_debug.  This code should be made available to GDB also,
-   but the lack of a suitable flag to enable it prevents this.  */
-#include "server.h"
-#endif
+#include "gdbsupport/common-defs.h"
 
 #include "linux-nat.h"
 #include "linux-waitpid.h"
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
+#include "gdbsupport/eintr.h"
 
-/* Print debugging output based on the format string FORMAT and
-   its parameters.  */
+/* See linux-waitpid.h.  */
 
-static inline void ATTRIBUTE_PRINTF (1,2)
-linux_debug (const char *format, ...)
-{
-#ifdef GDBSERVER
-  if (debug_threads)
-    {
-      va_list args;
-      va_start (args, format);
-      vfprintf (stderr, format, args);
-      va_end (args);
-    }
-#endif
-}
-
-/* Convert wait status STATUS to a string.  Used for printing debug
-   messages only.  */
-
-char *
+std::string
 status_to_str (int status)
 {
-  static char buf[64];
-
   if (WIFSTOPPED (status))
     {
       if (WSTOPSIG (status) == SYSCALL_SIGTRAP)
-	snprintf (buf, sizeof (buf), "%s (stopped at syscall)",
-		  strsignal (SIGTRAP));
+	return string_printf ("%s - %s (stopped at syscall)",
+			      strsigno (SIGTRAP), strsignal (SIGTRAP));
       else
-	snprintf (buf, sizeof (buf), "%s (stopped)",
-		  strsignal (WSTOPSIG (status)));
+	return string_printf ("%s - %s (stopped)",
+			      strsigno (WSTOPSIG (status)),
+			      strsignal (WSTOPSIG (status)));
     }
   else if (WIFSIGNALED (status))
-    snprintf (buf, sizeof (buf), "%s (terminated)",
-	      strsignal (WTERMSIG (status)));
+    return string_printf ("%s - %s (terminated)",
+			  strsigno (WTERMSIG (status)),
+			  strsignal (WTERMSIG (status)));
   else
-    snprintf (buf, sizeof (buf), "%d (exited)", WEXITSTATUS (status));
-
-  return buf;
+    return string_printf ("%d (exited)", WEXITSTATUS (status));
 }
 
 /* See linux-waitpid.h.  */
@@ -79,20 +52,5 @@ status_to_str (int status)
 int
 my_waitpid (int pid, int *status, int flags)
 {
-  int ret, out_errno;
-
-  linux_debug ("my_waitpid (%d, 0x%x)\n", pid, flags);
-
-  do
-    {
-      ret = waitpid (pid, status, flags);
-    }
-  while (ret == -1 && errno == EINTR);
-  out_errno = errno;
-
-  linux_debug ("my_waitpid (%d, 0x%x): status(%x), %d\n",
-	       pid, flags, (ret > 0 && status != NULL) ? *status : -1, ret);
-
-  errno = out_errno;
-  return ret;
+  return gdb::handle_eintr (-1, ::waitpid, pid, status, flags);
 }

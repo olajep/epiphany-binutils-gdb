@@ -1,4 +1,4 @@
-# Copyright 1997-2018 Free Software Foundation, Inc.
+# Copyright 1997-2022 Free Software Foundation, Inc.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,9 +24,6 @@ set data_overlays 1
 
 if [istarget "m32r-*-*"] then {
     set linker_script "${srcdir}/${subdir}/m32r.ld"
-} elseif [istarget "spu-*-*"] then {
-    set linker_script "${srcdir}/${subdir}/spu.ld"
-    set data_overlays 0
 } else {
     verbose "Skipping overlay test -- not implemented for this target."
     return 
@@ -41,7 +38,7 @@ standard_testfile overlays.c ovlymgr.c foo.c bar.c baz.c grbx.c
 
 if {[build_executable $testfile.exp $testfile \
 	 [list $srcfile $srcfile2 $srcfile3 $srcfile4 $srcfile5 $srcfile6] \
-	 {debug ldscript=-Wl,-T$linker_script}] == -1} {
+	 "debug ldscript=-Wl,-T$linker_script"] == -1} {
      untested "failed to compile"
      return -1
 }
@@ -58,7 +55,8 @@ gdb_load ${binfile}
 #
 
 if ![runto_main] then {
-    gdb_suppress_tests
+    fail "can't run to main"
+    return 0
 }
 
 # couple of convenience variables

@@ -1,6 +1,6 @@
 /* Target-dependent code for the ALPHA architecture, for GDB, the GNU Debugger.
 
-   Copyright (C) 1993-2018 Free Software Foundation, Inc.
+   Copyright (C) 1993-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,7 +21,7 @@
 #include "frame.h"
 #include "frame-unwind.h"
 #include "frame-base.h"
-#include "dwarf2-frame.h"
+#include "dwarf2/frame.h"
 #include "inferior.h"
 #include "symtab.h"
 #include "value.h"
@@ -116,7 +116,7 @@ static int
 alpha_cannot_store_register (struct gdbarch *gdbarch, int regno)
 {
   return (regno == ALPHA_ZERO_REGNUM
-          || strlen (alpha_register_name (gdbarch, regno)) == 0);
+	  || strlen (alpha_register_name (gdbarch, regno)) == 0);
 }
 
 static struct type *
@@ -295,11 +295,12 @@ static CORE_ADDR
 alpha_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 		       struct regcache *regcache, CORE_ADDR bp_addr,
 		       int nargs, struct value **args, CORE_ADDR sp,
-		       int struct_return, CORE_ADDR struct_addr)
+		       function_call_return_method return_method,
+		       CORE_ADDR struct_addr)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   int i;
-  int accumulate_size = struct_return ? 8 : 0;
+  int accumulate_size = (return_method == return_method_struct) ? 8 : 0;
   struct alpha_arg
     {
       const gdb_byte *contents;
@@ -326,7 +327,7 @@ alpha_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       struct type *arg_type = check_typedef (value_type (arg));
 
       /* Cast argument to long if necessary as the compiler does it too.  */
-      switch (TYPE_CODE (arg_type))
+      switch (arg_type->code ())
 	{
 	case TYPE_CODE_INT:
 	case TYPE_CODE_BOOL:
@@ -446,7 +447,7 @@ alpha_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       /* Everything else goes to the stack.  */
       write_memory (sp + offset - sizeof(arg_reg_buffer), contents, len);
     }
-  if (struct_return)
+  if (return_method == return_method_struct)
     store_unsigned_integer (arg_reg_buffer, ALPHA_REGISTER_SIZE,
 			    byte_order, struct_addr);
 
@@ -477,7 +478,7 @@ alpha_extract_return_value (struct type *valtype, struct regcache *regcache,
   gdb_byte raw_buffer[ALPHA_REGISTER_SIZE];
   ULONGEST l;
 
-  switch (TYPE_CODE (valtype))
+  switch (valtype->code ())
     {
     case TYPE_CODE_FLT:
       switch (TYPE_LENGTH (valtype))
@@ -545,7 +546,7 @@ alpha_store_return_value (struct type *valtype, struct regcache *regcache,
   gdb_byte raw_buffer[ALPHA_REGISTER_SIZE];
   ULONGEST l;
 
-  switch (TYPE_CODE (valtype))
+  switch (valtype->code ())
     {
     case TYPE_CODE_FLT:
       switch (TYPE_LENGTH (valtype))
@@ -613,7 +614,7 @@ alpha_return_value (struct gdbarch *gdbarch, struct value *function,
 		    struct type *type, struct regcache *regcache,
 		    gdb_byte *readbuf, const gdb_byte *writebuf)
 {
-  enum type_code code = TYPE_CODE (type);
+  enum type_code code = type->code ();
 
   if ((code == TYPE_CODE_STRUCT
        || code == TYPE_CODE_UNION
@@ -767,7 +768,7 @@ static const int stq_c_opcode = 0x2f;
 static std::vector<CORE_ADDR>
 alpha_deal_with_atomic_sequence (struct gdbarch *gdbarch, CORE_ADDR pc)
 {
-  CORE_ADDR breaks[2] = {-1, -1};
+  CORE_ADDR breaks[2] = {CORE_ADDR_MAX, CORE_ADDR_MAX};
   CORE_ADDR loc = pc;
   CORE_ADDR closing_insn; /* Instruction that closes the atomic sequence.  */
   unsigned int insn = alpha_read_insn (gdbarch, loc);
@@ -973,7 +974,7 @@ alpha_sigtramp_frame_prev_register (struct frame_info *this_frame,
       addr = alpha_sigtramp_register_address (get_frame_arch (this_frame),
 					      info->sigcontext_addr, regnum);
       if (addr != 0)
-        return frame_unwind_got_memory (this_frame, regnum, addr);
+	return frame_unwind_got_memory (this_frame, regnum, addr);
     }
 
   /* This extra register may actually be in the sigcontext, but our
@@ -985,19 +986,19 @@ alpha_sigtramp_frame_prev_register (struct frame_info *this_frame,
 
 static int
 alpha_sigtramp_frame_sniffer (const struct frame_unwind *self,
-                              struct frame_info *this_frame,
-                              void **this_prologue_cache)
+			      struct frame_info *this_frame,
+			      void **this_prologue_cache)
 {
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
   CORE_ADDR pc = get_frame_pc (this_frame);
   const char *name;
 
   /* NOTE: cagney/2004-04-30: Do not copy/clone this code.  Instead
-     look at tramp-frame.h and other simplier per-architecture
+     look at tramp-frame.h and other simpler per-architecture
      sigtramp unwinders.  */
 
   /* We shouldn't even bother to try if the OSABI didn't register a
-     sigcontext_addr handler or pc_in_sigtramp hander.  */
+     sigcontext_addr handler or pc_in_sigtramp handler.  */
   if (gdbarch_tdep (gdbarch)->sigcontext_addr == NULL)
     return 0;
   if (gdbarch_tdep (gdbarch)->pc_in_sigtramp == NULL)
@@ -1011,7 +1012,9 @@ alpha_sigtramp_frame_sniffer (const struct frame_unwind *self,
   return 0;
 }
 
-static const struct frame_unwind alpha_sigtramp_frame_unwind = {
+static const struct frame_unwind alpha_sigtramp_frame_unwind =
+{
+  "alpha sigtramp",
   SIGTRAMP_FRAME,
   default_frame_unwind_stop_reason,
   alpha_sigtramp_frame_this_id,
@@ -1117,7 +1120,7 @@ struct alpha_heuristic_unwind_cache
 { 
   CORE_ADDR vfp;
   CORE_ADDR start_pc;
-  struct trad_frame_saved_reg *saved_regs;
+  trad_frame_saved_reg *saved_regs;
   int return_reg;
 };
 
@@ -1136,16 +1139,16 @@ alpha_heuristic_analyze_probing_loop (struct gdbarch *gdbarch, CORE_ADDR *pc,
 
   /* The following pattern is recognized as a probing loop:
 
-        lda     REG_INDEX,NB_OF_ITERATIONS
-        lda     REG_PROBE,<immediate>(sp)
+	lda     REG_INDEX,NB_OF_ITERATIONS
+	lda     REG_PROBE,<immediate>(sp)
 
      LOOP_START:
-        stq     zero,<immediate>(REG_PROBE)
-        subq    REG_INDEX,0x1,REG_INDEX
-        lda     REG_PROBE,<immediate>(REG_PROBE)
-        bne     REG_INDEX, LOOP_START
+	stq     zero,<immediate>(REG_PROBE)
+	subq    REG_INDEX,0x1,REG_INDEX
+	lda     REG_PROBE,<immediate>(REG_PROBE)
+	bne     REG_INDEX, LOOP_START
  
-        lda     sp,<immediate>(REG_PROBE)
+	lda     sp,<immediate>(REG_PROBE)
 
      If anything different is found, the function returns without
      changing PC and FRAME_SIZE.  Otherwise, PC will point immediately
@@ -1281,15 +1284,15 @@ alpha_heuristic_frame_unwind_cache (struct frame_info *this_frame,
 	    {
 	      reg = (word & 0x03e00000) >> 21;
 
-              /* Ignore this instruction if we have already encountered
-                 an instruction saving the same register earlier in the
-                 function code.  The current instruction does not tell
-                 us where the original value upon function entry is saved.
-                 All it says is that the function we are scanning reused
-                 that register for some computation of its own, and is now
-                 saving its result.  */
-              if (trad_frame_addr_p(info->saved_regs, reg))
-                continue;
+	      /* Ignore this instruction if we have already encountered
+		 an instruction saving the same register earlier in the
+		 function code.  The current instruction does not tell
+		 us where the original value upon function entry is saved.
+		 All it says is that the function we are scanning reused
+		 that register for some computation of its own, and is now
+		 saving its result.  */
+	      if (info->saved_regs[reg].is_addr ())
+		continue;
 
 	      if (reg == 31)
 		continue;
@@ -1304,7 +1307,7 @@ alpha_heuristic_frame_unwind_cache (struct frame_info *this_frame,
 		 pointer or not.  */
 	      /* Hack: temporarily add one, so that the offset is non-zero
 		 and we can tell which registers have save offsets below.  */
-	      info->saved_regs[reg].addr = (word & 0xffff) + 1;
+	      info->saved_regs[reg].set_addr ((word & 0xffff) + 1);
 
 	      /* Starting with OSF/1-3.2C, the system libraries are shipped
 		 without local symbols, but they still contain procedure
@@ -1384,13 +1387,14 @@ alpha_heuristic_frame_unwind_cache (struct frame_info *this_frame,
   /* Convert offsets to absolute addresses.  See above about adding
      one to the offsets to make all detected offsets non-zero.  */
   for (reg = 0; reg < ALPHA_NUM_REGS; ++reg)
-    if (trad_frame_addr_p(info->saved_regs, reg))
-      info->saved_regs[reg].addr += val - 1;
+    if (info->saved_regs[reg].is_addr ())
+      info->saved_regs[reg].set_addr (info->saved_regs[reg].addr ()
+				      + val - 1);
 
   /* The stack pointer of the previous frame is computed by popping
      the current stack frame.  */
-  if (!trad_frame_addr_p (info->saved_regs, ALPHA_SP_REGNUM))
-   trad_frame_set_value (info->saved_regs, ALPHA_SP_REGNUM, info->vfp);
+  if (!info->saved_regs[ALPHA_SP_REGNUM].is_addr ())
+   info->saved_regs[ALPHA_SP_REGNUM].set_value (info->vfp);
 
   return info;
 }
@@ -1427,7 +1431,9 @@ alpha_heuristic_frame_prev_register (struct frame_info *this_frame,
   return trad_frame_get_prev_register (this_frame, info->saved_regs, regnum);
 }
 
-static const struct frame_unwind alpha_heuristic_frame_unwind = {
+static const struct frame_unwind alpha_heuristic_frame_unwind =
+{
+  "alpha prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   alpha_heuristic_frame_this_id,
@@ -1462,29 +1468,6 @@ reinit_frame_cache_sfunc (const char *args,
 {
   reinit_frame_cache ();
 }
-
-
-/* Assuming NEXT_FRAME->prev is a dummy, return the frame ID of that
-   dummy frame.  The frame ID's base needs to match the TOS value
-   saved by save_dummy_frame_tos(), and the PC match the dummy frame's
-   breakpoint.  */
-
-static struct frame_id
-alpha_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
-{
-  ULONGEST base;
-  base = get_frame_register_unsigned (this_frame, ALPHA_SP_REGNUM);
-  return frame_id_build (base, get_frame_pc (this_frame));
-}
-
-static CORE_ADDR
-alpha_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  ULONGEST pc;
-  pc = frame_unwind_register_unsigned (next_frame, ALPHA_PC_REGNUM);
-  return pc;
-}
-
 
 /* Helper routines for alpha*-nat.c files to move register sets to and
    from core files.  The UNIQUE pointer is allowed to be NULL, as most
@@ -1623,7 +1606,7 @@ alpha_next_pc (struct regcache *regcache, CORE_ADDR pc)
 	  || op == 0x34)	/* BSR */
 	{
  branch_taken:
-          offset = (insn & 0x001fffff);
+	  offset = (insn & 0x001fffff);
 	  if (offset & 0x00100000)
 	    offset  |= 0xffe00000;
 	  offset *= ALPHA_INSN_SIZE;
@@ -1633,14 +1616,14 @@ alpha_next_pc (struct regcache *regcache, CORE_ADDR pc)
       /* Need to determine if branch is taken; read RA.  */
       regno = (insn >> 21) & 0x1f;
       switch (op)
-        {
-          case 0x31:              /* FBEQ */
-          case 0x36:              /* FBGE */
-          case 0x37:              /* FBGT */
-          case 0x33:              /* FBLE */
-          case 0x32:              /* FBLT */
-          case 0x35:              /* FBNE */
-            regno += gdbarch_fp0_regnum (gdbarch);
+	{
+	  case 0x31:              /* FBEQ */
+	  case 0x36:              /* FBGE */
+	  case 0x37:              /* FBGT */
+	  case 0x33:              /* FBLE */
+	  case 0x32:              /* FBLT */
+	  case 0x35:              /* FBNE */
+	    regno += gdbarch_fp0_regnum (gdbarch);
 	}
       
       rav = regcache_raw_get_signed (regcache, regno);
@@ -1680,32 +1663,32 @@ alpha_next_pc (struct regcache *regcache, CORE_ADDR pc)
 	    goto branch_taken;
 	  break;
 
-        /* Floating point branches.  */
-        
-        case 0x31:              /* FBEQ */
-          if (fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
-        case 0x36:              /* FBGE */
-          if (fp_register_sign_bit (rav) == 0 || fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
-        case 0x37:              /* FBGT */
-          if (fp_register_sign_bit (rav) == 0 && ! fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
-        case 0x33:              /* FBLE */
-          if (fp_register_sign_bit (rav) == 1 || fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
-        case 0x32:              /* FBLT */
-          if (fp_register_sign_bit (rav) == 1 && ! fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
-        case 0x35:              /* FBNE */
-          if (! fp_register_zero_p (rav))
-            goto branch_taken;
-          break;
+	/* Floating point branches.  */
+	
+	case 0x31:              /* FBEQ */
+	  if (fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
+	case 0x36:              /* FBGE */
+	  if (fp_register_sign_bit (rav) == 0 || fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
+	case 0x37:              /* FBGT */
+	  if (fp_register_sign_bit (rav) == 0 && ! fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
+	case 0x33:              /* FBLE */
+	  if (fp_register_sign_bit (rav) == 1 || fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
+	case 0x32:              /* FBLT */
+	  if (fp_register_sign_bit (rav) == 1 && ! fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
+	case 0x35:              /* FBNE */
+	  if (! fp_register_zero_p (rav))
+	    goto branch_taken;
+	  break;
 	}
     }
 
@@ -1806,12 +1789,6 @@ alpha_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   /* Settings for calling functions in the inferior.  */
   set_gdbarch_push_dummy_call (gdbarch, alpha_push_dummy_call);
 
-  /* Methods for saving / extracting a dummy frame's ID.  */
-  set_gdbarch_dummy_id (gdbarch, alpha_dummy_id);
-
-  /* Return the unwound PC value.  */
-  set_gdbarch_unwind_pc (gdbarch, alpha_unwind_pc);
-
   set_gdbarch_inner_than (gdbarch, core_addr_lessthan);
   set_gdbarch_skip_trampoline_code (gdbarch, find_solib_trampoline_target);
 
@@ -1849,8 +1826,9 @@ alpha_dwarf2_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   frame_base_append_sniffer (gdbarch, dwarf2_frame_base_sniffer);
 }
 
+void _initialize_alpha_tdep ();
 void
-_initialize_alpha_tdep (void)
+_initialize_alpha_tdep ()
 {
 
   gdbarch_register (bfd_arch_alpha, alpha_gdbarch_init, NULL);

@@ -1,6 +1,6 @@
 /* Scheme interface to blocks.
 
-   Copyright (C) 2008-2018 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -30,7 +30,7 @@
 
 /* A smob describing a gdb block.  */
 
-typedef struct _block_smob
+struct block_smob
 {
   /* This always appears first.
      We want blocks to be eq?-able.  And we need to be able to invalidate
@@ -44,7 +44,7 @@ typedef struct _block_smob
      between a block and an object file.  When a block is created also
      store a pointer to the object file for later use.  */
   struct objfile *objfile;
-} block_smob;
+};
 
 /* To iterate over block symbols from Scheme we need to store
    struct block_iterator somewhere.  This is stored in the "progress" field
@@ -54,7 +54,7 @@ typedef struct _block_smob
    Remember: While iterating over block symbols, you must continually check
    whether the block is still valid.  */
 
-typedef struct
+struct block_syms_progress_smob
 {
   /* This always appears first.  */
   gdb_smob base;
@@ -64,7 +64,7 @@ typedef struct
 
   /* Has the iterator been initialized flag.  */
   int initialized_p;
-} block_syms_progress_smob;
+};
 
 static const char block_smob_name[] = "gdb:block";
 static const char block_syms_progress_smob_name[] = "gdb:block-symbols-iterator";
@@ -157,7 +157,7 @@ bkscm_print_block_smob (SCM self, SCM port, scm_print_state *pstate)
     gdbscm_printf (port, " static");
 
   if (BLOCK_FUNCTION (b) != NULL)
-    gdbscm_printf (port, " %s", SYMBOL_PRINT_NAME (BLOCK_FUNCTION (b)));
+    gdbscm_printf (port, " %s", BLOCK_FUNCTION (b)->print_name ());
 
   gdbscm_printf (port, " %s-%s",
 		 hex_string (BLOCK_START (b)), hex_string (BLOCK_END (b)));
@@ -613,9 +613,8 @@ bkscm_block_syms_progress_p (SCM scm)
 static SCM
 gdbscm_make_block_syms_iter (SCM self)
 {
-  block_smob *b_smob
-    = bkscm_get_valid_block_smob_arg_unsafe (self, SCM_ARG1, FUNC_NAME);
-  const struct block *block = b_smob->block;
+  /* Call for side effects.  */
+  bkscm_get_valid_block_smob_arg_unsafe (self, SCM_ARG1, FUNC_NAME);
   SCM progress, iter;
 
   progress = bkscm_make_block_syms_progress_smob ();
@@ -681,19 +680,20 @@ gdbscm_lookup_block (SCM pc_scm)
 
   gdbscm_parse_function_args (FUNC_NAME, SCM_ARG1, NULL, "U", pc_scm, &pc);
 
-  TRY
+  gdbscm_gdb_exception exc {};
+  try
     {
       cust = find_pc_compunit_symtab (pc);
 
       if (cust != NULL && COMPUNIT_OBJFILE (cust) != NULL)
 	block = block_for_pc (pc);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      GDBSCM_HANDLE_GDB_EXCEPTION (except);
+      exc = unpack (except);
     }
-  END_CATCH
 
+  GDBSCM_HANDLE_GDB_EXCEPTION (exc);
   if (cust == NULL || COMPUNIT_OBJFILE (cust) == NULL)
     {
       gdbscm_out_of_range_error (FUNC_NAME, SCM_ARG1, pc_scm,
@@ -799,7 +799,12 @@ gdbscm_initialize_blocks (void)
 				gdbscm_documentation_symbol,
 				gdbscm_scm_from_c_string ("\
 Internal function to assist the block symbols iterator."));
+}
 
+void _initialize_scm_block ();
+void
+_initialize_scm_block ()
+{
   /* Register an objfile "free" callback so we can properly
      invalidate blocks when an object file is about to be deleted.  */
   bkscm_objfile_data_key

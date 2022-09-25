@@ -1,5 +1,5 @@
 /* Functions for manipulating expressions designed to be executed on the agent
-   Copyright (C) 1998-2018 Free Software Foundation, Inc.
+   Copyright (C) 1998-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -23,6 +23,7 @@
 
 #include "defs.h"
 #include "ax.h"
+#include "gdbarch.h"
 
 #include "value.h"
 #include "user-regs.h"
@@ -243,7 +244,7 @@ ax_const_l (struct agent_expr *x, LONGEST l)
       LONGEST lim = ((LONGEST) 1) << (size - 1);
 
       if (-lim <= l && l <= lim - 1)
-        break;
+	break;
     }
 
   /* Emit the right opcode...  */
@@ -291,7 +292,7 @@ ax_reg (struct agent_expr *x, int reg)
 
       /* Make sure the register number is in range.  */
       if (reg < 0 || reg > 0xffff)
-        error (_("GDB bug: ax-general.c (ax_reg): "
+	error (_("GDB bug: ax-general.c (ax_reg): "
 		 "register number out of range"));
       grow_expr (x, 3);
       x->buf[x->len] = aop_reg;
@@ -353,7 +354,7 @@ struct aop_map aop_map[] =
   {0, 0, 0, 0, 0}
 #define DEFOP(NAME, SIZE, DATA_SIZE, CONSUMED, PRODUCED, VALUE) \
   , { # NAME, SIZE, DATA_SIZE, CONSUMED, PRODUCED }
-#include "ax.def"
+#include "gdbsupport/ax.def"
 #undef DEFOP
 };
 
@@ -445,18 +446,18 @@ ax_reg_mask (struct agent_expr *ax, int reg)
 
       /* Grow the bit mask if necessary.  */
       if (byte >= ax->reg_mask_len)
-        {
-          /* It's not appropriate to double here.  This isn't a
+	{
+	  /* It's not appropriate to double here.  This isn't a
 	     string buffer.  */
-          int new_len = byte + 1;
-          unsigned char *new_reg_mask
+	  int new_len = byte + 1;
+	  unsigned char *new_reg_mask
 	    = XRESIZEVEC (unsigned char, ax->reg_mask, new_len);
 
-          memset (new_reg_mask + ax->reg_mask_len, 0,
-	          (new_len - ax->reg_mask_len) * sizeof (ax->reg_mask[0]));
-          ax->reg_mask_len = new_len;
-          ax->reg_mask = new_reg_mask;
-        }
+	  memset (new_reg_mask + ax->reg_mask_len, 0,
+		  (new_len - ax->reg_mask_len) * sizeof (ax->reg_mask[0]));
+	  ax->reg_mask_len = new_len;
+	  ax->reg_mask = new_reg_mask;
+	}
 
       ax->reg_mask[byte] |= 1 << (reg % 8);
     }
@@ -516,8 +517,8 @@ ax_reqs (struct agent_expr *ax)
 	}
 
       /* If this instruction is a forward jump target, does the
-         current stack height match the stack height at the jump
-         source?  */
+	 current stack height match the stack height at the jump
+	 source?  */
       if (targets[i] && (heights[i] != height))
 	{
 	  ax->flaw = agent_flaw_height_mismatch;
@@ -538,8 +539,8 @@ ax_reqs (struct agent_expr *ax)
 	ax->max_data_size = op->data_size;
 
       /* For jump instructions, check that the target is a valid
-         offset.  If it is, record the fact that that location is a
-         jump target, and record the height we expect there.  */
+	 offset.  If it is, record the fact that that location is a
+	 jump target, and record the height we expect there.  */
       if (aop_goto == op - aop_map
 	  || aop_if_goto == op - aop_map)
 	{
@@ -551,7 +552,7 @@ ax_reqs (struct agent_expr *ax)
 	    }
 
 	  /* Do we have any information about what the stack height
-             should be at the target?  */
+	     should be at the target?  */
 	  if (targets[target] || boundary[target])
 	    {
 	      if (heights[target] != height)
@@ -561,13 +562,13 @@ ax_reqs (struct agent_expr *ax)
 		}
 	    }
 
-          /* Record the target, along with the stack height we expect.  */
-          targets[target] = 1;
-          heights[target] = height;
+	  /* Record the target, along with the stack height we expect.  */
+	  targets[target] = 1;
+	  heights[target] = height;
 	}
 
       /* For unconditional jumps with a successor, check that the
-         successor is a target, and pick up its stack height.  */
+	 successor is a target, and pick up its stack height.  */
       if (aop_goto == op - aop_map
 	  && i + 3 < ax->len)
 	{

@@ -1,5 +1,5 @@
 /*  maverick.c -- Cirrus/DSP co-processor interface.
-    Copyright (C) 2003-2018 Free Software Foundation, Inc.
+    Copyright (C) 2003-2022 Free Software Foundation, Inc.
     Contributed by Aldy Hernandez (aldyh@redhat.com).
 
     This program is free software; you can redistribute it and/or modify
@@ -15,10 +15,14 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>. */
 
+/* This must come before any other includes.  */
+#include "defs.h"
+
 #include <assert.h>
 #include "armdefs.h"
 #include "ansidecl.h"
 #include "armemu.h"
+#include "maverick.h"
 
 /*#define CIRRUS_DEBUG 1	*/
 #if CIRRUS_DEBUG
@@ -30,36 +34,10 @@
 #define POS64(i) ( (~(i)) >> 63 )
 #define NEG64(i) ( (i) >> 63 )
 
-/* Define Co-Processor instruction handlers here.  */
-
-/* Here's ARMulator's DSP definition.  A few things to note:
-   1) it has 16 64-bit registers and 4 72-bit accumulators
-   2) you can only access its registers with MCR and MRC.  */
-
-/* We can't define these in here because this file might not be linked
-   unless the target is arm9e-*.  They are defined in wrapper.c.
-   Eventually the simulator should be made to handle any coprocessor
-   at run time.  */
-struct maverick_regs
-{
-  union
-  {
-    int i;
-    float f;
-  } upper;
-
-  union
-  {
-    int i;
-    float f;
-  } lower;
-};
-
-union maverick_acc_regs
-{
-  long double ld;		/* Acc registers are 72-bits.  */
-};
-
+/* These variables are defined here and made extern in maverick.h for use
+   in wrapper.c for now.
+   Eventually the simulator should be made to handle any coprocessor at run
+   time.  */
 struct maverick_regs DSPregs[16];
 union maverick_acc_regs DSPacc[4];
 ARMword DSPsc;

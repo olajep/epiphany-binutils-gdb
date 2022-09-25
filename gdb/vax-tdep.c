@@ -1,6 +1,6 @@
 /* Target-dependent code for the VAX.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -141,7 +141,8 @@ vax_store_arguments (struct regcache *regcache, int nargs,
 static CORE_ADDR
 vax_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 		     struct regcache *regcache, CORE_ADDR bp_addr, int nargs,
-		     struct value **args, CORE_ADDR sp, int struct_return,
+		     struct value **args, CORE_ADDR sp,
+		     function_call_return_method return_method,
 		     CORE_ADDR struct_addr)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
@@ -152,7 +153,7 @@ vax_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
   sp = vax_store_arguments (regcache, nargs, args, sp);
 
   /* Store return value address.  */
-  if (struct_return)
+  if (return_method == return_method_struct)
     regcache_cooked_write_unsigned (regcache, VAX_R1_REGNUM, struct_addr);
 
   /* Store return address in the PC slot.  */
@@ -205,13 +206,13 @@ vax_return_value (struct gdbarch *gdbarch, struct value *function,
   int len = TYPE_LENGTH (type);
   gdb_byte buf[8];
 
-  if (TYPE_CODE (type) == TYPE_CODE_STRUCT
-      || TYPE_CODE (type) == TYPE_CODE_UNION
-      || TYPE_CODE (type) == TYPE_CODE_ARRAY)
+  if (type->code () == TYPE_CODE_STRUCT
+      || type->code () == TYPE_CODE_UNION
+      || type->code () == TYPE_CODE_ARRAY)
     {
       /* The default on VAX is to return structures in static memory.
-         Consequently a function must return the address where we can
-         find the return value.  */
+	 Consequently a function must return the address where we can
+	 find the return value.  */
 
       if (readbuf)
 	{
@@ -300,7 +301,7 @@ struct vax_frame_cache
   CORE_ADDR base;
 
   /* Table of saved registers.  */
-  struct trad_frame_saved_reg *saved_regs;
+  trad_frame_saved_reg *saved_regs;
 };
 
 static struct vax_frame_cache *
@@ -328,10 +329,10 @@ vax_frame_cache (struct frame_info *this_frame, void **this_cache)
   mask = get_frame_memory_unsigned (this_frame, cache->base + 4, 4) >> 16;
 
   /* These are always saved.  */
-  cache->saved_regs[VAX_PC_REGNUM].addr = cache->base + 16;
-  cache->saved_regs[VAX_FP_REGNUM].addr = cache->base + 12;
-  cache->saved_regs[VAX_AP_REGNUM].addr = cache->base + 8;
-  cache->saved_regs[VAX_PS_REGNUM].addr = cache->base + 4;
+  cache->saved_regs[VAX_PC_REGNUM].set_addr (cache->base + 16);
+  cache->saved_regs[VAX_FP_REGNUM].set_addr (cache->base + 12);
+  cache->saved_regs[VAX_AP_REGNUM].set_addr (cache->base + 8);
+  cache->saved_regs[VAX_PS_REGNUM].set_addr (cache->base + 4);
 
   /* Scan the register save mask and record the location of the saved
      registers.  */
@@ -340,7 +341,7 @@ vax_frame_cache (struct frame_info *this_frame, void **this_cache)
     {
       if (mask & (1 << regnum))
 	{
-	  cache->saved_regs[regnum].addr = addr;
+	  cache->saved_regs[regnum].set_addr (addr);
 	  addr += 4;
 	}
     }
@@ -352,15 +353,15 @@ vax_frame_cache (struct frame_info *this_frame, void **this_cache)
       ULONGEST numarg;
 
       /* This is a procedure with Stack Argument List.  Adjust the
-         stack address for the arguments that were pushed onto the
-         stack.  The return instruction will automatically pop the
-         arguments from the stack.  */
+	 stack address for the arguments that were pushed onto the
+	 stack.  The return instruction will automatically pop the
+	 arguments from the stack.  */
       numarg = get_frame_memory_unsigned (this_frame, addr, 1);
       addr += 4 + numarg * 4;
     }
 
   /* Bits 1:0 of the stack pointer were saved in the control bits.  */
-  trad_frame_set_value (cache->saved_regs, VAX_SP_REGNUM, addr + (mask >> 14));
+  cache->saved_regs[VAX_SP_REGNUM].set_value (addr + (mask >> 14));
 
   return cache;
 }
@@ -389,6 +390,7 @@ vax_frame_prev_register (struct frame_info *this_frame,
 
 static const struct frame_unwind vax_frame_unwind =
 {
+  "vax prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   vax_frame_this_id,
@@ -436,11 +438,6 @@ vax_frame_num_args (struct frame_info *frame)
   return get_frame_memory_unsigned (frame, args, 1);
 }
 
-static CORE_ADDR
-vax_unwind_pc (struct gdbarch *gdbarch, struct frame_info *next_frame)
-{
-  return frame_unwind_register_unsigned (next_frame, VAX_PC_REGNUM);
-}
 
 
 /* Initialize the current architecture based on INFO.  If possible, re-use an
@@ -501,8 +498,6 @@ vax_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_deprecated_function_start_offset (gdbarch, 2);
   set_gdbarch_believe_pcc_promotion (gdbarch, 1);
 
-  set_gdbarch_unwind_pc (gdbarch, vax_unwind_pc);
-
   frame_base_set_default (gdbarch, &vax_frame_base);
 
   /* Hook in ABI-specific overrides, if they have been registered.  */
@@ -513,8 +508,9 @@ vax_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   return (gdbarch);
 }
 
+void _initialize_vax_tdep ();
 void
-_initialize_vax_tdep (void)
+_initialize_vax_tdep ()
 {
   gdbarch_register (bfd_arch_vax, vax_gdbarch_init, NULL);
 }

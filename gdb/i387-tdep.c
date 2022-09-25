@@ -1,6 +1,6 @@
 /* Intel 387 floating point stuff.
 
-   Copyright (C) 1988-2018 Free Software Foundation, Inc.
+   Copyright (C) 1988-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -28,7 +28,7 @@
 
 #include "i386-tdep.h"
 #include "i387-tdep.h"
-#include "x86-xstate.h"
+#include "gdbsupport/x86-xstate.h"
 
 /* Print the floating point number specified by RAW.  */
 
@@ -332,7 +332,7 @@ i387_convert_register_p (struct gdbarch *gdbarch, int regnum,
       /* Floating point registers must be converted unless we are
 	 accessing them in their hardware type or TYPE is not float.  */
       if (type == i387_ext_type (gdbarch)
-	  || TYPE_CODE (type) != TYPE_CODE_FLT)
+	  || type->code () != TYPE_CODE_FLT)
 	return 0;
       else
 	return 1;
@@ -355,7 +355,7 @@ i387_register_to_value (struct frame_info *frame, int regnum,
   gdb_assert (i386_fp_regnum_p (gdbarch, regnum));
 
   /* We only support floating-point values.  */
-  if (TYPE_CODE (type) != TYPE_CODE_FLT)
+  if (type->code () != TYPE_CODE_FLT)
     {
       warning (_("Cannot convert floating-point register value "
 	       "to non-floating-point type."));
@@ -365,8 +365,10 @@ i387_register_to_value (struct frame_info *frame, int regnum,
 
   /* Convert to TYPE.  */
   if (!get_frame_register_bytes (frame, regnum, 0,
-				 register_size (gdbarch, regnum),
-				 from, optimizedp, unavailablep))
+				 gdb::make_array_view (from,
+						       register_size (gdbarch,
+								      regnum)),
+				 optimizedp, unavailablep))
     return 0;
 
   target_float_convert (from, i387_ext_type (gdbarch), to, type);
@@ -387,7 +389,7 @@ i387_value_to_register (struct frame_info *frame, int regnum,
   gdb_assert (i386_fp_regnum_p (gdbarch, regnum));
 
   /* We only support floating-point values.  */
-  if (TYPE_CODE (type) != TYPE_CODE_FLT)
+  if (type->code () != TYPE_CODE_FLT)
     {
       warning (_("Cannot convert non-floating-point type "
 	       "to floating-point register value."));
@@ -502,7 +504,7 @@ i387_collect_fsave (const struct regcache *regcache, int regnum, void *fsave)
     if (regnum == -1 || regnum == i)
       {
 	/* Most of the FPU control registers occupy only 16 bits in
-           the fsave area.  Give those a special treatment.  */
+	   the fsave area.  Give those a special treatment.  */
 	if (i >= I387_FCTRL_REGNUM (tdep)
 	    && i != I387_FIOFF_REGNUM (tdep) && i != I387_FOOFF_REGNUM (tdep))
 	  {
@@ -513,7 +515,7 @@ i387_collect_fsave (const struct regcache *regcache, int regnum, void *fsave)
 	    if (i == I387_FOP_REGNUM (tdep))
 	      {
 		/* The opcode occupies only 11 bits.  Make sure we
-                   don't touch the other bits.  */
+		   don't touch the other bits.  */
 		buf[1] &= ((1 << 3) - 1);
 		buf[1] |= ((FSAVE_ADDR (tdep, regs, i))[1] & ~((1 << 3) - 1));
 	      }
@@ -633,7 +635,7 @@ i387_supply_fxsave (struct regcache *regcache, int regnum, const void *fxsave)
 		    if (val[0] & (1 << fpreg))
 		      {
 			int thisreg = (fpreg + 8 - top) % 8 
-			               + I387_ST0_REGNUM (tdep);
+				       + I387_ST0_REGNUM (tdep);
 			tag = i387_tag (FXSAVE_ADDR (tdep, regs, thisreg));
 		      }
 		    else
@@ -679,7 +681,7 @@ i387_collect_fxsave (const struct regcache *regcache, int regnum, void *fxsave)
     if (regnum == -1 || regnum == i)
       {
 	/* Most of the FPU control registers occupy only 16 bits in
-           the fxsave area.  Give those a special treatment.  */
+	   the fxsave area.  Give those a special treatment.  */
 	if (i >= I387_FCTRL_REGNUM (tdep) && i < I387_XMM0_REGNUM (tdep)
 	    && i != I387_FIOFF_REGNUM (tdep) && i != I387_FOOFF_REGNUM (tdep))
 	  {
@@ -690,7 +692,7 @@ i387_collect_fxsave (const struct regcache *regcache, int regnum, void *fxsave)
 	    if (i == I387_FOP_REGNUM (tdep))
 	      {
 		/* The opcode occupies only 11 bits.  Make sure we
-                   don't touch the other bits.  */
+		   don't touch the other bits.  */
 		buf[1] &= ((1 << 3) - 1);
 		buf[1] |= ((FXSAVE_ADDR (tdep, regs, i))[1] & ~((1 << 3) - 1));
 	      }
@@ -924,6 +926,12 @@ i387_supply_xsave (struct regcache *regcache, int regnum,
   struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
   const gdb_byte *regs = (const gdb_byte *) xsave;
   int i;
+  /* In 64-bit mode the split between "low" and "high" ZMM registers is at
+     ZMM16.  Outside of 64-bit mode there are no "high" ZMM registers at all.
+     Precalculate the number to be used for the split point, with the all
+     registers in the "low" portion outside of 64-bit mode.  */
+  unsigned int zmm_endlo_regnum = I387_ZMM0H_REGNUM (tdep)
+				  + std::min (tdep->num_zmm_regs, 16);
   ULONGEST clear_bv;
   static const gdb_byte zero[I386_MAX_REGISTER_SIZE] = { 0 };
   enum
@@ -1002,7 +1010,8 @@ i387_supply_xsave (struct regcache *regcache, int regnum,
       return;
 
     case avx512_zmm_h:
-      if ((clear_bv & (X86_XSTATE_ZMM_H | X86_XSTATE_ZMM)))
+      if ((clear_bv & (regnum < zmm_endlo_regnum ? X86_XSTATE_ZMM_H
+						 : X86_XSTATE_ZMM)))
 	regcache->raw_supply (regnum, zero);
       else
 	regcache->raw_supply (regnum,
@@ -1080,21 +1089,17 @@ i387_supply_xsave (struct regcache *regcache, int regnum,
 	    }
 	}
 
-      /* Handle the upper ZMM registers.  */
-      if ((tdep->xcr0 & (X86_XSTATE_ZMM_H | X86_XSTATE_ZMM)))
+      /* Handle the upper halves of the low 8/16 ZMM registers.  */
+      if ((tdep->xcr0 & X86_XSTATE_ZMM_H))
 	{
-	  if ((clear_bv & (X86_XSTATE_ZMM_H | X86_XSTATE_ZMM)))
+	  if ((clear_bv & X86_XSTATE_ZMM_H))
 	    {
-	      for (i = I387_ZMM0H_REGNUM (tdep);
-		   i < I387_ZMMENDH_REGNUM (tdep);
-		   i++)
+	      for (i = I387_ZMM0H_REGNUM (tdep); i < zmm_endlo_regnum; i++)
 		regcache->raw_supply (i, zero);
 	    }
 	  else
 	    {
-	      for (i = I387_ZMM0H_REGNUM (tdep);
-		   i < I387_ZMMENDH_REGNUM (tdep);
-		   i++)
+	      for (i = I387_ZMM0H_REGNUM (tdep); i < zmm_endlo_regnum; i++)
 		regcache->raw_supply (i,
 				      XSAVE_AVX512_ZMM_H_ADDR (tdep, regs, i));
 	    }
@@ -1119,11 +1124,13 @@ i387_supply_xsave (struct regcache *regcache, int regnum,
 	    }
 	}
 
-      /* Handle the YMM_AVX512 registers.  */
+      /* Handle the upper 16 ZMM/YMM/XMM registers (if any).  */
       if ((tdep->xcr0 & X86_XSTATE_ZMM))
 	{
 	  if ((clear_bv & X86_XSTATE_ZMM))
 	    {
+	      for (i = zmm_endlo_regnum; i < I387_ZMMENDH_REGNUM (tdep); i++)
+		regcache->raw_supply (i, zero);
 	      for (i = I387_YMM16H_REGNUM (tdep);
 		   i < I387_YMMH_AVX512_END_REGNUM (tdep);
 		   i++)
@@ -1135,6 +1142,9 @@ i387_supply_xsave (struct regcache *regcache, int regnum,
 	    }
 	  else
 	    {
+	      for (i = zmm_endlo_regnum; i < I387_ZMMENDH_REGNUM (tdep); i++)
+		regcache->raw_supply (i,
+				      XSAVE_AVX512_ZMM_H_ADDR (tdep, regs, i));
 	      for (i = I387_YMM16H_REGNUM (tdep);
 		   i < I387_YMMH_AVX512_END_REGNUM (tdep);
 		   i++)
@@ -1341,6 +1351,9 @@ i387_collect_xsave (const struct regcache *regcache, int regnum,
   gdb_byte raw[I386_MAX_REGISTER_SIZE];
   ULONGEST initial_xstate_bv, clear_bv, xstate_bv = 0;
   unsigned int i;
+  /* See the comment in i387_supply_xsave().  */
+  unsigned int zmm_endlo_regnum = I387_ZMM0H_REGNUM (tdep)
+				  + std::min (tdep->num_zmm_regs, 16);
   enum
     {
       x87_ctrl_or_mxcsr = 0x1,
@@ -1441,9 +1454,8 @@ i387_collect_xsave (const struct regcache *regcache, int regnum,
 	     i < I387_MPXEND_REGNUM (tdep); i++)
 	  memset (XSAVE_MPX_ADDR (tdep, regs, i), 0, 8);
 
-      if ((clear_bv & (X86_XSTATE_ZMM_H | X86_XSTATE_ZMM)))
-	for (i = I387_ZMM0H_REGNUM (tdep);
-	     i < I387_ZMMENDH_REGNUM (tdep); i++)
+      if ((clear_bv & X86_XSTATE_ZMM_H))
+	for (i = I387_ZMM0H_REGNUM (tdep); i < zmm_endlo_regnum; i++)
 	  memset (XSAVE_AVX512_ZMM_H_ADDR (tdep, regs, i), 0, 32);
 
       if ((clear_bv & X86_XSTATE_K))
@@ -1453,6 +1465,8 @@ i387_collect_xsave (const struct regcache *regcache, int regnum,
 
       if ((clear_bv & X86_XSTATE_ZMM))
 	{
+	  for (i = zmm_endlo_regnum; i < I387_ZMMENDH_REGNUM (tdep); i++)
+	    memset (XSAVE_AVX512_ZMM_H_ADDR (tdep, regs, i), 0, 32);
 	  for (i = I387_YMM16H_REGNUM (tdep);
 	       i < I387_YMMH_AVX512_END_REGNUM (tdep); i++)
 	    memset (XSAVE_YMM_AVX512_ADDR (tdep, regs, i), 0, 16);

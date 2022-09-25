@@ -1,6 +1,6 @@
 /* Definitions used by event-top.c, for GDB, the GNU debugger.
 
-   Copyright (C) 1999-2018 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
 
    Written by Elena Zannoni <ezannoni@cygnus.com> of Cygnus Solutions.
 
@@ -35,7 +35,7 @@ extern void gdb_disable_readline (void);
 extern void async_init_signals (void);
 extern void change_line_handler (int);
 
-extern void command_line_handler (char *rl);
+extern void command_line_handler (gdb::unique_xmalloc_ptr<char> &&rl);
 extern void command_handler (const char *command);
 
 #ifdef SIGTSTP
@@ -52,8 +52,8 @@ extern void async_enable_stdin (void);
 /* Exported variables from event-top.c.
    FIXME: these should really go into top.h.  */
 
-extern int set_editing_cmd_var;
-extern int exec_done_display_p;
+extern bool set_editing_cmd_var;
+extern bool exec_done_display_p;
 extern struct prompts the_prompts;
 extern void (*after_char_processing_hook) (void);
 extern int call_stdin_event_handler_again_p;
@@ -69,5 +69,20 @@ extern void gdb_rl_callback_handler_install (const char *prompt);
 /* Reinstall the readline callback handler (with no prompt), if not
    currently installed.  */
 extern void gdb_rl_callback_handler_reinstall (void);
+
+typedef void (*segv_handler_t) (int);
+
+/* On construction, replaces the current thread's SIGSEGV handler with
+   the provided one.  On destruction, restores the handler to the
+   original one.  */
+class scoped_segv_handler_restore
+{
+ public:
+  scoped_segv_handler_restore (segv_handler_t new_handler);
+  ~scoped_segv_handler_restore ();
+
+ private:
+  segv_handler_t m_old_handler;
+};
 
 #endif

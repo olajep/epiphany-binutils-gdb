@@ -1,5 +1,5 @@
 /* Register protocol definition structures for the GNU Debugger
-   Copyright (C) 2001-2018 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -16,8 +16,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef REGDEF_H
-#define REGDEF_H
+#ifndef REGFORMATS_REGDEF_H
+#define REGFORMATS_REGDEF_H
+
+namespace gdb {
 
 struct reg
 {
@@ -60,4 +62,6 @@ struct reg
   }
 };
 
-#endif /* REGDEF_H */
+} /* namespace gdb */
+
+#endif /* REGFORMATS_REGDEF_H */

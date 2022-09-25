@@ -2,7 +2,7 @@
    of the floating point routines in libgcc1.c for targets without
    hardware floating point.  */
 
-/* Copyright 1994-2018 Free Software Foundation, Inc.
+/* Copyright 1994-2022 Free Software Foundation, Inc.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -35,12 +35,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 #ifndef SIM_FPU_C
 #define SIM_FPU_C
 
+/* This must come before any other includes.  */
+#include "defs.h"
+
 #include "sim-basics.h"
 #include "sim-fpu.h"
 
 #include "sim-io.h"
 #include "sim-assert.h"
 
+#include <stdlib.h>
 
 /* Debugging support.
    If digits is -1, then print all digits.  */

@@ -1,7 +1,7 @@
 /* Variables that describe the inferior process running under GDB:
    Where it is, why it stopped, and how to step it.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,6 +21,9 @@
 #if !defined (INFERIOR_H)
 #define INFERIOR_H 1
 
+#include <exception>
+#include <list>
+
 struct target_waitstatus;
 struct frame_info;
 struct ui_file;
@@ -30,7 +33,6 @@ struct regcache;
 struct ui_out;
 struct terminal_info;
 struct target_desc_info;
-struct continuation;
 struct inferior;
 struct thread_info;
 
@@ -44,29 +46,76 @@ struct thread_info;
 #include "frame.h"
 
 /* For gdb_environ.  */
-#include "environ.h"
+#include "gdbsupport/environ.h"
 
 #include "progspace.h"
 #include "registry.h"
 
 #include "symfile-add-flags.h"
-#include "common/refcounted-object.h"
+#include "gdbsupport/refcounted-object.h"
+#include "gdbsupport/forward-scope-exit.h"
+#include "gdbsupport/gdb_unique_ptr.h"
 
-#include "common-inferior.h"
+#include "gdbsupport/common-inferior.h"
+#include "gdbthread.h"
+
+#include "process-stratum-target.h"
+#include "displaced-stepping.h"
 
 struct infcall_suspend_state;
 struct infcall_control_state;
 
-extern struct infcall_suspend_state *save_infcall_suspend_state (void);
-extern struct infcall_control_state *save_infcall_control_state (void);
-
 extern void restore_infcall_suspend_state (struct infcall_suspend_state *);
 extern void restore_infcall_control_state (struct infcall_control_state *);
 
-extern struct cleanup *make_cleanup_restore_infcall_suspend_state
-					    (struct infcall_suspend_state *);
-extern struct cleanup *make_cleanup_restore_infcall_control_state
-					    (struct infcall_control_state *);
+/* A deleter for infcall_suspend_state that calls
+   restore_infcall_suspend_state.  */
+struct infcall_suspend_state_deleter
+{
+  void operator() (struct infcall_suspend_state *state) const
+  {
+    try
+      {
+	restore_infcall_suspend_state (state);
+      }
+    catch (const gdb_exception_error &e)
+      {
+	/* If we are restoring the inferior state due to an exception,
+	   some error message will be printed.  So, only warn the user
+	   when we cannot restore during normal execution.  */
+	bool unwinding;
+#if __cpp_lib_uncaught_exceptions
+	unwinding = std::uncaught_exceptions () > 0;
+#else
+	unwinding = std::uncaught_exception ();
+#endif
+	if (!unwinding)
+	  warning (_("Failed to restore inferior state: %s"), e.what ());
+      }
+  }
+};
+
+/* A unique_ptr specialization for infcall_suspend_state.  */
+typedef std::unique_ptr<infcall_suspend_state, infcall_suspend_state_deleter>
+    infcall_suspend_state_up;
+
+extern infcall_suspend_state_up save_infcall_suspend_state ();
+
+/* A deleter for infcall_control_state that calls
+   restore_infcall_control_state.  */
+struct infcall_control_state_deleter
+{
+  void operator() (struct infcall_control_state *state) const
+  {
+    restore_infcall_control_state (state);
+  }
+};
+
+/* A unique_ptr specialization for infcall_control_state.  */
+typedef std::unique_ptr<infcall_control_state, infcall_control_state_deleter>
+    infcall_control_state_up;
+
+extern infcall_control_state_up save_infcall_control_state ();
 
 extern void discard_infcall_suspend_state (struct infcall_suspend_state *);
 extern void discard_infcall_control_state (struct infcall_control_state *);
@@ -77,11 +126,6 @@ extern readonly_detached_regcache *
 extern void set_sigint_trap (void);
 
 extern void clear_sigint_trap (void);
-
-/* Set/get file name for default use for standard in/out in the inferior.  */
-
-extern void set_inferior_io_terminal (const char *terminal_name);
-extern const char *get_inferior_io_terminal (void);
 
 /* Collected pid, tid, etc. of the debugged inferior.  When there's
    no inferior, inferior_ptid.pid () will be 0.  */
@@ -122,8 +166,6 @@ extern void default_print_float_info (struct gdbarch *gdbarch,
 
 extern void child_terminal_info (struct target_ops *self, const char *, int);
 
-extern void info_terminal_command (char *, int);
-
 extern void child_terminal_ours (struct target_ops *self);
 
 extern void child_terminal_ours_for_output (struct target_ops *self);
@@ -147,8 +189,6 @@ extern void child_interrupt (struct target_ops *self);
    STARTUP_INFERIOR.  */
 extern ptid_t gdb_startup_inferior (pid_t pid, int num_traps);
 
-extern char *construct_inferior_arguments (int, char **);
-
 /* From infcmd.c */
 
 /* Initial inferior setup.  Determines the exec file is not yet known,
@@ -157,11 +197,11 @@ extern char *construct_inferior_arguments (int, char **);
 
 extern void setup_inferior (int from_tty);
 
-extern void post_create_inferior (struct target_ops *, int);
+extern void post_create_inferior (int from_tty);
 
 extern void attach_command (const char *, int);
 
-extern char *get_inferior_args (void);
+extern const char *get_inferior_args (void);
 
 extern void set_inferior_args (const char *);
 
@@ -171,13 +211,14 @@ extern void registers_info (const char *, int);
 
 extern void continue_1 (int all_threads);
 
-extern void interrupt_target_1 (int all_threads);
+extern void interrupt_target_1 (bool all_threads);
 
-extern void delete_longjmp_breakpoint_cleanup (void *arg);
+using delete_longjmp_breakpoint_cleanup
+  = FORWARD_SCOPE_EXIT (delete_longjmp_breakpoint);
 
 extern void detach_command (const char *, int);
 
-extern void notice_new_inferior (struct thread_info *, int, int);
+extern void notice_new_inferior (struct thread_info *, bool, int);
 
 extern struct value *get_return_value (struct value *function,
 				       struct type *value_type);
@@ -188,25 +229,6 @@ extern struct value *get_return_value (struct value *function,
 
 extern void prepare_execution_command (struct target_ops *target,
 				       int background);
-
-/* Whether to start up the debuggee under a shell.
-
-   If startup-with-shell is set, GDB's "run" will attempt to start up
-   the debuggee under a shell.
-
-   This is in order for argument-expansion to occur.  E.g.,
-
-   (gdb) run *
-
-   The "*" gets expanded by the shell into a list of files.
-
-   While this is a nice feature, it may be handy to bypass the shell
-   in some cases.  To disable this feature, do "set startup-with-shell
-   false".
-
-   The catch-exec traps expected during start-up will be one more if
-   the target is started up with a shell.  */
-extern int startup_with_shell;
 
 /* Nonzero if stopped due to completion of a stack dummy routine.  */
 
@@ -219,18 +241,7 @@ extern int stopped_by_random_signal;
 
 /* Print notices on inferior events (attach, detach, etc.), set with
    `set print inferior-events'.  */
-extern int print_inferior_events;
-
-/* STEP_OVER_ALL means step over all subroutine calls.
-   STEP_OVER_UNDEBUGGABLE means step over calls to undebuggable functions.
-   STEP_OVER_NONE means don't step over any subroutine calls.  */
-
-enum step_over_calls_kind
-  {
-    STEP_OVER_NONE,
-    STEP_OVER_ALL,
-    STEP_OVER_UNDEBUGGABLE
-  };
+extern bool print_inferior_events;
 
 /* Anything but NO_STOP_QUIETLY means we expect a trap and the caller
    will handle it themselves.  STOP_QUIETLY is used when running in
@@ -283,6 +294,16 @@ struct private_inferior
 
 struct inferior_control_state
 {
+  inferior_control_state ()
+    : stop_soon (NO_STOP_QUIETLY)
+  {
+  }
+
+  explicit inferior_control_state (enum stop_kind when)
+    : stop_soon (when)
+  {
+  }
+
   /* See the definition of stop_kind above.  */
   enum stop_kind stop_soon;
 };
@@ -291,6 +312,10 @@ struct inferior_control_state
 extern inferior *current_inferior ();
 
 extern void set_current_inferior (inferior *);
+
+/* Switch inferior (and program space) to INF, and switch to no thread
+   selected.  */
+extern void switch_to_inferior_no_thread (inferior *inf);
 
 /* GDB represents the state of each program execution with an object
    called an inferior.  An inferior typically corresponds to a process
@@ -309,7 +334,7 @@ extern void set_current_inferior (inferior *);
    the inferior object's refcount, to prevent something deleting the
    inferior object before reverting back (e.g., due to a
    "remove-inferiors" command (see
-   make_cleanup_restore_current_thread).  All other inferior
+   scoped_restore_current_inferior).  All other inferior
    references are considered weak references.  Inferiors are always
    listed exactly once in the inferior list, so placing an inferior in
    the inferior list is an implicit, not counted strong reference.  */
@@ -323,8 +348,95 @@ public:
   /* Returns true if we can delete this inferior.  */
   bool deletable () const { return refcount () == 0; }
 
+  /* Push T in this inferior's target stack.  */
+  void push_target (struct target_ops *t)
+  { m_target_stack.push (t); }
+
+  /* An overload that deletes the target on failure.  */
+  void push_target (target_ops_up &&t)
+  {
+    m_target_stack.push (t.get ());
+    t.release ();
+  }
+
+  /* Unpush T from this inferior's target stack.  */
+  int unpush_target (struct target_ops *t)
+  { return m_target_stack.unpush (t); }
+
+  /* Returns true if T is pushed in this inferior's target stack.  */
+  bool target_is_pushed (target_ops *t)
+  { return m_target_stack.is_pushed (t); }
+
+  /* Find the target beneath T in this inferior's target stack.  */
+  target_ops *find_target_beneath (const target_ops *t)
+  { return m_target_stack.find_beneath (t); }
+
+  /* Return the target at the top of this inferior's target stack.  */
+  target_ops *top_target ()
+  { return m_target_stack.top (); }
+
+  /* Return the target at process_stratum level in this inferior's
+     target stack.  */
+  struct process_stratum_target *process_target ()
+  { return (process_stratum_target *) m_target_stack.at (process_stratum); }
+
+  /* Return the target at STRATUM in this inferior's target stack.  */
+  target_ops *target_at (enum strata stratum)
+  { return m_target_stack.at (stratum); }
+
+  bool has_execution ()
+  { return target_has_execution (this); }
+
   /* Pointer to next inferior in singly-linked list of inferiors.  */
   struct inferior *next = NULL;
+
+  /* This inferior's thread list.  */
+  thread_info *thread_list = nullptr;
+
+  /* Returns a range adapter covering the inferior's threads,
+     including exited threads.  Used like this:
+
+       for (thread_info *thr : inf->threads ())
+	 { .... }
+  */
+  inf_threads_range threads ()
+  { return inf_threads_range (this->thread_list); }
+
+  /* Returns a range adapter covering the inferior's non-exited
+     threads.  Used like this:
+
+       for (thread_info *thr : inf->non_exited_threads ())
+	 { .... }
+  */
+  inf_non_exited_threads_range non_exited_threads ()
+  { return inf_non_exited_threads_range (this->thread_list); }
+
+  /* Like inferior::threads(), but returns a range adapter that can be
+     used with range-for, safely.  I.e., it is safe to delete the
+     currently-iterated thread, like this:
+
+     for (thread_info *t : inf->threads_safe ())
+       if (some_condition ())
+	 delete f;
+  */
+  inline safe_inf_threads_range threads_safe ()
+  { return safe_inf_threads_range (this->thread_list); }
+
+  /* Continuations-related methods.  A continuation is an std::function
+     to be called to finish the execution of a command when running
+     GDB asynchronously.  A continuation is executed after any thread
+     of this inferior stops.  Continuations are used by the attach
+     command and the remote target when a new inferior is detected.  */
+  void add_continuation (std::function<void ()> &&cont);
+  void do_all_continuations ();
+
+  /* Set/get file name for default use for standard in/out in the
+     inferior.  On Unix systems, we try to make TERMINAL_NAME the
+     inferior's controlling terminal.  If TERMINAL_NAME is nullptr or
+     the empty string, then the inferior inherits GDB's terminal (or
+     GDBserver's if spawning a remote process).  */
+  void set_tty (const char *terminal_name);
+  const char *tty ();
 
   /* Convenient handle (GDB inferior id).  Unique across all
      inferiors.  */
@@ -341,7 +453,7 @@ public:
 
   /* State of GDB control of inferior process execution.
      See `struct inferior_control_state'.  */
-  inferior_control_state control {NO_STOP_QUIETLY};
+  inferior_control_state control;
 
   /* True if this was an auto-created inferior, e.g. created from
      following a fork; false, if this inferior was manually added by
@@ -356,7 +468,7 @@ public:
   struct program_space *pspace = NULL;
 
   /* The arguments string to use when running.  */
-  char *args = NULL;
+  gdb::unique_xmalloc_ptr<char> args;
 
   /* The size of elements in argv.  */
   int argc = 0;
@@ -370,9 +482,6 @@ public:
   /* The current working directory that will be used when starting
      this inferior.  */
   gdb::unique_xmalloc_ptr<char> cwd;
-
-  /* The name of terminal device to use for I/O.  */
-  char *terminal = NULL;
 
   /* The terminal state as set by the last target_terminal::terminal_*
      call.  */
@@ -407,16 +516,15 @@ public:
   /* True if we're in the process of detaching from this inferior.  */
   bool detaching = false;
 
-  /* What is left to do for an execution command after any thread of
-     this inferior stops.  For continuations associated with a
-     specific thread, see `struct thread_info'.  */
-  continuation *continuations = NULL;
-
   /* True if setup_inferior wasn't called for this inferior yet.
      Until that is done, we must not access inferior memory or
      registers, as we haven't determined the target
      architecture/description.  */
   bool needs_setup = false;
+
+  /* True when we are reading the library list of the inferior during an
+     attach or handling a fork child.  */
+  bool in_initial_library_scan = false;
 
   /* Private data used by the target vector implementation.  */
   std::unique_ptr<private_inferior> priv;
@@ -447,8 +555,21 @@ public:
      this gdbarch.  */
   struct gdbarch *gdbarch = NULL;
 
+  /* Data related to displaced stepping.  */
+  displaced_step_inferior_state displaced_step_state;
+
   /* Per inferior data-pointers required by other GDB modules.  */
   REGISTRY_FIELDS;
+
+private:
+  /* The inferior's target stack.  */
+  target_stack m_target_stack;
+
+  /* The name of terminal device to use for I/O.  */
+  gdb::unique_xmalloc_ptr<char> m_terminal;
+
+  /* The list of continuations.  */
+  std::list<std::function<void ()>> m_continuations;
 };
 
 /* Keep a registry of per-inferior data-pointers required by other GDB
@@ -479,14 +600,14 @@ extern void exit_inferior_num_silent (int num);
 
 extern void inferior_appeared (struct inferior *inf, int pid);
 
-/* Get rid of all inferiors.  */
-extern void discard_all_inferiors (void);
+/* Search function to lookup an inferior of TARG by target 'pid'.  */
+extern struct inferior *find_inferior_pid (process_stratum_target *targ,
+					   int pid);
 
-/* Search function to lookup an inferior by target 'pid'.  */
-extern struct inferior *find_inferior_pid (int pid);
-
-/* Search function to lookup an inferior whose pid is equal to 'ptid.pid'. */
-extern struct inferior *find_inferior_ptid (ptid_t ptid);
+/* Search function to lookup an inferior of TARG whose pid is equal to
+   'ptid.pid'. */
+extern struct inferior *find_inferior_ptid (process_stratum_target *targ,
+					    ptid_t ptid);
 
 /* Search function to lookup an inferior by GDB 'num'.  */
 extern struct inferior *find_inferior_id (int num);
@@ -496,25 +617,12 @@ extern struct inferior *find_inferior_id (int num);
 extern struct inferior *
   find_inferior_for_program_space (struct program_space *pspace);
 
-/* Inferior iterator function.
-
-   Calls a callback function once for each inferior, so long as the
-   callback function returns false.  If the callback function returns
-   true, the iteration will end and the current inferior will be
-   returned.  This can be useful for implementing a search for a
-   inferior with arbitrary attributes, or for applying some operation
-   to every inferior.
-
-   It is safe to delete the iterated inferior from the callback.  */
-extern struct inferior *iterate_over_inferiors (int (*) (struct inferior *,
-							 void *),
-						void *);
-
 /* Returns true if the inferior list is not empty.  */
 extern int have_inferiors (void);
 
-/* Returns the number of live inferiors (real live processes).  */
-extern int number_of_live_inferiors (void);
+/* Returns the number of live inferiors running on PROC_TARGET (real
+   live processes with execution).  */
+extern int number_of_live_inferiors (process_stratum_target *proc_target);
 
 /* Returns true if there are any live inferiors in the inferior list
    (not cores, not executables, real live processes).  */
@@ -541,16 +649,49 @@ private:
 
 /* Traverse all inferiors.  */
 
-#define ALL_INFERIORS(I) \
-  for ((I) = inferior_list; (I); (I) = (I)->next)
-
-/* Traverse all non-exited inferiors.  */
-
-#define ALL_NON_EXITED_INFERIORS(I) \
-  ALL_INFERIORS (I)		    \
-    if ((I)->pid != 0)
-
 extern struct inferior *inferior_list;
+
+/* Pull in the internals of the inferiors ranges and iterators.  Must
+   be done after struct inferior is defined.  */
+#include "inferior-iter.h"
+
+/* Return a range that can be used to walk over all inferiors
+   inferiors, with range-for, safely.  I.e., it is safe to delete the
+   currently-iterated inferior.  When combined with range-for, this
+   allow convenient patterns like this:
+
+     for (inferior *inf : all_inferiors_safe ())
+       if (some_condition ())
+	 delete inf;
+*/
+
+inline all_inferiors_safe_range
+all_inferiors_safe ()
+{
+  return {};
+}
+
+/* Returns a range representing all inferiors, suitable to use with
+   range-for, like this:
+
+   for (inferior *inf : all_inferiors ())
+     [...]
+*/
+
+inline all_inferiors_range
+all_inferiors (process_stratum_target *proc_target = nullptr)
+{
+  return all_inferiors_range (proc_target);
+}
+
+/* Return a range that can be used to walk over all inferiors with PID
+   not zero, with range-for.  */
+
+inline all_non_exited_inferiors_range
+all_non_exited_inferiors (process_stratum_target *proc_target = nullptr)
+{
+  return all_non_exited_inferiors_range (proc_target);
+}
 
 /* Prune away automatically added inferiors that aren't required
    anymore.  */

@@ -1,6 +1,6 @@
 /* Linux namespaces(7) support.
 
-   Copyright (C) 2015-2018 Free Software Foundation, Inc.
+   Copyright (C) 2015-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,20 +17,21 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "common-defs.h"
+#include "gdbsupport/common-defs.h"
 #include "nat/linux-namespaces.h"
-#include "filestuff.h"
+#include "gdbsupport/filestuff.h"
 #include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
 #include <signal.h>
 #include <sched.h>
+#include "gdbsupport/scope-exit.h"
 
 /* See nat/linux-namespaces.h.  */
-int debug_linux_namespaces;
+bool debug_linux_namespaces;
 
 /* Handle systems without fork.  */
 
@@ -206,12 +207,12 @@ linux_ns_same (pid_t pid, enum linux_ns_type type)
    - TYPE (enum mnsh_msg_type, always sent) - the message type.
    - INT1 and
    - INT2 (int, always sent, though not always used) - two
-           values whose meaning is message-type-dependent.
+	   values whose meaning is message-type-dependent.
 	   See enum mnsh_msg_type documentation below.
    - FD (int, optional, sent using SCM_RIGHTS) - an open file
-         descriptor.
+	 descriptor.
    - BUF (unstructured data, optional) - some data with message-
-          type-dependent meaning.
+	  type-dependent meaning.
 
    Note that the helper process is the child of a call to fork,
    so all code in the helper must be async-signal-safe.  */
@@ -561,7 +562,7 @@ mnsh_main (int sock)
   while (1)
     {
       enum mnsh_msg_type type;
-      int fd, int1, int2;
+      int fd = -1, int1, int2;
       char buf[PATH_MAX];
       ssize_t size, response = -1;
 
@@ -770,15 +771,15 @@ mnsh_maybe_mourn_peer (void)
 
 #define mnsh_send_open(helper, filename, flags, mode) \
   mnsh_send_message (helper->sock, MNSH_REQ_OPEN, -1, flags, mode, \
-    		     filename, strlen (filename) + 1)
+		     filename, strlen (filename) + 1)
 
 #define mnsh_send_unlink(helper, filename) \
   mnsh_send_message (helper->sock, MNSH_REQ_UNLINK, -1, 0, 0, \
-    		     filename, strlen (filename) + 1)
+		     filename, strlen (filename) + 1)
 
 #define mnsh_send_readlink(helper, filename) \
   mnsh_send_message (helper->sock, MNSH_REQ_READLINK, -1, 0, 0, \
-    		     filename, strlen (filename) + 1)
+		     filename, strlen (filename) + 1)
 
 /* Receive a message from the helper.  Issue an assertion failure if
    the message isn't a correctly-formatted MNSH_RET_INT.  Set RESULT
@@ -887,12 +888,11 @@ enum mnsh_fs_code
 static enum mnsh_fs_code
 linux_mntns_access_fs (pid_t pid)
 {
-  struct cleanup *old_chain;
   struct linux_ns *ns;
   struct stat sb;
   struct linux_mnsh *helper;
   ssize_t size;
-  int fd, saved_errno;
+  int fd;
 
   if (pid == getpid ())
     return MNSH_FS_DIRECT;
@@ -901,27 +901,26 @@ linux_mntns_access_fs (pid_t pid)
   if (ns == NULL)
     return MNSH_FS_DIRECT;
 
-  old_chain = make_cleanup (null_cleanup, NULL);
-
   fd = gdb_open_cloexec (linux_ns_filename (ns, pid), O_RDONLY, 0);
   if (fd < 0)
-    goto error;
+    return MNSH_FS_ERROR;
 
-  make_cleanup_close (fd);
+  SCOPE_EXIT
+    {
+      int save_errno = errno;
+      close (fd);
+      errno = save_errno;
+    };
 
   if (fstat (fd, &sb) != 0)
-    goto error;
+    return MNSH_FS_ERROR;
 
   if (sb.st_ino == ns->id)
-    {
-      do_cleanups (old_chain);
-
-      return MNSH_FS_DIRECT;
-    }
+    return MNSH_FS_DIRECT;
 
   helper = linux_mntns_get_helper ();
   if (helper == NULL)
-    goto error;
+    return MNSH_FS_ERROR;
 
   if (sb.st_ino != helper->nsid)
     {
@@ -929,10 +928,10 @@ linux_mntns_access_fs (pid_t pid)
 
       size = mnsh_send_setns (helper, fd, 0);
       if (size < 0)
-	goto error;
+	return MNSH_FS_ERROR;
 
       if (mnsh_recv_int (helper, &result, &error) != 0)
-	goto error;
+	return MNSH_FS_ERROR;
 
       if (result != 0)
 	{
@@ -945,23 +944,13 @@ linux_mntns_access_fs (pid_t pid)
 	    error = ENOTSUP;
 
 	  errno = error;
-	  goto error;
+	  return MNSH_FS_ERROR;
 	}
 
       helper->nsid = sb.st_ino;
     }
 
-  do_cleanups (old_chain);
-
   return MNSH_FS_HELPER;
-
-error:
-  saved_errno = errno;
-
-  do_cleanups (old_chain);
-
-  errno = saved_errno;
-  return MNSH_FS_ERROR;
 }
 
 /* See nat/linux-namespaces.h.  */

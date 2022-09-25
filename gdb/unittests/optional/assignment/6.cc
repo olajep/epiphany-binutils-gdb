@@ -1,4 +1,4 @@
-// Copyright (C) 2013-2018 Free Software Foundation, Inc.
+// Copyright (C) 2013-2022 Free Software Foundation, Inc.
 //
 // This file is part of the GNU ISO C++ Library.  This library is free
 // software; you can redistribute it and/or modify it under the
@@ -17,7 +17,7 @@
 
 namespace assign_6 {
 
-int counter = 0;
+static int counter = 0;
 
 struct mixin_counter
 {
@@ -34,7 +34,8 @@ struct value_type : private mixin_counter
   int state = 0;
 };
 
-void test()
+static void
+test ()
 {
   using O = gdb::optional<value_type>;
 

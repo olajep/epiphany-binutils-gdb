@@ -1,6 +1,6 @@
 /* YACC parser for Go expressions, for GDB.
 
-   Copyright (C) 2012-2018 Free Software Foundation, Inc.
+   Copyright (C) 2012-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -64,8 +64,9 @@
 #include "objfiles.h" /* For have_full_symbols and have_partial_symbols */
 #include "charset.h"
 #include "block.h"
+#include "expop.h"
 
-#define parse_type(ps) builtin_type (parse_gdbarch (ps))
+#define parse_type(ps) builtin_type (ps->gdbarch ())
 
 /* Remap normal yacc parser interface names (yyparse, yylex, yyerror,
    etc).  */
@@ -115,6 +116,8 @@ static void yyerror (const char *);
 /* YYSTYPE gets defined by %union.  */
 static int parse_number (struct parser_state *,
 			 const char *, int, int, YYSTYPE *);
+
+using namespace expr;
 %}
 
 %type <voidval> exp exp1 type_exp start variable lcurly
@@ -193,119 +196,124 @@ start   :	exp1
 	;
 
 type_exp:	type
-			{ write_exp_elt_opcode (pstate, OP_TYPE);
-			  write_exp_elt_type (pstate, $1);
-			  write_exp_elt_opcode (pstate, OP_TYPE); }
+			{ pstate->push_new<type_operation> ($1); }
 	;
 
 /* Expressions, including the comma operator.  */
 exp1	:	exp
 	|	exp1 ',' exp
-			{ write_exp_elt_opcode (pstate, BINOP_COMMA); }
+			{ pstate->wrap2<comma_operation> (); }
 	;
 
 /* Expressions, not including the comma operator.  */
 exp	:	'*' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_IND); }
+			{ pstate->wrap<unop_ind_operation> (); }
 	;
 
 exp	:	'&' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_ADDR); }
+			{ pstate->wrap<unop_addr_operation> (); }
 	;
 
 exp	:	'-' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_NEG); }
+			{ pstate->wrap<unary_neg_operation> (); }
 	;
 
 exp	:	'+' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_PLUS); }
+			{ pstate->wrap<unary_plus_operation> (); }
 	;
 
 exp	:	'!' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_LOGICAL_NOT); }
+			{ pstate->wrap<unary_logical_not_operation> (); }
 	;
 
 exp	:	'^' exp    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_COMPLEMENT); }
+			{ pstate->wrap<unary_complement_operation> (); }
 	;
 
 exp	:	exp INCREMENT    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_POSTINCREMENT); }
+			{ pstate->wrap<postinc_operation> (); }
 	;
 
 exp	:	exp DECREMENT    %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_POSTDECREMENT); }
+			{ pstate->wrap<postdec_operation> (); }
 	;
 
 /* foo->bar is not in Go.  May want as a gdb extension.  Later.  */
 
 exp	:	exp '.' name_not_typename
-			{ write_exp_elt_opcode (pstate, STRUCTOP_STRUCT);
-			  write_exp_string (pstate, $3.stoken);
-			  write_exp_elt_opcode (pstate, STRUCTOP_STRUCT); }
+			{
+			  pstate->push_new<structop_operation>
+			    (pstate->pop (), copy_name ($3.stoken));
+			}
 	;
 
 exp	:	exp '.' name_not_typename COMPLETE
-			{ mark_struct_expression (pstate);
-			  write_exp_elt_opcode (pstate, STRUCTOP_STRUCT);
-			  write_exp_string (pstate, $3.stoken);
-			  write_exp_elt_opcode (pstate, STRUCTOP_STRUCT); }
+			{
+			  structop_base_operation *op
+			    = new structop_operation (pstate->pop (),
+						      copy_name ($3.stoken));
+			  pstate->mark_struct_expression (op);
+			  pstate->push (operation_up (op));
+			}
 	;
 
 exp	:	exp '.' COMPLETE
-			{ struct stoken s;
-			  mark_struct_expression (pstate);
-			  write_exp_elt_opcode (pstate, STRUCTOP_STRUCT);
-			  s.ptr = "";
-			  s.length = 0;
-			  write_exp_string (pstate, s);
-			  write_exp_elt_opcode (pstate, STRUCTOP_STRUCT); }
+			{
+			  structop_base_operation *op
+			    = new structop_operation (pstate->pop (), "");
+			  pstate->mark_struct_expression (op);
+			  pstate->push (operation_up (op));
+			}
 	;
 
 exp	:	exp '[' exp1 ']'
-			{ write_exp_elt_opcode (pstate, BINOP_SUBSCRIPT); }
+			{ pstate->wrap2<subscript_operation> (); }
 	;
 
 exp	:	exp '('
 			/* This is to save the value of arglist_len
 			   being accumulated by an outer function call.  */
-			{ start_arglist (); }
+			{ pstate->start_arglist (); }
 		arglist ')'	%prec LEFT_ARROW
-			{ write_exp_elt_opcode (pstate, OP_FUNCALL);
-			  write_exp_elt_longcst (pstate,
-						 (LONGEST) end_arglist ());
-			  write_exp_elt_opcode (pstate, OP_FUNCALL); }
+			{
+			  std::vector<operation_up> args
+			    = pstate->pop_vector (pstate->end_arglist ());
+			  pstate->push_new<funcall_operation>
+			    (pstate->pop (), std::move (args));
+			}
 	;
 
 lcurly	:	'{'
-			{ start_arglist (); }
+			{ pstate->start_arglist (); }
 	;
 
 arglist	:
 	;
 
 arglist	:	exp
-			{ arglist_len = 1; }
+			{ pstate->arglist_len = 1; }
 	;
 
 arglist	:	arglist ',' exp   %prec ABOVE_COMMA
-			{ arglist_len++; }
+			{ pstate->arglist_len++; }
 	;
 
 rcurly	:	'}'
-			{ $$ = end_arglist () - 1; }
+			{ $$ = pstate->end_arglist () - 1; }
 	;
 
 exp	:	lcurly type rcurly exp  %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_MEMVAL);
-			  write_exp_elt_type (pstate, $2);
-			  write_exp_elt_opcode (pstate, UNOP_MEMVAL); }
+			{
+			  pstate->push_new<unop_memval_operation>
+			    (pstate->pop (), $2);
+			}
 	;
 
 exp	:	type '(' exp ')'  %prec UNARY
-			{ write_exp_elt_opcode (pstate, UNOP_CAST);
-			  write_exp_elt_type (pstate, $1);
-			  write_exp_elt_opcode (pstate, UNOP_CAST); }
+			{
+			  pstate->push_new<unop_cast_operation>
+			    (pstate->pop (), $1);
+			}
 	;
 
 exp	:	'(' exp1 ')'
@@ -315,100 +323,110 @@ exp	:	'(' exp1 ')'
 /* Binary operators in order of decreasing precedence.  */
 
 exp	:	exp '@' exp
-			{ write_exp_elt_opcode (pstate, BINOP_REPEAT); }
+			{ pstate->wrap2<repeat_operation> (); }
 	;
 
 exp	:	exp '*' exp
-			{ write_exp_elt_opcode (pstate, BINOP_MUL); }
+			{ pstate->wrap2<mul_operation> (); }
 	;
 
 exp	:	exp '/' exp
-			{ write_exp_elt_opcode (pstate, BINOP_DIV); }
+			{ pstate->wrap2<div_operation> (); }
 	;
 
 exp	:	exp '%' exp
-			{ write_exp_elt_opcode (pstate, BINOP_REM); }
+			{ pstate->wrap2<rem_operation> (); }
 	;
 
 exp	:	exp '+' exp
-			{ write_exp_elt_opcode (pstate, BINOP_ADD); }
+			{ pstate->wrap2<add_operation> (); }
 	;
 
 exp	:	exp '-' exp
-			{ write_exp_elt_opcode (pstate, BINOP_SUB); }
+			{ pstate->wrap2<sub_operation> (); }
 	;
 
 exp	:	exp LSH exp
-			{ write_exp_elt_opcode (pstate, BINOP_LSH); }
+			{ pstate->wrap2<lsh_operation> (); }
 	;
 
 exp	:	exp RSH exp
-			{ write_exp_elt_opcode (pstate, BINOP_RSH); }
+			{ pstate->wrap2<rsh_operation> (); }
 	;
 
 exp	:	exp EQUAL exp
-			{ write_exp_elt_opcode (pstate, BINOP_EQUAL); }
+			{ pstate->wrap2<equal_operation> (); }
 	;
 
 exp	:	exp NOTEQUAL exp
-			{ write_exp_elt_opcode (pstate, BINOP_NOTEQUAL); }
+			{ pstate->wrap2<notequal_operation> (); }
 	;
 
 exp	:	exp LEQ exp
-			{ write_exp_elt_opcode (pstate, BINOP_LEQ); }
+			{ pstate->wrap2<leq_operation> (); }
 	;
 
 exp	:	exp GEQ exp
-			{ write_exp_elt_opcode (pstate, BINOP_GEQ); }
+			{ pstate->wrap2<geq_operation> (); }
 	;
 
 exp	:	exp '<' exp
-			{ write_exp_elt_opcode (pstate, BINOP_LESS); }
+			{ pstate->wrap2<less_operation> (); }
 	;
 
 exp	:	exp '>' exp
-			{ write_exp_elt_opcode (pstate, BINOP_GTR); }
+			{ pstate->wrap2<gtr_operation> (); }
 	;
 
 exp	:	exp '&' exp
-			{ write_exp_elt_opcode (pstate, BINOP_BITWISE_AND); }
+			{ pstate->wrap2<bitwise_and_operation> (); }
 	;
 
 exp	:	exp '^' exp
-			{ write_exp_elt_opcode (pstate, BINOP_BITWISE_XOR); }
+			{ pstate->wrap2<bitwise_xor_operation> (); }
 	;
 
 exp	:	exp '|' exp
-			{ write_exp_elt_opcode (pstate, BINOP_BITWISE_IOR); }
+			{ pstate->wrap2<bitwise_ior_operation> (); }
 	;
 
 exp	:	exp ANDAND exp
-			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_AND); }
+			{ pstate->wrap2<logical_and_operation> (); }
 	;
 
 exp	:	exp OROR exp
-			{ write_exp_elt_opcode (pstate, BINOP_LOGICAL_OR); }
+			{ pstate->wrap2<logical_or_operation> (); }
 	;
 
 exp	:	exp '?' exp ':' exp	%prec '?'
-			{ write_exp_elt_opcode (pstate, TERNOP_COND); }
+			{
+			  operation_up last = pstate->pop ();
+			  operation_up mid = pstate->pop ();
+			  operation_up first = pstate->pop ();
+			  pstate->push_new<ternop_cond_operation>
+			    (std::move (first), std::move (mid),
+			     std::move (last));
+			}
 	;
 
 exp	:	exp '=' exp
-			{ write_exp_elt_opcode (pstate, BINOP_ASSIGN); }
+			{ pstate->wrap2<assign_operation> (); }
 	;
 
 exp	:	exp ASSIGN_MODIFY exp
-			{ write_exp_elt_opcode (pstate, BINOP_ASSIGN_MODIFY);
-			  write_exp_elt_opcode (pstate, $2);
-			  write_exp_elt_opcode (pstate, BINOP_ASSIGN_MODIFY); }
+			{
+			  operation_up rhs = pstate->pop ();
+			  operation_up lhs = pstate->pop ();
+			  pstate->push_new<assign_modify_operation>
+			    ($2, std::move (lhs), std::move (rhs));
+			}
 	;
 
 exp	:	INT
-			{ write_exp_elt_opcode (pstate, OP_LONG);
-			  write_exp_elt_type (pstate, $1.type);
-			  write_exp_elt_longcst (pstate, (LONGEST)($1.val));
-			  write_exp_elt_opcode (pstate, OP_LONG); }
+			{
+			  pstate->push_new<long_const_operation>
+			    ($1.type, $1.val);
+			}
 	;
 
 exp	:	CHAR
@@ -416,7 +434,7 @@ exp	:	CHAR
 			  struct stoken_vector vec;
 			  vec.len = 1;
 			  vec.tokens = &$1;
-			  write_exp_string_vector (pstate, $1.type, &vec);
+			  pstate->push_c_string ($1.type, &vec);
 			}
 	;
 
@@ -424,20 +442,20 @@ exp	:	NAME_OR_INT
 			{ YYSTYPE val;
 			  parse_number (pstate, $1.stoken.ptr,
 					$1.stoken.length, 0, &val);
-			  write_exp_elt_opcode (pstate, OP_LONG);
-			  write_exp_elt_type (pstate, val.typed_val_int.type);
-			  write_exp_elt_longcst (pstate, (LONGEST)
-						 val.typed_val_int.val);
-			  write_exp_elt_opcode (pstate, OP_LONG);
+			  pstate->push_new<long_const_operation>
+			    (val.typed_val_int.type,
+			     val.typed_val_int.val);
 			}
 	;
 
 
 exp	:	FLOAT
-			{ write_exp_elt_opcode (pstate, OP_FLOAT);
-			  write_exp_elt_type (pstate, $1.type);
-			  write_exp_elt_floatcst (pstate, $1.val);
-			  write_exp_elt_opcode (pstate, OP_FLOAT); }
+			{
+			  float_data data;
+			  std::copy (std::begin ($1.val), std::end ($1.val),
+				     std::begin (data));
+			  pstate->push_new<float_const_operation> ($1.type, data);
+			}
 	;
 
 exp	:	variable
@@ -445,29 +463,26 @@ exp	:	variable
 
 exp	:	DOLLAR_VARIABLE
 			{
-			  write_dollar_variable (pstate, $1);
+			  pstate->push_dollar ($1);
 			}
 	;
 
 exp	:	SIZEOF_KEYWORD '(' type ')'  %prec UNARY
 			{
 			  /* TODO(dje): Go objects in structs.  */
-			  write_exp_elt_opcode (pstate, OP_LONG);
 			  /* TODO(dje): What's the right type here?  */
-			  write_exp_elt_type
-			    (pstate,
-			     parse_type (pstate)->builtin_unsigned_int);
+			  struct type *size_type
+			    = parse_type (pstate)->builtin_unsigned_int;
 			  $3 = check_typedef ($3);
-			  write_exp_elt_longcst (pstate,
-						 (LONGEST) TYPE_LENGTH ($3));
-			  write_exp_elt_opcode (pstate, OP_LONG);
+			  pstate->push_new<long_const_operation>
+			    (size_type, (LONGEST) TYPE_LENGTH ($3));
 			}
 	;
 
 exp	:	SIZEOF_KEYWORD  '(' exp ')'  %prec UNARY
 			{
 			  /* TODO(dje): Go objects in structs.  */
-			  write_exp_elt_opcode (pstate, UNOP_SIZEOF);
+			  pstate->wrap<unop_sizeof_operation> ();
 			}
 
 string_exp:
@@ -510,8 +525,8 @@ exp	:	string_exp  %prec ABOVE_COMMA
 			{
 			  int i;
 
-			  write_exp_string_vector (pstate, 0 /*always utf8*/,
-						   &$1);
+			  /* Always utf8.  */
+			  pstate->push_c_string (0, &$1);
 			  for (i = 0; i < $1.len; ++i)
 			    free ($1.tokens[i].ptr);
 			  free ($1.tokens);
@@ -519,15 +534,11 @@ exp	:	string_exp  %prec ABOVE_COMMA
 	;
 
 exp	:	TRUE_KEYWORD
-			{ write_exp_elt_opcode (pstate, OP_BOOL);
-			  write_exp_elt_longcst (pstate, (LONGEST) $1);
-			  write_exp_elt_opcode (pstate, OP_BOOL); }
+			{ pstate->push_new<bool_operation> ($1); }
 	;
 
 exp	:	FALSE_KEYWORD
-			{ write_exp_elt_opcode (pstate, OP_BOOL);
-			  write_exp_elt_longcst (pstate, (LONGEST) $1);
-			  write_exp_elt_opcode (pstate, OP_BOOL); }
+			{ pstate->push_new<bool_operation> ($1); }
 	;
 
 variable:	name_not_typename ENTRY
@@ -538,11 +549,9 @@ variable:	name_not_typename ENTRY
 			      || !symbol_read_needs_frame (sym))
 			    error (_("@entry can be used only for function "
 				     "parameters, not for \"%s\""),
-				   copy_name ($1.stoken));
+				   copy_name ($1.stoken).c_str ());
 
-			  write_exp_elt_opcode (pstate, OP_VAR_ENTRY_VALUE);
-			  write_exp_elt_sym (pstate, sym);
-			  write_exp_elt_opcode (pstate, OP_VAR_ENTRY_VALUE);
+			  pstate->push_new<var_entry_value_operation> (sym);
 			}
 	;
 
@@ -552,12 +561,9 @@ variable:	name_not_typename
 			  if (sym.symbol)
 			    {
 			      if (symbol_read_needs_frame (sym.symbol))
-				innermost_block.update (sym);
+				pstate->block_tracker->update (sym);
 
-			      write_exp_elt_opcode (pstate, OP_VAR_VALUE);
-			      write_exp_elt_block (pstate, sym.block);
-			      write_exp_elt_sym (pstate, sym.symbol);
-			      write_exp_elt_opcode (pstate, OP_VAR_VALUE);
+			      pstate->push_new<var_value_operation> (sym);
 			    }
 			  else if ($1.is_a_field_of_this)
 			    {
@@ -568,19 +574,20 @@ variable:	name_not_typename
 			  else
 			    {
 			      struct bound_minimal_symbol msymbol;
-			      char *arg = copy_name ($1.stoken);
+			      std::string arg = copy_name ($1.stoken);
 
 			      msymbol =
-				lookup_bound_minimal_symbol (arg);
+				lookup_bound_minimal_symbol (arg.c_str ());
 			      if (msymbol.minsym != NULL)
-				write_exp_msymbol (pstate, msymbol);
+				pstate->push_new<var_msym_value_operation>
+				  (msymbol);
 			      else if (!have_full_symbols ()
 				       && !have_partial_symbols ())
 				error (_("No symbol table is loaded.  "
 				       "Use the \"file\" command."));
 			      else
 				error (_("No symbol \"%s\" in current context."),
-				       copy_name ($1.stoken));
+				       arg.c_str ());
 			    }
 			}
 	;
@@ -603,7 +610,7 @@ type  /* Implements (approximately): [*] type-specifier */
 					      expression_context_block); }
 */
 	|	BYTE_KEYWORD
-			{ $$ = builtin_go_type (parse_gdbarch (pstate))
+			{ $$ = builtin_go_type (pstate->gdbarch ())
 			    ->builtin_uint8; }
 	;
 
@@ -664,7 +671,7 @@ parse_number (struct parser_state *par_state,
   if (parsed_float)
     {
       const struct builtin_go_type *builtin_go_types
-	= builtin_go_type (parse_gdbarch (par_state));
+	= builtin_go_type (par_state->gdbarch ());
 
       /* Handle suffixes: 'f' for float32, 'l' for long double.
 	 FIXME: This appears to be an extension -- do we want this?  */
@@ -682,15 +689,15 @@ parse_number (struct parser_state *par_state,
 	}
       /* Default type for floating-point literals is float64.  */
       else
-        {
+	{
 	  putithere->typed_val_float.type
 	    = builtin_go_types->builtin_float64;
-        }
+	}
 
       if (!parse_float (p, len,
 			putithere->typed_val_float.type,
 			putithere->typed_val_float.val))
-        return ERROR;
+	return ERROR;
       return FLOAT;
     }
 
@@ -803,10 +810,10 @@ parse_number (struct parser_state *par_state,
 
   un = (ULONGEST)n >> 2;
   if (long_p == 0
-      && (un >> (gdbarch_int_bit (parse_gdbarch (par_state)) - 2)) == 0)
+      && (un >> (gdbarch_int_bit (par_state->gdbarch ()) - 2)) == 0)
     {
       high_bit
-        = ((ULONGEST)1) << (gdbarch_int_bit (parse_gdbarch (par_state)) - 1);
+	= ((ULONGEST)1) << (gdbarch_int_bit (par_state->gdbarch ()) - 1);
 
       /* A large decimal (not hex or octal) constant (between INT_MAX
 	 and UINT_MAX) is a long or unsigned long, according to ANSI,
@@ -818,10 +825,10 @@ parse_number (struct parser_state *par_state,
       signed_type = parse_type (par_state)->builtin_int;
     }
   else if (long_p <= 1
-	   && (un >> (gdbarch_long_bit (parse_gdbarch (par_state)) - 2)) == 0)
+	   && (un >> (gdbarch_long_bit (par_state->gdbarch ()) - 2)) == 0)
     {
       high_bit
-	= ((ULONGEST)1) << (gdbarch_long_bit (parse_gdbarch (par_state)) - 1);
+	= ((ULONGEST)1) << (gdbarch_long_bit (par_state->gdbarch ()) - 1);
       unsigned_type = parse_type (par_state)->builtin_unsigned_long;
       signed_type = parse_type (par_state)->builtin_long;
     }
@@ -829,11 +836,11 @@ parse_number (struct parser_state *par_state,
     {
       int shift;
       if (sizeof (ULONGEST) * HOST_CHAR_BIT
-	  < gdbarch_long_long_bit (parse_gdbarch (par_state)))
+	  < gdbarch_long_long_bit (par_state->gdbarch ()))
 	/* A long long does not fit in a LONGEST.  */
 	shift = (sizeof (ULONGEST) * HOST_CHAR_BIT - 1);
       else
-	shift = (gdbarch_long_long_bit (parse_gdbarch (par_state)) - 1);
+	shift = (gdbarch_long_long_bit (par_state->gdbarch ()) - 1);
       high_bit = (ULONGEST) 1 << shift;
       unsigned_type = parse_type (par_state)->builtin_unsigned_long_long;
       signed_type = parse_type (par_state)->builtin_long_long;
@@ -924,7 +931,7 @@ parse_string_or_char (const char *tokptr, const char **outptr,
     }
   ++tokptr;
 
-  value->type = C_STRING | (quote == '\'' ? C_CHAR : 0); /*FIXME*/
+  value->type = (int) C_STRING | (quote == '\'' ? C_CHAR : 0); /*FIXME*/
   value->ptr = (char *) obstack_base (&tempbuf);
   value->length = obstack_object_size (&tempbuf);
 
@@ -958,19 +965,19 @@ static const struct token tokentab2[] =
     {"|=", ASSIGN_MODIFY, BINOP_BITWISE_IOR},
     {"&=", ASSIGN_MODIFY, BINOP_BITWISE_AND},
     {"^=", ASSIGN_MODIFY, BINOP_BITWISE_XOR},
-    {"++", INCREMENT, BINOP_END},
-    {"--", DECREMENT, BINOP_END},
-    /*{"->", RIGHT_ARROW, BINOP_END}, Doesn't exist in Go.  */
-    {"<-", LEFT_ARROW, BINOP_END},
-    {"&&", ANDAND, BINOP_END},
-    {"||", OROR, BINOP_END},
-    {"<<", LSH, BINOP_END},
-    {">>", RSH, BINOP_END},
-    {"==", EQUAL, BINOP_END},
-    {"!=", NOTEQUAL, BINOP_END},
-    {"<=", LEQ, BINOP_END},
-    {">=", GEQ, BINOP_END},
-    /*{"&^", ANDNOT, BINOP_END}, TODO */
+    {"++", INCREMENT, OP_NULL},
+    {"--", DECREMENT, OP_NULL},
+    /*{"->", RIGHT_ARROW, OP_NULL}, Doesn't exist in Go.  */
+    {"<-", LEFT_ARROW, OP_NULL},
+    {"&&", ANDAND, OP_NULL},
+    {"||", OROR, OP_NULL},
+    {"<<", LSH, OP_NULL},
+    {">>", RSH, OP_NULL},
+    {"==", EQUAL, OP_NULL},
+    {"!=", NOTEQUAL, OP_NULL},
+    {"<=", LEQ, OP_NULL},
+    {">=", GEQ, OP_NULL},
+    /*{"&^", ANDNOT, OP_NULL}, TODO */
   };
 
 /* Identifier-like tokens.  */
@@ -1001,6 +1008,9 @@ static int saw_name_at_eof;
    do field name completion.  */
 static int last_was_structop;
 
+/* Depth of parentheses.  */
+static int paren_depth;
+
 /* Read one token, getting characters through lexptr.  */
 
 static int
@@ -1011,20 +1021,19 @@ lex_one_token (struct parser_state *par_state)
   unsigned int i;
   const char *tokstart;
   int saw_structop = last_was_structop;
-  char *copy;
 
   last_was_structop = 0;
 
  retry:
 
-  prev_lexptr = lexptr;
+  par_state->prev_lexptr = par_state->lexptr;
 
-  tokstart = lexptr;
+  tokstart = par_state->lexptr;
   /* See if it is a special token of length 3.  */
   for (i = 0; i < sizeof (tokentab3) / sizeof (tokentab3[0]); i++)
     if (strncmp (tokstart, tokentab3[i].oper, 3) == 0)
       {
-	lexptr += 3;
+	par_state->lexptr += 3;
 	yylval.opcode = tokentab3[i].opcode;
 	return tokentab3[i].token;
       }
@@ -1033,7 +1042,7 @@ lex_one_token (struct parser_state *par_state)
   for (i = 0; i < sizeof (tokentab2) / sizeof (tokentab2[0]); i++)
     if (strncmp (tokstart, tokentab2[i].oper, 2) == 0)
       {
-	lexptr += 2;
+	par_state->lexptr += 2;
 	yylval.opcode = tokentab2[i].opcode;
 	/* NOTE: -> doesn't exist in Go, so we don't need to watch for
 	   setting last_was_structop here.  */
@@ -1051,18 +1060,18 @@ lex_one_token (struct parser_state *par_state)
       else if (saw_structop)
 	return COMPLETE;
       else
-        return 0;
+	return 0;
 
     case ' ':
     case '\t':
     case '\n':
-      lexptr++;
+      par_state->lexptr++;
       goto retry;
 
     case '[':
     case '(':
       paren_depth++;
-      lexptr++;
+      par_state->lexptr++;
       return c;
 
     case ']':
@@ -1070,21 +1079,21 @@ lex_one_token (struct parser_state *par_state)
       if (paren_depth == 0)
 	return 0;
       paren_depth--;
-      lexptr++;
+      par_state->lexptr++;
       return c;
 
     case ',':
-      if (comma_terminates
-          && paren_depth == 0)
+      if (pstate->comma_terminates
+	  && paren_depth == 0)
 	return 0;
-      lexptr++;
+      par_state->lexptr++;
       return c;
 
     case '.':
       /* Might be a floating point number.  */
-      if (lexptr[1] < '0' || lexptr[1] > '9')
+      if (par_state->lexptr[1] < '0' || par_state->lexptr[1] > '9')
 	{
-	  if (parse_completion)
+	  if (pstate->parse_completion)
 	    last_was_structop = 1;
 	  goto symbol;		/* Nope, must be a symbol. */
 	}
@@ -1137,7 +1146,7 @@ lex_one_token (struct parser_state *par_state)
 	  }
 	toktype = parse_number (par_state, tokstart, p - tokstart,
 				got_dot|got_e, &yylval);
-        if (toktype == ERROR)
+	if (toktype == ERROR)
 	  {
 	    char *err_copy = (char *) alloca (p - tokstart + 1);
 
@@ -1145,7 +1154,7 @@ lex_one_token (struct parser_state *par_state)
 	    err_copy[p - tokstart] = 0;
 	    error (_("Invalid number \"%s\"."), err_copy);
 	  }
-	lexptr = p;
+	par_state->lexptr = p;
 	return toktype;
       }
 
@@ -1159,7 +1168,7 @@ lex_one_token (struct parser_state *par_state)
 	if (strncmp (p, "entry", len) == 0 && !isalnum (p[len])
 	    && p[len] != '_')
 	  {
-	    lexptr = &p[len];
+	    par_state->lexptr = &p[len];
 	    return ENTRY;
 	  }
       }
@@ -1182,7 +1191,7 @@ lex_one_token (struct parser_state *par_state)
     case '{':
     case '}':
     symbol:
-      lexptr++;
+      par_state->lexptr++;
       return c;
 
     case '\'':
@@ -1190,8 +1199,8 @@ lex_one_token (struct parser_state *par_state)
     case '`':
       {
 	int host_len;
-	int result = parse_string_or_char (tokstart, &lexptr, &yylval.tsval,
-					   &host_len);
+	int result = parse_string_or_char (tokstart, &par_state->lexptr,
+					   &yylval.tsval, &host_len);
 	if (result == CHAR)
 	  {
 	    if (host_len == 0)
@@ -1199,7 +1208,7 @@ lex_one_token (struct parser_state *par_state)
 	    else if (host_len > 2 && c == '\'')
 	      {
 		++tokstart;
-		namelen = lexptr - tokstart - 1;
+		namelen = par_state->lexptr - tokstart - 1;
 		goto tryname;
 	      }
 	    else if (host_len > 1)
@@ -1252,7 +1261,7 @@ lex_one_token (struct parser_state *par_state)
 	return 0;
     }
 
-  lexptr += namelen;
+  par_state->lexptr += namelen;
 
   tryname:
 
@@ -1260,9 +1269,9 @@ lex_one_token (struct parser_state *par_state)
   yylval.sval.length = namelen;
 
   /* Catch specific keywords.  */
-  copy = copy_name (yylval.sval);
+  std::string copy = copy_name (yylval.sval);
   for (i = 0; i < sizeof (ident_tokens) / sizeof (ident_tokens[0]); i++)
-    if (strcmp (copy, ident_tokens[i].oper) == 0)
+    if (copy == ident_tokens[i].oper)
       {
 	/* It is ok to always set this, even though we don't always
 	   strictly need to.  */
@@ -1273,23 +1282,21 @@ lex_one_token (struct parser_state *par_state)
   if (*tokstart == '$')
     return DOLLAR_VARIABLE;
 
-  if (parse_completion && *lexptr == '\0')
+  if (pstate->parse_completion && *par_state->lexptr == '\0')
     saw_name_at_eof = 1;
   return NAME;
 }
 
 /* An object of this type is pushed on a FIFO by the "outer" lexer.  */
-typedef struct
+struct token_and_value
 {
   int token;
   YYSTYPE value;
-} token_and_value;
-
-DEF_VEC_O (token_and_value);
+};
 
 /* A FIFO of tokens that have been read but not yet returned to the
    parser.  */
-static VEC (token_and_value) *token_fifo;
+static std::vector<token_and_value> token_fifo;
 
 /* Non-zero if the lexer should return tokens from the FIFO.  */
 static int popping;
@@ -1333,7 +1340,7 @@ package_name_p (const char *name, const struct block *block)
 
   if (sym
       && SYMBOL_CLASS (sym) == LOC_TYPEDEF
-      && TYPE_CODE (SYMBOL_TYPE (sym)) == TYPE_CODE_MODULE)
+      && SYMBOL_TYPE (sym)->code () == TYPE_CODE_MODULE)
     return 1;
 
   return 0;
@@ -1346,15 +1353,15 @@ package_name_p (const char *name, const struct block *block)
 static int
 classify_unsafe_function (struct stoken function_name)
 {
-  char *copy = copy_name (function_name);
+  std::string copy = copy_name (function_name);
 
-  if (strcmp (copy, "Sizeof") == 0)
+  if (copy == "Sizeof")
     {
       yylval.sval = function_name;
       return SIZEOF_KEYWORD;
     }
 
-  error (_("Unknown function in `unsafe' package: %s"), copy);
+  error (_("Unknown function in `unsafe' package: %s"), copy.c_str ());
 }
 
 /* Classify token(s) "name1.name2" where name1 is known to be a package.
@@ -1366,13 +1373,12 @@ classify_unsafe_function (struct stoken function_name)
 static int
 classify_packaged_name (const struct block *block)
 {
-  char *copy;
   struct block_symbol sym;
   struct field_of_this_result is_a_field_of_this;
 
-  copy = copy_name (yylval.sval);
+  std::string copy = copy_name (yylval.sval);
 
-  sym = lookup_symbol (copy, block, VAR_DOMAIN, &is_a_field_of_this);
+  sym = lookup_symbol (copy.c_str (), block, VAR_DOMAIN, &is_a_field_of_this);
 
   if (sym.symbol)
     {
@@ -1396,15 +1402,14 @@ classify_name (struct parser_state *par_state, const struct block *block)
 {
   struct type *type;
   struct block_symbol sym;
-  char *copy;
   struct field_of_this_result is_a_field_of_this;
 
-  copy = copy_name (yylval.sval);
+  std::string copy = copy_name (yylval.sval);
 
   /* Try primitive types first so they win over bad/weird debug info.  */
-  type = language_lookup_primitive_type (parse_language (par_state),
-					 parse_gdbarch (par_state),
-					 copy);
+  type = language_lookup_primitive_type (par_state->language (),
+					 par_state->gdbarch (),
+					 copy.c_str ());
   if (type != NULL)
     {
       /* NOTE: We take advantage of the fact that yylval coming in was a
@@ -1416,7 +1421,7 @@ classify_name (struct parser_state *par_state, const struct block *block)
 
   /* TODO: What about other types?  */
 
-  sym = lookup_symbol (copy, block, VAR_DOMAIN, &is_a_field_of_this);
+  sym = lookup_symbol (copy.c_str (), block, VAR_DOMAIN, &is_a_field_of_this);
 
   if (sym.symbol)
     {
@@ -1438,7 +1443,7 @@ classify_name (struct parser_state *par_state, const struct block *block)
 	struct stoken sval =
 	  build_packaged_name (current_package_name,
 			       strlen (current_package_name),
-			       copy, strlen (copy));
+			       copy.c_str (), copy.size ());
 
 	xfree (current_package_name);
 	sym = lookup_symbol (sval.ptr, block, VAR_DOMAIN,
@@ -1460,8 +1465,8 @@ classify_name (struct parser_state *par_state, const struct block *block)
       || (copy[0] >= 'A' && copy[0] < 'A' + input_radix - 10))
     {
       YYSTYPE newlval;	/* Its value is ignored.  */
-      int hextype = parse_number (par_state, copy, yylval.sval.length,
-				  0, &newlval);
+      int hextype = parse_number (par_state, copy.c_str (),
+				  yylval.sval.length, 0, &newlval);
       if (hextype == INT)
 	{
 	  yylval.ssym.sym.symbol = NULL;
@@ -1485,10 +1490,10 @@ yylex (void)
 {
   token_and_value current, next;
 
-  if (popping && !VEC_empty (token_and_value, token_fifo))
+  if (popping && !token_fifo.empty ())
     {
-      token_and_value tv = *VEC_index (token_and_value, token_fifo, 0);
-      VEC_ordered_remove (token_and_value, token_fifo, 0);
+      token_and_value tv = token_fifo[0];
+      token_fifo.erase (token_fifo.begin ());
       yylval = tv.value;
       /* There's no need to fall through to handle package.name
 	 as that can never happen here.  In theory.  */
@@ -1520,44 +1525,42 @@ yylex (void)
       if (name2.token == NAME)
 	{
 	  /* Ok, we have "name1 . name2".  */
-	  char *copy;
+	  std::string copy = copy_name (current.value.sval);
 
-	  copy = copy_name (current.value.sval);
-
-	  if (strcmp (copy, "unsafe") == 0)
+	  if (copy == "unsafe")
 	    {
 	      popping = 1;
 	      return classify_unsafe_function (name2.value.sval);
 	    }
 
-	  if (package_name_p (copy, expression_context_block))
+	  if (package_name_p (copy.c_str (), pstate->expression_context_block))
 	    {
 	      popping = 1;
 	      yylval.sval = build_packaged_name (current.value.sval.ptr,
 						 current.value.sval.length,
 						 name2.value.sval.ptr,
 						 name2.value.sval.length);
-	      return classify_packaged_name (expression_context_block);
+	      return classify_packaged_name (pstate->expression_context_block);
 	    }
 	}
 
-      VEC_safe_push (token_and_value, token_fifo, &next);
-      VEC_safe_push (token_and_value, token_fifo, &name2);
+      token_fifo.push_back (next);
+      token_fifo.push_back (name2);
     }
   else
-    {
-      VEC_safe_push (token_and_value, token_fifo, &next);
-    }
+    token_fifo.push_back (next);
 
   /* If we arrive here we don't have a package-qualified name.  */
 
   popping = 1;
   yylval = current.value;
-  return classify_name (pstate, expression_context_block);
+  return classify_name (pstate, pstate->expression_context_block);
 }
 
+/* See language.h.  */
+
 int
-go_parse (struct parser_state *par_state)
+go_language::parser (struct parser_state *par_state) const
 {
   /* Setting up the parser state.  */
   scoped_restore pstate_restore = make_scoped_restore (&pstate);
@@ -1570,19 +1573,23 @@ go_parse (struct parser_state *par_state)
   /* Initialize some state used by the lexer.  */
   last_was_structop = 0;
   saw_name_at_eof = 0;
+  paren_depth = 0;
 
-  VEC_free (token_and_value, token_fifo);
+  token_fifo.clear ();
   popping = 0;
   name_obstack.clear ();
 
-  return yyparse ();
+  int result = yyparse ();
+  if (!result)
+    pstate->set_operation (pstate->pop ());
+  return result;
 }
 
 static void
 yyerror (const char *msg)
 {
-  if (prev_lexptr)
-    lexptr = prev_lexptr;
+  if (pstate->prev_lexptr)
+    pstate->lexptr = pstate->prev_lexptr;
 
-  error (_("A %s in expression, near `%s'."), msg, lexptr);
+  error (_("A %s in expression, near `%s'."), msg, pstate->lexptr);
 }

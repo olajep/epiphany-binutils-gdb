@@ -2,7 +2,7 @@
 
 %{
 
-/* Copyright (C) 1991-2018 Free Software Foundation, Inc.
+/* Copyright (C) 1991-2021 Free Software Foundation, Inc.
    Written by Steve Chamberlain of Cygnus Support.
 
    This file is part of the GNU Binutils.
@@ -25,6 +25,7 @@
 #include "bfd.h"
 #include "safe-ctype.h"
 #include "bfdlink.h"
+#include "ctf-api.h"
 #include "ld.h"
 #include "ldmisc.h"
 #include "ldexp.h"
@@ -78,7 +79,6 @@ static void lex_warn_invalid (char *where, char *what);
 	SCRIPT		definitely in a script
 	INPUTLIST	definitely in a script, a filename-list
 	BOTH		either EXPRESSION or SCRIPT
-	DEFSYMEXP	in an argument to -defsym
 	MRI		in an MRI script
 	VERS_START	starting a Sun style mapfile
 	VERS_SCRIPT	a Sun style mapfile
@@ -91,16 +91,13 @@ static void lex_warn_invalid (char *where, char *what);
 %a 4000
 %o 5000
 
-CMDFILENAMECHAR   [_a-zA-Z0-9\/\.\\_\+\$\:\[\]\\\,\=\&\!\<\>\-\~]
-CMDFILENAMECHAR1  [_a-zA-Z0-9\/\.\\_\+\$\:\[\]\\\,\=\&\!\<\>\~]
-FILENAMECHAR1	[_a-zA-Z\/\.\\\$\_\~]
-SYMBOLNAMECHAR1	[_a-zA-Z\/\.\\\$\_]
-SYMBOLCHARN     [_a-zA-Z\/\.\\\$\_\~0-9]
-FILENAMECHAR	[_a-zA-Z0-9\/\.\-\_\+\=\$\:\[\]\\\,\~]
-WILDCHAR	[_a-zA-Z0-9\/\.\-\_\+\=\$\:\[\]\\\,\~\?\*\^\!]
+WILDCHAR	[_a-zA-Z0-9\/\.\\\$\~\-\+\:\[\]\,\=\?\*\^\!]
+FILENAMECHAR	[_a-zA-Z0-9\/\.\\\$\~\-\+\:\[\]\,\=]
+NOCFILENAMECHAR	[_a-zA-Z0-9\/\.\\\$\~\-\+\:\[\]]
+SYMBOLNAMECHAR  [_a-zA-Z0-9\/\.\\\$\~]
+FILENAMECHAR1	[_a-zA-Z\/\.\\\$\~]
+SYMBOLNAMECHAR1	[_a-zA-Z\.\\\$]
 WHITE		[ \t\n\r]+
-
-NOCFILENAMECHAR	[_a-zA-Z0-9\/\.\-\_\+\$\:\[\]\\\~]
 
 V_TAG [.$_a-zA-Z][._a-zA-Z0-9]*
 V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
@@ -109,7 +106,6 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 %s INPUTLIST
 %s EXPRESSION
 %s BOTH
-%s DEFSYMEXP
 %s MRI
 %s VERS_START
 %s VERS_SCRIPT
@@ -134,11 +130,6 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 
 <BOTH,SCRIPT,EXPRESSION,VERS_START,VERS_NODE,VERS_SCRIPT,INPUTLIST>"/*"	{ comment (); }
 
-
-<DEFSYMEXP>"-"			{ RTOKEN('-');}
-<DEFSYMEXP>"+"			{ RTOKEN('+');}
-<DEFSYMEXP>{SYMBOLNAMECHAR1}{SYMBOLCHARN}*   { yylval.name = xstrdup (yytext); return NAME; }
-<DEFSYMEXP>"="			{ RTOKEN('='); }
 
 <MRI,EXPRESSION>"$"([0-9A-Fa-f])+ {
 				yylval.integer = bfd_scan_vma (yytext + 1, 0, 16);
@@ -171,7 +162,7 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 				   yylval.bigint.str = NULL;
 				   return INT;
 				 }
-<SCRIPT,DEFSYMEXP,MRI,BOTH,EXPRESSION>((("$"|0[xX])([0-9A-Fa-f])+)|(([0-9])+))(M|K|m|k)? {
+<SCRIPT,MRI,BOTH,EXPRESSION>((("$"|0[xX])([0-9A-Fa-f])+)|(([0-9])+))(M|K|m|k)? {
 				  char *s = yytext;
 				  int ibase = 0;
 
@@ -368,31 +359,30 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 
 <MRI>{FILENAMECHAR1}{NOCFILENAMECHAR}*	{
 /* Filename without commas, needed to parse mri stuff */
-				 yylval.name = xstrdup (yytext);
+				  yylval.name = xstrdup (yytext);
 				  return NAME;
 				}
 
 
 <BOTH,INPUTLIST>{FILENAMECHAR1}{FILENAMECHAR}*	{
-				 yylval.name = xstrdup (yytext);
+				  yylval.name = xstrdup (yytext);
 				  return NAME;
 				}
 <INPUTLIST>"="{FILENAMECHAR1}{FILENAMECHAR}*	{
 /* Filename to be prefixed by --sysroot or when non-sysrooted, nothing.  */
-				 yylval.name = xstrdup (yytext);
-				  return NAME;
-				}
-<INPUTLIST>"$SYSROOT"{FILENAMECHAR1}{FILENAMECHAR}*	{
-/* Filename to be prefixed by --sysroot or when non-sysrooted, nothing.  */
-				 yylval.name = xstrdup (yytext);
+				  yylval.name = xstrdup (yytext);
 				  return NAME;
 				}
 <BOTH,INPUTLIST>"-l"{FILENAMECHAR}+ {
 				  yylval.name = xstrdup (yytext + 2);
 				  return LNAME;
 				}
-<EXPRESSION>{SYMBOLNAMECHAR1}{NOCFILENAMECHAR}*	{
-				 yylval.name = xstrdup (yytext);
+<EXPRESSION>{SYMBOLNAMECHAR1}{SYMBOLNAMECHAR}* {
+				  yylval.name = xstrdup (yytext);
+				  return NAME;
+				}
+<EXPRESSION>"/DISCARD/"		{
+				  yylval.name = xstrdup (yytext);
 				  return NAME;
 				}
 <EXPRESSION>"-l"{NOCFILENAMECHAR}+ {
@@ -424,7 +414,7 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 					/* PR ld/20906.  A corrupt input file
 					   can contain bogus strings.  */
 					len = strlen (yylval.name);
-					if (len > yyleng - 2)
+					if (len > (bfd_size_type) yyleng - 2)
 					  len = yyleng - 2;
 					yylval.name[len] = 0;
 					return NAME;
@@ -482,7 +472,7 @@ V_IDENTIFIER [*?.$_a-zA-Z\[\]\-\!\^\\]([*?.$_a-zA-Z0-9\[\]\-\!\^\\]|::)*
 }
 
 <SCRIPT,MRI,VERS_START,VERS_SCRIPT,VERS_NODE>.	lex_warn_invalid (" in script", yytext);
-<EXPRESSION,DEFSYMEXP,BOTH>.	lex_warn_invalid (" in expression", yytext);
+<EXPRESSION,BOTH>.	lex_warn_invalid (" in expression", yytext);
 
 %%
 
@@ -517,14 +507,13 @@ yy_create_string_buffer (const char *string, size_t size)
 {
   YY_BUFFER_STATE b;
 
-  /* Calls to m-alloc get turned by sed into xm-alloc.  */
-  b = malloc (sizeof (struct yy_buffer_state));
+  b = xmalloc (sizeof (struct yy_buffer_state));
   b->yy_input_file = 0;
   b->yy_buf_size = size;
 
   /* yy_ch_buf has to be 2 characters longer than the size given because
      we need to put in 2 end-of-buffer characters.  */
-  b->yy_ch_buf = malloc ((unsigned) (b->yy_buf_size + 3));
+  b->yy_ch_buf = xmalloc ((size_t) b->yy_buf_size + 3);
 
   b->yy_ch_buf[0] = '\n';
   strcpy (b->yy_ch_buf+1, string);
@@ -613,13 +602,6 @@ ldlex_version_file (void)
 }
 
 void
-ldlex_defsym (void)
-{
-  *(state_stack_p)++ = yy_start;
-  BEGIN (DEFSYMEXP);
-}
-
-void
 ldlex_expression (void)
 {
   *(state_stack_p)++ = yy_start;
@@ -637,6 +619,16 @@ void
 ldlex_popstate (void)
 {
   yy_start = *(--state_stack_p);
+}
+
+/* In cases where the parser needs to look ahead and the context
+   changes from expression to script or vice-versa, throw away a
+   NAME.  What constitutes a NAME depends on context.  */
+
+void
+ldlex_backup (void)
+{
+  yyless (0);
 }
 
 /* Return the current file name, or the previous file if no file is
@@ -678,7 +670,7 @@ comment (void)
   while (1)
     {
       c = input();
-      while (c != '*' && c != EOF)
+      while (c != '*' && c != 0)
 	{
 	  if (c == '\n')
 	    lineno++;
@@ -697,7 +689,7 @@ comment (void)
       if (c == '\n')
 	lineno++;
 
-      if (c == EOF)
+      if (c == 0)
 	{
 	  einfo (_("%F%P: EOF in comment\n"));
 	  break;

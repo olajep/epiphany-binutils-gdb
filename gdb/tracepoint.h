@@ -1,5 +1,5 @@
 /* Data structures associated with tracepoints in GDB.
-   Copyright (C) 1997-2018 Free Software Foundation, Inc.
+   Copyright (C) 1997-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,7 +21,7 @@
 
 #include "breakpoint.h"
 #include "memrange.h"
-#include "gdb_vecs.h"
+#include "gdbsupport/gdb_vecs.h"
 
 #include <vector>
 #include <string>
@@ -178,21 +178,21 @@ struct uploaded_tp
   int orig_size = 0;
 
   /* String that is the encoded form of the tracepoint's condition.  */
-  char *cond = nullptr;
+  gdb::unique_xmalloc_ptr<char[]> cond;
 
   /* Vectors of strings that are the encoded forms of a tracepoint's
      actions.  */
-  std::vector<char *> actions;
-  std::vector<char *> step_actions;
+  std::vector<gdb::unique_xmalloc_ptr<char[]>> actions;
+  std::vector<gdb::unique_xmalloc_ptr<char[]>> step_actions;
 
   /* The original string defining the location of the tracepoint.  */
-  char *at_string = nullptr;
+  gdb::unique_xmalloc_ptr<char[]> at_string;
 
   /* The original string defining the tracepoint's condition.  */
-  char *cond_string = nullptr;
+  gdb::unique_xmalloc_ptr<char[]> cond_string;
 
   /* List of original strings defining the tracepoint's actions.  */
-  std::vector<char *> cmd_strings;
+  std::vector<gdb::unique_xmalloc_ptr<char[]>> cmd_strings;
 
   /* The tracepoint's current hit count.  */
   int hit_count = 0;
@@ -257,15 +257,19 @@ public:
 
   void add_wholly_collected (const char *print_name);
 
-  void append_exp (struct expression *exp);
+  void append_exp (std::string &&exp);
 
   /* Add AEXPR to the list, taking ownership.  */
   void add_aexpr (agent_expr_up aexpr);
 
-  void add_register (unsigned int regno);
+  void add_remote_register (unsigned int regno);
+  void add_ax_registers (struct agent_expr *aexpr);
+  void add_local_register (struct gdbarch *gdbarch,
+			   unsigned int regno,
+			   CORE_ADDR scope);
   void add_memrange (struct gdbarch *gdbarch,
 		     int type, bfd_signed_vma base,
-		     unsigned long len);
+		     unsigned long len, CORE_ADDR scope);
   void collect_symbol (struct symbol *sym,
 		       struct gdbarch *gdbarch,
 		       long frame_regno, long frame_offset,
@@ -288,8 +292,9 @@ public:
   { return m_computed; }
 
 private:
-  /* room for up to 256 regs */
-  unsigned char m_regs_mask[32];
+  /* We need the allocator zero-initialize the mask, so we don't use
+     gdb::byte_vector.  */
+  std::vector<unsigned char> m_regs_mask;
 
   std::vector<memrange> m_memranges;
 

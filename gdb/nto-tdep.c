@@ -1,6 +1,6 @@
 /* nto-tdep.c - general QNX Neutrino target functionality.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    Contributed by QNX Software Systems Ltd.
 
@@ -32,7 +32,7 @@
 #include "gdbcore.h"
 #include "objfiles.h"
 #include "source.h"
-#include "common/pathstuff.h"
+#include "gdbsupport/pathstuff.h"
 
 #define QNX_NOTE_NAME	"QNX"
 #define QNX_INFO_SECT_NAME "QNX_info"
@@ -51,7 +51,8 @@ static char default_nto_target[] = "";
 
 struct nto_target_ops current_nto_target;
 
-static const struct inferior_data *nto_inferior_data_reg;
+static const struct inferior_key<struct nto_inferior_data>
+  nto_inferior_data_reg;
 
 static char *
 nto_target (void)
@@ -318,8 +319,8 @@ nto_sniff_abi_note_section (bfd *abfd, asection *sect, void *obj)
   const char *name;
   const unsigned sizeof_Elf_Nhdr = 12;
 
-  sectname = bfd_get_section_name (abfd, sect);
-  sectsize = bfd_section_size (abfd, sect);
+  sectname = bfd_section_name (sect);
+  sectsize = bfd_section_size (sect);
 
   if (sectsize > 128)
     sectsize = 128;
@@ -336,7 +337,7 @@ nto_sniff_abi_note_section (bfd *abfd, asection *sect, void *obj)
       if (sectsize >= namelen + sizeof_Elf_Nhdr
 	  && namelen == sizeof (QNX_NOTE_NAME)
 	  && 0 == strcmp (name, QNX_NOTE_NAME))
-        *(enum gdb_osabi *) obj = GDB_OSABI_QNXNTO;
+	*(enum gdb_osabi *) obj = GDB_OSABI_QNXNTO;
 
       XDELETEVEC (note);
     }
@@ -354,7 +355,7 @@ nto_elf_osabi_sniffer (bfd *abfd)
   return osabi;
 }
 
-static const char *nto_thread_state_str[] =
+static const char * const nto_thread_state_str[] =
 {
   "DEAD",		/* 0  0x00 */
   "RUNNING",	/* 1  0x01 */
@@ -418,7 +419,7 @@ nto_initialize_signals (void)
 /* Read AUXV from initial_stack.  */
 LONGEST
 nto_read_auxv_from_initial_stack (CORE_ADDR initial_stack, gdb_byte *readbuf,
-                                  LONGEST len, size_t sizeof_auxv_t)
+				  LONGEST len, size_t sizeof_auxv_t)
 {
   gdb_byte targ32[4]; /* For 32 bit target values.  */
   gdb_byte targ64[8]; /* For 64 bit target values.  */
@@ -460,13 +461,13 @@ nto_read_auxv_from_initial_stack (CORE_ADDR initial_stack, gdb_byte *readbuf,
 
   /* Size of pointer is assumed to be 4 bytes (32 bit arch.) */
   data_ofs += (anint + 2) * ptr_size; /* + 2 comes from argc itself and
-                                                NULL terminating pointer in
-                                                argv.  */
+						NULL terminating pointer in
+						argv.  */
 
   /* Now loop over env table:  */
   anint = 0;
   while (target_read_memory (initial_stack + data_ofs, targ64, ptr_size)
-         == 0)
+	 == 0)
     {
       if (extract_unsigned_integer (targ64, ptr_size, byte_order) == 0)
 	anint = 1; /* Keep looping until non-null entry is found.  */
@@ -482,39 +483,20 @@ nto_read_auxv_from_initial_stack (CORE_ADDR initial_stack, gdb_byte *readbuf,
     {
       if (target_read_memory (initial_stack + len_read, buff, sizeof_auxv_t)
 	  == 0)
-        {
+	{
 	  /* Both 32 and 64 bit structures have int as the first field.  */
-          const ULONGEST a_type
+	  const ULONGEST a_type
 	    = extract_unsigned_integer (buff, sizeof (targ32), byte_order);
 
-          if (a_type == AT_NULL)
+	  if (a_type == AT_NULL)
 	    break;
 	  buff += sizeof_auxv_t;
 	  len_read += sizeof_auxv_t;
-        }
+	}
       else
-        break;
+	break;
     }
   return len_read;
-}
-
-/* Allocate new nto_inferior_data object.  */
-
-static struct nto_inferior_data *
-nto_new_inferior_data (void)
-{
-  struct nto_inferior_data *const inf_data
-    = XCNEW (struct nto_inferior_data);
-
-  return inf_data;
-}
-
-/* Free inferior data.  */
-
-static void
-nto_inferior_data_cleanup (struct inferior *const inf, void *const dat)
-{
-  xfree (dat);
 }
 
 /* Return nto_inferior_data for the given INFERIOR.  If not yet created,
@@ -528,20 +510,9 @@ nto_inferior_data (struct inferior *const inferior)
 
   gdb_assert (inf != NULL);
 
-  inf_data
-    = (struct nto_inferior_data *) inferior_data (inf, nto_inferior_data_reg);
+  inf_data = nto_inferior_data_reg.get (inf);
   if (inf_data == NULL)
-    {
-      set_inferior_data (inf, nto_inferior_data_reg,
-			 (inf_data = nto_new_inferior_data ()));
-    }
+    inf_data = nto_inferior_data_reg.emplace (inf);
 
   return inf_data;
-}
-
-void
-_initialize_nto_tdep (void)
-{
-  nto_inferior_data_reg
-    = register_inferior_data_with_cleanup (NULL, nto_inferior_data_cleanup);
 }

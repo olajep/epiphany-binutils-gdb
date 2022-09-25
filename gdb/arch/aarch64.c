@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2018 Free Software Foundation, Inc.
+/* Copyright (C) 2017-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -15,33 +15,42 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "common-defs.h"
+#include "gdbsupport/common-defs.h"
 #include "aarch64.h"
 #include <stdlib.h>
 
 #include "../features/aarch64-core.c"
 #include "../features/aarch64-fpu.c"
 #include "../features/aarch64-sve.c"
+#include "../features/aarch64-pauth.c"
+#include "../features/aarch64-mte.c"
 
 /* See arch/aarch64.h.  */
 
 target_desc *
-aarch64_create_target_description (uint64_t vq)
+aarch64_create_target_description (uint64_t vq, bool pauth_p, bool mte_p)
 {
-  target_desc *tdesc = allocate_target_description ();
+  target_desc_up tdesc = allocate_target_description ();
 
 #ifndef IN_PROCESS_AGENT
-  set_tdesc_architecture (tdesc, "aarch64");
+  set_tdesc_architecture (tdesc.get (), "aarch64");
 #endif
 
   long regnum = 0;
 
-  regnum = create_feature_aarch64_core (tdesc, regnum);
+  regnum = create_feature_aarch64_core (tdesc.get (), regnum);
 
   if (vq == 0)
-    regnum = create_feature_aarch64_fpu (tdesc, regnum);
+    regnum = create_feature_aarch64_fpu (tdesc.get (), regnum);
   else
-    regnum = create_feature_aarch64_sve (tdesc, regnum, vq);
+    regnum = create_feature_aarch64_sve (tdesc.get (), regnum, vq);
 
-  return tdesc;
+  if (pauth_p)
+    regnum = create_feature_aarch64_pauth (tdesc.get (), regnum);
+
+  /* Memory tagging extension registers.  */
+  if (mte_p)
+    regnum = create_feature_aarch64_mte (tdesc.get (), regnum);
+
+  return tdesc.release ();
 }

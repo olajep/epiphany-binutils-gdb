@@ -1,6 +1,6 @@
 /* Definitions for a frame unwinder, for GDB, the GNU debugger.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -70,6 +70,18 @@ enum unwind_stop_reason
   default_frame_unwind_stop_reason (struct frame_info *this_frame,
 				    void **this_cache);
 
+/* A default unwind_pc callback that simply unwinds the register identified
+   by GDBARCH_PC_REGNUM.  */
+
+extern CORE_ADDR default_unwind_pc (struct gdbarch *gdbarch,
+				    struct frame_info *next_frame);
+
+/* A default unwind_sp callback that simply unwinds the register identified
+   by GDBARCH_SP_REGNUM.  */
+
+extern CORE_ADDR default_unwind_sp (struct gdbarch *gdbarch,
+				    struct frame_info *next_frame);
+
 /* Assuming the frame chain: (outer) prev <-> this <-> next (inner);
    use THIS frame, and through it the NEXT frame's register unwind
    method, to determine the frame ID of THIS frame.
@@ -121,6 +133,9 @@ typedef void (frame_this_id_ftype) (struct frame_info *this_frame,
    may be a lazy reference to memory, a lazy reference to the value of
    a register in THIS frame, or a non-lvalue.
 
+   If the previous frame's register was not saved by THIS_FRAME and is
+   therefore undefined, return a wholly optimized-out not_lval value.
+
    THIS_PROLOGUE_CACHE can be used to share any prolog analysis data
    with the other unwind methods.  Memory for that cache should be
    allocated using FRAME_OBSTACK_ZALLOC().  */
@@ -143,6 +158,7 @@ typedef struct gdbarch *(frame_prev_arch_ftype) (struct frame_info *this_frame,
 
 struct frame_unwind
 {
+  const char *name;
   /* The frame's type.  Should this instead be a collection of
      predicates that test the frame for various attributes?  */
   enum frame_type type;
@@ -211,7 +227,7 @@ struct value *frame_unwind_got_constant (struct frame_info *frame, int regnum,
    inside BUF.  */
 
 struct value *frame_unwind_got_bytes (struct frame_info *frame, int regnum,
-                                      gdb_byte *buf);
+				      const gdb_byte *buf);
 
 /* Return a value which indicates that FRAME's saved version of REGNUM
    has a known constant (computed) value of ADDR.  Convert the

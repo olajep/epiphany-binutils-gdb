@@ -1,6 +1,6 @@
 /* Generic static probe support for GDB.
 
-   Copyright (C) 2012-2018 Free Software Foundation, Inc.
+   Copyright (C) 2012-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -36,7 +36,7 @@
 #include "location.h"
 #include <ctype.h>
 #include <algorithm>
-#include "common/gdb_optional.h"
+#include "gdbsupport/gdb_optional.h"
 
 /* Class that implements the static probe methods for "any" probe.  */
 
@@ -47,7 +47,7 @@ public:
   bool is_linespec (const char **linespecp) const override;
 
   /* See probe.h.  */
-  void get_probes (std::vector<probe *> *probesp,
+  void get_probes (std::vector<std::unique_ptr<probe>> *probesp,
 		   struct objfile *objfile) const override;
 
   /* See probe.h.  */
@@ -60,7 +60,7 @@ public:
 
 /* Static operations associated with a generic probe.  */
 
-const any_static_probe_ops any_static_probe_ops;
+const any_static_probe_ops any_static_probe_ops {};
 
 /* A helper for parse_probes that decodes a probe specification in
    SEARCH_PSPACE.  It appends matching SALs to RESULT.  */
@@ -73,9 +73,7 @@ parse_probes_in_pspace (const static_probe_ops *spops,
 			const char *name,
 			std::vector<symtab_and_line> *result)
 {
-  struct objfile *objfile;
-
-  ALL_PSPACE_OBJFILES (search_pspace, objfile)
+  for (objfile *objfile : search_pspace->objfiles ())
     {
       if (!objfile->sf || !objfile->sf->sym_probe_fns)
 	continue;
@@ -86,10 +84,10 @@ parse_probes_in_pspace (const static_probe_ops *spops,
 			   objfile_namestr) != 0)
 	continue;
 
-      const std::vector<probe *> &probes
+      const std::vector<std::unique_ptr<probe>> &probes
 	= objfile->sf->sym_probe_fns->sym_get_probes (objfile);
 
-      for (probe *p : probes)
+      for (auto &p : probes)
 	{
 	  if (spops != &any_static_probe_ops && p->get_static_ops () != spops)
 	    continue;
@@ -105,7 +103,7 @@ parse_probes_in_pspace (const static_probe_ops *spops,
 	  sal.explicit_pc = 1;
 	  sal.section = find_pc_overlay (sal.pc);
 	  sal.pspace = search_pspace;
-	  sal.prob = p;
+	  sal.prob = p.get ();
 	  sal.objfile = objfile;
 
 	  result->push_back (std::move (sal));
@@ -187,9 +185,7 @@ parse_probes (const struct event_location *location,
     }
   else
     {
-      struct program_space *pspace;
-
-      ALL_PSPACES (pspace)
+      for (struct program_space *pspace : program_spaces)
 	parse_probes_in_pspace (spops, pspace, objfile_namestr,
 				provider, name, &result);
     }
@@ -225,9 +221,9 @@ find_probes_in_objfile (struct objfile *objfile, const char *provider,
   if (!objfile->sf || !objfile->sf->sym_probe_fns)
     return result;
 
-  const std::vector<probe *> &probes
+  const std::vector<std::unique_ptr<probe>> &probes
     = objfile->sf->sym_probe_fns->sym_get_probes (objfile);
-  for (probe *p : probes)
+  for (auto &p : probes)
     {
       if (p->get_provider () != provider)
 	continue;
@@ -235,7 +231,7 @@ find_probes_in_objfile (struct objfile *objfile, const char *provider,
       if (p->get_name () != name)
 	continue;
 
-      result.push_back (p);
+      result.push_back (p.get ());
     }
 
   return result;
@@ -246,29 +242,28 @@ find_probes_in_objfile (struct objfile *objfile, const char *provider,
 struct bound_probe
 find_probe_by_pc (CORE_ADDR pc)
 {
-  struct objfile *objfile;
   struct bound_probe result;
 
   result.objfile = NULL;
   result.prob = NULL;
 
-  ALL_OBJFILES (objfile)
-  {
-    if (!objfile->sf || !objfile->sf->sym_probe_fns
-	|| objfile->sect_index_text == -1)
-      continue;
+  for (objfile *objfile : current_program_space->objfiles ())
+    {
+      if (!objfile->sf || !objfile->sf->sym_probe_fns
+	  || objfile->sect_index_text == -1)
+	continue;
 
-    /* If this proves too inefficient, we can replace with a hash.  */
-    const std::vector<probe *> &probes
-      = objfile->sf->sym_probe_fns->sym_get_probes (objfile);
-    for (probe *p : probes)
-      if (p->get_relocated_address (objfile) == pc)
-	{
-	  result.objfile = objfile;
-	  result.prob = p;
-	  return result;
-	}
-  }
+      /* If this proves too inefficient, we can replace with a hash.  */
+      const std::vector<std::unique_ptr<probe>> &probes
+	= objfile->sf->sym_probe_fns->sym_get_probes (objfile);
+      for (auto &p : probes)
+	if (p->get_relocated_address (objfile) == pc)
+	  {
+	    result.objfile = objfile;
+	    result.prob = p.get ();
+	    return result;
+	  }
+    }
 
   return result;
 }
@@ -284,7 +279,6 @@ static std::vector<bound_probe>
 collect_probes (const std::string &objname, const std::string &provider,
 		const std::string &probe_name, const static_probe_ops *spops)
 {
-  struct objfile *objfile;
   std::vector<bound_probe> result;
   gdb::optional<compiled_regex> obj_pat, prov_pat, probe_pat;
 
@@ -298,7 +292,7 @@ collect_probes (const std::string &objname, const std::string &provider,
     obj_pat.emplace (objname.c_str (), REG_NOSUB,
 		     _("Invalid object file regexp"));
 
-  ALL_OBJFILES (objfile)
+  for (objfile *objfile : current_program_space->objfiles ())
     {
       if (! objfile->sf || ! objfile->sf->sym_probe_fns)
 	continue;
@@ -309,10 +303,10 @@ collect_probes (const std::string &objname, const std::string &provider,
 	    continue;
 	}
 
-      const std::vector<probe *> &probes
+      const std::vector<std::unique_ptr<probe>> &probes
 	= objfile->sf->sym_probe_fns->sym_get_probes (objfile);
 
-      for (probe *p : probes)
+      for (auto &p : probes)
 	{
 	  if (spops != &any_static_probe_ops && p->get_static_ops () != spops)
 	    continue;
@@ -325,7 +319,7 @@ collect_probes (const std::string &objname, const std::string &provider,
 	      && probe_pat->exec (p->get_name ().c_str (), 0, NULL, 0) != 0)
 	    continue;
 
-	  result.emplace_back (p, objfile);
+	  result.emplace_back (p.get (), objfile);
 	}
     }
 
@@ -577,9 +571,8 @@ info_probes_for_spops (const char *arg, int from_tty,
 	ui_out_emit_tuple tuple_emitter (current_uiout, "probe");
 
 	current_uiout->field_string ("type", probe_type);
-	current_uiout->field_string ("provider",
-				     probe.prob->get_provider ().c_str ());
-	current_uiout->field_string ("name", probe.prob->get_name ().c_str ());
+	current_uiout->field_string ("provider", probe.prob->get_provider ());
+	current_uiout->field_string ("name", probe.prob->get_name ());
 	current_uiout->field_core_addr ("addr", probe.prob->get_gdbarch (),
 					probe.prob->get_relocated_address
 					(probe.objfile));
@@ -699,7 +692,7 @@ probe_safe_evaluate_at_pc (struct frame_info *frame, unsigned n)
   if (!probe.prob)
     return NULL;
 
-  n_args = probe.prob->get_argument_count (frame);
+  n_args = probe.prob->get_argument_count (get_frame_arch (frame));
   if (n >= n_args)
     return NULL;
 
@@ -754,7 +747,7 @@ any_static_probe_ops::is_linespec (const char **linespecp) const
 /* Implementation of 'get_probes' method.  */
 
 void
-any_static_probe_ops::get_probes (std::vector<probe *> *probesp,
+any_static_probe_ops::get_probes (std::vector<std::unique_ptr<probe>> *probesp,
 				  struct objfile *objfile) const
 {
   /* No probes can be provided by this dummy backend.  */
@@ -794,8 +787,7 @@ If you specify TYPE, there may be additional arguments needed by the\n\
 subcommand.\n\
 If you do not specify any argument, or specify `all', then the command\n\
 will show information about all types of probes."),
-		    &info_probes_cmdlist, "info probes ",
-		    0/*allow-unknown*/, &infolist);
+		    &info_probes_cmdlist, 0/*allow-unknown*/, &infolist);
 
   return &info_probes_cmdlist;
 }
@@ -822,7 +814,7 @@ compute_probe_arg (struct gdbarch *arch, struct internalvar *ivar,
   if (pc_probe.prob == NULL)
     error (_("No probe at PC %s"), core_addr_to_string (pc));
 
-  n_args = pc_probe.prob->get_argument_count (frame);
+  n_args = pc_probe.prob->get_argument_count (arch);
   if (sel == -1)
     return value_from_longest (builtin_type (arch)->builtin_int, n_args);
 
@@ -844,7 +836,6 @@ compile_probe_arg (struct internalvar *ivar, struct agent_expr *expr,
   int sel = (int) (uintptr_t) data;
   struct bound_probe pc_probe;
   int n_args;
-  struct frame_info *frame = get_selected_frame (NULL);
 
   /* SEL == -1 means "_probe_argc".  */
   gdb_assert (sel >= -1);
@@ -853,7 +844,7 @@ compile_probe_arg (struct internalvar *ivar, struct agent_expr *expr,
   if (pc_probe.prob == NULL)
     error (_("No probe at PC %s"), core_addr_to_string (pc));
 
-  n_args = pc_probe.prob->get_argument_count (frame);
+  n_args = pc_probe.prob->get_argument_count (expr->gdbarch);
 
   if (sel == -1)
     {
@@ -881,8 +872,9 @@ static const struct internalvar_funcs probe_funcs =
 
 std::vector<const static_probe_ops *> all_static_probe_ops;
 
+void _initialize_probe ();
 void
-_initialize_probe (void)
+_initialize_probe ()
 {
   all_static_probe_ops.push_back (&any_static_probe_ops);
 

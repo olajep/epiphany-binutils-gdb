@@ -1,6 +1,6 @@
 /* Python interface to record targets.
 
-   Copyright 2016-2018 Free Software Foundation, Inc.
+   Copyright 2016-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -45,12 +45,12 @@ PyTypeObject recpy_func_type = {
 
 /* Python RecordGap type.  */
 
-PyTypeObject recpy_gap_type = {
+static PyTypeObject recpy_gap_type = {
   PyVarObject_HEAD_INIT (NULL, 0)
 };
 
 /* Python RecordGap object.  */
-typedef struct
+struct recpy_gap_object
 {
   PyObject_HEAD
 
@@ -62,7 +62,7 @@ typedef struct
 
   /* Element number.  */
   Py_ssize_t number;
-} recpy_gap_object;
+};
 
 /* Implementation of record.method.  */
 
@@ -374,7 +374,7 @@ recpy_element_number (PyObject *self, void* closure)
 {
   const recpy_element_object * const obj = (recpy_element_object *) self;
 
-  return PyInt_FromSsize_t (obj->number);
+  return gdb_py_object_from_longest (obj->number).release ();
 }
 
 /* Implementation of RecordInstruction.__hash__ [int] and
@@ -454,7 +454,7 @@ recpy_gap_number (PyObject *self, void *closure)
 {
   const recpy_gap_object * const obj = (const recpy_gap_object *) self;
 
-  return PyInt_FromSsize_t (obj->number);
+  return gdb_py_object_from_longest (obj->number).release ();
 }
 
 /* Implementation of RecordGap.error_code [int].  */
@@ -464,7 +464,7 @@ recpy_gap_reason_code (PyObject *self, void *closure)
 {
   const recpy_gap_object * const obj = (const recpy_gap_object *) self;
 
-  return PyInt_FromLong (obj->reason_code);
+  return gdb_py_object_from_longest (obj->reason_code).release ();
 }
 
 /* Implementation of RecordGap.error_string [str].  */
@@ -602,16 +602,15 @@ gdbpy_start_recording (PyObject *self, PyObject *args)
   if (!PyArg_ParseTuple (args, "|ss", &method, &format))
     return NULL;
 
-  TRY
+  try
     {
       record_start (method, format, 0);
       ret = gdbpy_current_recording (self, args);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       gdbpy_convert_exception (except);
     }
-  END_CATCH
 
   return ret;
 }
@@ -638,19 +637,14 @@ gdbpy_current_recording (PyObject *self, PyObject *args)
 PyObject *
 gdbpy_stop_recording (PyObject *self, PyObject *args)
 {
-  PyObject *ret = NULL;
-
-  TRY
+  try
     {
       record_stop (0);
-      ret = Py_None;
-      Py_INCREF (Py_None);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      gdbpy_convert_exception (except);
+      GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
-  return ret;
+  Py_RETURN_NONE;
 }

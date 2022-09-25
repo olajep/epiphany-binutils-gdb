@@ -1,6 +1,6 @@
 /* Python interface to btrace instruction history.
 
-   Copyright 2016-2018 Free Software Foundation, Inc.
+   Copyright 2016-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -26,6 +26,7 @@
 #include "py-record-btrace.h"
 #include "record-btrace.h"
 #include "disasm.h"
+#include "gdbarch.h"
 
 #if defined (IS_PY3K)
 
@@ -39,7 +40,7 @@
 
 /* Python object for btrace record lists.  */
 
-typedef struct {
+struct btpy_list_object {
   PyObject_HEAD
 
   /* The thread this list belongs to.  */
@@ -56,7 +57,7 @@ typedef struct {
 
   /* Either &BTPY_CALL_TYPE or &RECPY_INSN_TYPE.  */
   PyTypeObject* element_type;
-} btpy_list_object;
+};
 
 /* Python type for btrace lists.  */
 
@@ -208,15 +209,14 @@ recpy_bt_insn_sal (PyObject *self, void *closure)
   if (insn == NULL)
     return NULL;
 
-  TRY
+  try
     {
       result = symtab_and_line_to_sal_object (find_pc_line (insn->pc, 0));
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
   return result;
 }
@@ -232,7 +232,7 @@ recpy_bt_insn_pc (PyObject *self, void *closure)
   if (insn == NULL)
     return NULL;
 
-  return gdb_py_long_from_ulongest (insn->pc);
+  return gdb_py_object_from_ulongest (insn->pc).release ();
 }
 
 /* Implementation of RecordInstruction.size [int] for btrace.
@@ -246,7 +246,7 @@ recpy_bt_insn_size (PyObject *self, void *closure)
   if (insn == NULL)
     return NULL;
 
-  return PyInt_FromLong (insn->size);
+  return gdb_py_object_from_longest (insn->size).release ();
 }
 
 /* Implementation of RecordInstruction.is_speculative [bool] for btrace.
@@ -273,26 +273,24 @@ PyObject *
 recpy_bt_insn_data (PyObject *self, void *closure)
 {
   const btrace_insn * const insn = btrace_insn_from_recpy_insn (self);
-  gdb_byte *buffer = NULL;
+  gdb::byte_vector buffer;
   PyObject *object;
 
   if (insn == NULL)
     return NULL;
 
-  TRY
+  try
     {
-      buffer = (gdb_byte *) xmalloc (insn->size);
-      read_memory (insn->pc, buffer, insn->size);
+      buffer.resize (insn->size);
+      read_memory (insn->pc, buffer.data (), insn->size);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      xfree (buffer);
       GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
-  object = PyBytes_FromStringAndSize ((const char*) buffer, insn->size);
-  xfree (buffer);
+  object = PyBytes_FromStringAndSize ((const char *) buffer.data (),
+				      insn->size);
 
   if (object == NULL)
     return NULL;
@@ -317,16 +315,15 @@ recpy_bt_insn_decoded (PyObject *self, void *closure)
   if (insn == NULL)
     return NULL;
 
-  TRY
+  try
     {
       gdb_print_insn (target_gdbarch (), insn->pc, &strfile, NULL);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       gdbpy_convert_exception (except);
       return NULL;
     }
-  END_CATCH
 
 
   return PyBytes_FromString (strfile.string ().c_str ());
@@ -345,7 +342,8 @@ recpy_bt_func_level (PyObject *self, void *closure)
     return NULL;
 
   tinfo = ((recpy_element_object *) self)->thread;
-  return PyInt_FromLong (tinfo->btrace.level + func->level);
+  return gdb_py_object_from_longest (tinfo->btrace.level
+				     + func->level).release ();
 }
 
 /* Implementation of RecordFunctionSegment.symbol [gdb.Symbol] for btrace.
@@ -559,7 +557,7 @@ btpy_list_index (PyObject *self, PyObject *value)
   if (index < 0)
     return PyErr_Format (PyExc_ValueError, _("Not in list."));
 
-  return gdb_py_long_from_longest (index);
+  return gdb_py_object_from_longest (index).release ();
 }
 
 /* Implementation of BtraceList.count (self, value) -> int.  */
@@ -569,7 +567,8 @@ btpy_list_count (PyObject *self, PyObject *value)
 {
   /* We know that if an element is in the list, it is so exactly one time,
      enabling us to reuse the "is element of" check.  */
-  return PyInt_FromLong (btpy_list_contains (self, value));
+  return gdb_py_object_from_longest (btpy_list_contains (self,
+							 value)).release ();
 }
 
 /* Python rich compare function to allow for equality and inequality checks
@@ -776,17 +775,19 @@ recpy_bt_goto (PyObject *self, PyObject *args)
   const recpy_record_object * const record = (recpy_record_object *) self;
   thread_info *const tinfo = record->thread;
   const recpy_element_object *obj;
+  PyObject *parse_obj;
 
   if (tinfo == NULL || btrace_is_empty (tinfo))
 	return PyErr_Format (gdbpy_gdb_error, _("Empty branch trace."));
 
-  if (!PyArg_ParseTuple (args, "O", &obj))
+  if (!PyArg_ParseTuple (args, "O", &parse_obj))
     return NULL;
 
-  if (Py_TYPE (obj) != &recpy_insn_type)
+  if (Py_TYPE (parse_obj) != &recpy_insn_type)
     return PyErr_Format (PyExc_TypeError, _("Argument must be instruction."));
+  obj = (const recpy_element_object *) parse_obj;
 
-  TRY
+  try
     {
       struct btrace_insn_iterator iter;
 
@@ -797,20 +798,19 @@ recpy_bt_goto (PyObject *self, PyObject *args)
       else
 	target_goto_record (obj->number);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
       GDB_PY_HANDLE_EXCEPTION (except);
     }
-  END_CATCH
 
   Py_RETURN_NONE;
 }
 
 /* BtraceList methods.  */
 
-struct PyMethodDef btpy_list_methods[] =
+static PyMethodDef btpy_list_methods[] =
 {
-  { "count", btpy_list_count, METH_O, "count number of occurences"},
+  { "count", btpy_list_count, METH_O, "count number of occurrences"},
   { "index", btpy_list_index, METH_O, "index of entry"},
   {NULL}
 };

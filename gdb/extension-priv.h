@@ -1,7 +1,7 @@
 /* Private implementation details of interface between gdb and its
    extension languages.
 
-   Copyright (C) 2014-2018 Free Software Foundation, Inc.
+   Copyright (C) 2014-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -92,7 +92,7 @@ struct extension_language_script_ops
 
   /* Return non-zero if auto-loading scripts in this extension language
      is enabled.  */
-  int (*auto_load_enabled) (const struct extension_language_defn *);
+  bool (*auto_load_enabled) (const struct extension_language_defn *);
 };
 
 /* The interface for making calls from GDB to an external extension
@@ -109,10 +109,11 @@ struct extension_language_script_ops
 
 struct extension_language_ops
 {
-  /* Called at the end of gdb initialization to give the extension language
-     an opportunity to finish up.  This is useful for things like adding
-     new commands where one has to wait until gdb itself is initialized.  */
-  void (*finish_initialization) (const struct extension_language_defn *);
+  /* Called after GDB has processed the early initialization settings
+     files.  This is when the extension language should be initialized.  By
+     the time this is called all of the earlier initialization functions
+     have already been called.  */
+  void (*initialize) (const struct extension_language_defn *);
 
   /* Return non-zero if the extension language successfully initialized.
      This method is required.  */
@@ -152,19 +153,14 @@ struct extension_language_ops
   void (*free_type_printers) (const struct extension_language_defn *,
 			      struct ext_lang_type_printers *);
 
-  /* Try to pretty-print a value of type TYPE located at VAL's contents
-     buffer + EMBEDDED_OFFSET, which came from the inferior at address
-     ADDRESS + EMBEDDED_OFFSET, onto stdio stream STREAM according to
-     OPTIONS.
-     VAL is the whole object that came from ADDRESS.
-     Returns EXT_LANG_RC_OK upon success, EXT_LANG_RC_NOP if the value
-     is not recognized, and EXT_LANG_RC_ERROR if an error was encountered.  */
+  /* Try to pretty-print a value, onto stdio stream STREAM according
+     to OPTIONS.  VAL is the object to print.  Returns EXT_LANG_RC_OK
+     upon success, EXT_LANG_RC_NOP if the value is not recognized, and
+     EXT_LANG_RC_ERROR if an error was encountered.  */
   enum ext_lang_rc (*apply_val_pretty_printer)
     (const struct extension_language_defn *,
-     struct type *type,
-     LONGEST embedded_offset, CORE_ADDR address,
-     struct ui_file *stream, int recurse,
-     struct value *val, const struct value_print_options *options,
+     struct value *val, struct ui_file *stream, int recurse,
+     const struct value_print_options *options,
      const struct language_defn *language);
 
   /* GDB access to the "frame filter" feature.
@@ -254,6 +250,13 @@ struct extension_language_ops
      struct type *obj_type,
      const char *method_name,
      std::vector<xmethod_worker_up> *dm_vec);
+
+  /* Colorize a source file.  NAME is the source file's name, and
+     CONTENTS is the contents of the file.  This should either return
+     colorized (using ANSI terminal escapes) version of the contents,
+     or an empty option.  */
+  gdb::optional<std::string> (*colorize) (const std::string &name,
+					  const std::string &contents);
 };
 
 /* State necessary to restore a signal handler to its previous value.  */

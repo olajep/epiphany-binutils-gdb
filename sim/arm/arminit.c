@@ -14,6 +14,9 @@
     You should have received a copy of the GNU General Public License
     along with this program; if not, see <http://www.gnu.org/licenses/>. */
 
+/* This must come before any other includes.  */
+#include "defs.h"
+
 #include <string.h>
 
 #include "armdefs.h"
@@ -39,6 +42,10 @@ unsigned ARMul_MultTable[32] =
 };
 ARMword ARMul_ImmedTable[4096];	/* immediate DP LHS values */
 char ARMul_BitList[256];	/* number of bits in a byte table */
+
+/* The PC pipeline value depends on whether ARM
+   or Thumb instructions are being executed.  */
+ARMword isize;
 
 /***************************************************************************\
 *         Call this routine once to set up the emulator's tables.           *

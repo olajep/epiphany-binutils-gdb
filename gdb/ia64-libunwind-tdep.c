@@ -1,6 +1,6 @@
 /* Frame unwinder for ia64 frames using the libunwind library.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    Written by Jeff Johnston, contributed by Red Hat Inc.
 
@@ -36,7 +36,7 @@
 #include "ia64-libunwind-tdep.h"
 
 #include "complaints.h"
-#include "common/preprocessor.h"
+#include "gdbsupport/preprocessor.h"
 
 /* IA-64 is the only target that currently uses ia64-libunwind-tdep.
    Note how UNW_TARGET, UNW_OBJ, etc. are compile time constants below.
@@ -111,17 +111,19 @@ struct libunwind_frame_cache
 #define LIBUNWIND_SO_7 "libunwind-" STRINGIFY(UNW_TARGET) ".so.7"
 #endif
 
-static char *get_reg_name = STRINGIFY(UNW_OBJ(get_reg));
-static char *get_fpreg_name = STRINGIFY(UNW_OBJ(get_fpreg));
-static char *get_saveloc_name = STRINGIFY(UNW_OBJ(get_save_loc));
-static char *is_signal_frame_name = STRINGIFY(UNW_OBJ(is_signal_frame));
-static char *step_name = STRINGIFY(UNW_OBJ(step));
-static char *init_remote_name = STRINGIFY(UNW_OBJ(init_remote));
-static char *create_addr_space_name = STRINGIFY(UNW_OBJ(create_addr_space));
-static char *destroy_addr_space_name = STRINGIFY(UNW_OBJ(destroy_addr_space));
-static char *search_unwind_table_name
+static const char *get_reg_name = STRINGIFY(UNW_OBJ(get_reg));
+static const char *get_fpreg_name = STRINGIFY(UNW_OBJ(get_fpreg));
+static const char *get_saveloc_name = STRINGIFY(UNW_OBJ(get_save_loc));
+static const char *is_signal_frame_name = STRINGIFY(UNW_OBJ(is_signal_frame));
+static const char *step_name = STRINGIFY(UNW_OBJ(step));
+static const char *init_remote_name = STRINGIFY(UNW_OBJ(init_remote));
+static const char *create_addr_space_name
+  = STRINGIFY(UNW_OBJ(create_addr_space));
+static const char *destroy_addr_space_name
+  = STRINGIFY(UNW_OBJ(destroy_addr_space));
+static const char *search_unwind_table_name
   = STRINGIFY(UNW_OBJ(search_unwind_table));
-static char *find_dyn_list_name = STRINGIFY(UNW_OBJ(find_dyn_list));
+static const char *find_dyn_list_name = STRINGIFY(UNW_OBJ(find_dyn_list));
 
 static struct libunwind_descr *
 libunwind_descr (struct gdbarch *gdbarch)
@@ -131,10 +133,10 @@ libunwind_descr (struct gdbarch *gdbarch)
 }
 
 static void *
-libunwind_descr_init (struct gdbarch *gdbarch)
+libunwind_descr_init (struct obstack *obstack)
 {
   struct libunwind_descr *descr
-    = GDBARCH_OBSTACK_ZALLOC (gdbarch, struct libunwind_descr);
+    = OBSTACK_ZALLOC (obstack, struct libunwind_descr);
 
   return descr;
 }
@@ -149,14 +151,7 @@ libunwind_frame_set_descr (struct gdbarch *gdbarch,
 
   arch_descr = ((struct libunwind_descr *)
 		gdbarch_data (gdbarch, libunwind_descr_handle));
-
-  if (arch_descr == NULL)
-    {
-      /* First time here.  Must initialize data area.  */
-      arch_descr = (struct libunwind_descr *) libunwind_descr_init (gdbarch);
-      deprecated_set_gdbarch_data (gdbarch,
-				   libunwind_descr_handle, arch_descr);
-    }
+  gdb_assert (arch_descr != NULL);
 
   /* Copy new descriptor info into arch descriptor.  */
   arch_descr->gdb2uw = descr->gdb2uw;
@@ -176,7 +171,7 @@ libunwind_frame_cache (struct frame_info *this_frame, void **this_cache)
   struct libunwind_frame_cache *cache;
   struct libunwind_descr *descr;
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
-  int i, ret;
+  int ret;
 
   if (*this_cache)
     return (struct libunwind_frame_cache *) *this_cache;
@@ -195,7 +190,7 @@ libunwind_frame_cache (struct frame_info *this_frame, void **this_cache)
        The best we can do, in that case, is use the frame PC as the function
        address.  We don't need to give up since we still have the unwind
        record to help us perform the unwinding.  There is also another
-       compelling to continue, because abandonning now means stopping
+       compelling to continue, because abandoning now means stopping
        the backtrace, which can never be helpful for the user.  */
     cache->func_addr = get_frame_pc (this_frame);
 
@@ -261,14 +256,14 @@ libunwind_find_dyn_list (unw_addr_space_t as, unw_dyn_info_t *di, void *arg)
    libunwind frame unwinding.  */
 int
 libunwind_frame_sniffer (const struct frame_unwind *self,
-                         struct frame_info *this_frame, void **this_cache)
+			 struct frame_info *this_frame, void **this_cache)
 {
   unw_cursor_t cursor;
   unw_accessors_t *acc;
   unw_addr_space_t as;
   struct libunwind_descr *descr;
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
-  int i, ret;
+  int ret;
 
   /* To test for libunwind unwind support, initialize a cursor to
      the current frame and try to back up.  We use this same method
@@ -307,7 +302,7 @@ libunwind_frame_sniffer (const struct frame_unwind *self,
 
 void
 libunwind_frame_this_id (struct frame_info *this_frame, void **this_cache,
-		         struct frame_id *this_id)
+			 struct frame_id *this_id)
 {
   struct libunwind_frame_cache *cache =
     libunwind_frame_cache (this_frame, this_cache);
@@ -318,16 +313,13 @@ libunwind_frame_this_id (struct frame_info *this_frame, void **this_cache,
 
 struct value *
 libunwind_frame_prev_register (struct frame_info *this_frame,
-                               void **this_cache, int regnum)
+			       void **this_cache, int regnum)
 {
   struct libunwind_frame_cache *cache =
     libunwind_frame_cache (this_frame, this_cache);
-  struct gdbarch *gdbarch = get_frame_arch (this_frame);
 
-  void *ptr;
-  unw_cursor_t *c;
   unw_save_loc_t sl;
-  int i, ret;
+  int ret;
   unw_word_t intval;
   unw_fpreg_t fpval;
   unw_regnum_t uw_regnum;
@@ -343,7 +335,7 @@ libunwind_frame_prev_register (struct frame_info *this_frame,
 
   gdb_assert (regnum >= 0);
 
-  if (!target_has_registers)
+  if (!target_has_registers ())
     error (_("No registers."));
 
   if (uw_regnum < 0)
@@ -360,29 +352,29 @@ libunwind_frame_prev_register (struct frame_info *this_frame,
 
     case UNW_SLT_REG:
       val = frame_unwind_got_register (this_frame, regnum,
-                                       descr->uw2gdb (sl.u.regnum));
+				       descr->uw2gdb (sl.u.regnum));
       break;
     case UNW_SLT_NONE:
       {
-        /* The register is not stored at a specific memory address nor
-           inside another register.  So use libunwind to fetch the register
-           value for us, and create a constant value with the result.  */
-        if (descr->is_fpreg (uw_regnum))
-          {
-            ret = unw_get_fpreg_p (&cache->cursor, uw_regnum, &fpval);
-            if (ret < 0)
-              return frame_unwind_got_constant (this_frame, regnum, 0);
-            val = frame_unwind_got_bytes (this_frame, regnum,
-                                          (gdb_byte *) &fpval);
-          }
-        else
-          {
-            ret = unw_get_reg_p (&cache->cursor, uw_regnum, &intval);
-            if (ret < 0)
-              return frame_unwind_got_constant (this_frame, regnum, 0);
-            val = frame_unwind_got_constant (this_frame, regnum, intval);
-          }
-        break;
+	/* The register is not stored at a specific memory address nor
+	   inside another register.  So use libunwind to fetch the register
+	   value for us, and create a constant value with the result.  */
+	if (descr->is_fpreg (uw_regnum))
+	  {
+	    ret = unw_get_fpreg_p (&cache->cursor, uw_regnum, &fpval);
+	    if (ret < 0)
+	      return frame_unwind_got_constant (this_frame, regnum, 0);
+	    val = frame_unwind_got_bytes (this_frame, regnum,
+					  (gdb_byte *) &fpval);
+	  }
+	else
+	  {
+	    ret = unw_get_reg_p (&cache->cursor, uw_regnum, &intval);
+	    if (ret < 0)
+	      return frame_unwind_got_constant (this_frame, regnum, 0);
+	    val = frame_unwind_got_constant (this_frame, regnum, intval);
+	  }
+	break;
       }
     }
 
@@ -404,15 +396,15 @@ libunwind_search_unwind_table (void *as, long ip, void *di,
 /* Verify if we are in a sigtramp frame and we can use libunwind to unwind.  */
 int
 libunwind_sigtramp_frame_sniffer (const struct frame_unwind *self,
-                                  struct frame_info *this_frame,
-                                  void **this_cache)
+				  struct frame_info *this_frame,
+				  void **this_cache)
 {
   unw_cursor_t cursor;
   unw_accessors_t *acc;
   unw_addr_space_t as;
   struct libunwind_descr *descr;
   struct gdbarch *gdbarch = get_frame_arch (this_frame);
-  int i, ret;
+  int ret;
 
   /* To test for libunwind unwind support, initialize a cursor to the
      current frame and try to back up.  We use this same method when
@@ -592,11 +584,12 @@ libunwind_is_initialized (void)
   return libunwind_initialized;
 }
 
+void _initialize_libunwind_frame ();
 void
-_initialize_libunwind_frame (void)
+_initialize_libunwind_frame ()
 {
   libunwind_descr_handle
-    = gdbarch_data_register_post_init (libunwind_descr_init);
+    = gdbarch_data_register_pre_init (libunwind_descr_init);
 
   libunwind_initialized = libunwind_load ();
 }

@@ -1,6 +1,6 @@
 /* Guile interface to program spaces.
 
-   Copyright (C) 2010-2018 Free Software Foundation, Inc.
+   Copyright (C) 2010-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -28,10 +28,9 @@
 /* NOTE: Python exports the name "Progspace", so we export "progspace".
    Internally we shorten that to "pspace".  */
 
-/* The <gdb:progspace> smob.
-   The typedef for this struct is in guile-internal.h.  */
+/* The <gdb:progspace> smob.  */
 
-struct _pspace_smob
+struct pspace_smob
 {
   /* This always appears first.  */
   gdb_smob base;
@@ -285,20 +284,19 @@ gdbscm_progspace_objfiles (SCM self)
 {
   pspace_smob *p_smob
     = psscm_get_valid_pspace_smob_arg_unsafe (self, SCM_ARG1, FUNC_NAME);
-  struct objfile *objfile;
   SCM result;
 
   result = SCM_EOL;
 
-  ALL_PSPACE_OBJFILES (p_smob->pspace, objfile)
-  {
-    if (objfile->separate_debug_objfile_backlink == NULL)
-      {
-	SCM item = ofscm_scm_from_objfile (objfile);
+  for (objfile *objfile : p_smob->pspace->objfiles ())
+    {
+      if (objfile->separate_debug_objfile_backlink == NULL)
+	{
+	  SCM item = ofscm_scm_from_objfile (objfile);
 
-	result = scm_cons (item, result);
-      }
-  }
+	  result = scm_cons (item, result);
+	}
+    }
 
   /* We don't really have to return the list in the same order as recorded
      internally, but for consistency we do.  We still advertise that one
@@ -354,17 +352,16 @@ gdbscm_current_progspace (void)
 static SCM
 gdbscm_progspaces (void)
 {
-  struct program_space *ps;
   SCM result;
 
   result = SCM_EOL;
 
-  ALL_PSPACES (ps)
-  {
-    SCM item = psscm_scm_from_pspace (ps);
+  for (struct program_space *ps : program_spaces)
+    {
+      SCM item = psscm_scm_from_pspace (ps);
 
-    result = scm_cons (item, result);
-  }
+      result = scm_cons (item, result);
+    }
 
   return scm_reverse_x (result, SCM_EOL);
 }
@@ -420,7 +417,12 @@ gdbscm_initialize_pspaces (void)
   scm_set_smob_print (pspace_smob_tag, psscm_print_pspace_smob);
 
   gdbscm_define_functions (pspace_functions, 1);
+}
 
+void _initialize_scm_progspace ();
+void
+_initialize_scm_progspace ()
+{
   psscm_pspace_data_key
     = register_program_space_data_with_cleanup (NULL,
 						psscm_handle_pspace_deleted);

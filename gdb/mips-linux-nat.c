@@ -1,6 +1,6 @@
 /* Native-dependent code for GNU/Linux on MIPS processors.
 
-   Copyright (C) 2001-2018 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -187,7 +187,7 @@ mips64_linux_register_addr (struct gdbarch *gdbarch, int regno, int store)
 
 ps_err_e
 ps_get_thread_area (struct ps_prochandle *ph,
-                    lwpid_t lwpid, int idx, void **base)
+		    lwpid_t lwpid, int idx, void **base)
 {
   if (ptrace (PTRACE_GET_THREAD_AREA, lwpid, NULL, base) != 0)
     return PS_ERR;
@@ -458,11 +458,7 @@ mips_linux_nat_target::read_description ()
 
   if (have_dsp < 0)
     {
-      int tid;
-
-      tid = inferior_ptid.lwp ();
-      if (tid == 0)
-	tid = inferior_ptid.pid ();
+      int tid = get_ptrace_pid (inferior_ptid);
 
       errno = 0;
       ptrace (PTRACE_PEEKUSER, tid, DSP_CONTROL, 0);
@@ -677,7 +673,6 @@ mips_linux_nat_target::insert_watchpoint (CORE_ADDR addr, int len,
   struct mips_watchpoint *new_watch;
   struct mips_watchpoint **pw;
 
-  int i;
   int retval;
 
   if (!mips_linux_read_watch_registers (inferior_ptid.lwp (),
@@ -788,8 +783,9 @@ mips_linux_nat_target::close ()
   linux_nat_trad_target::close ();
 }
 
+void _initialize_mips_linux_nat ();
 void
-_initialize_mips_linux_nat (void)
+_initialize_mips_linux_nat ()
 {
   add_setshow_boolean_cmd ("show-debug-regs", class_maintenance,
 			   &show_debug_regs, _("\

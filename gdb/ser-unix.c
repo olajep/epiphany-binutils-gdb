@@ -1,6 +1,6 @@
 /* Serial interface for local (hardwired) serial ports on Un*x like systems
 
-   Copyright (C) 1992-2018 Free Software Foundation, Inc.
+   Copyright (C) 1992-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -26,12 +26,13 @@
 #include <sys/types.h>
 #include "terminal.h"
 #include <sys/socket.h>
-#include "gdb_sys_time.h"
+#include "gdbsupport/gdb_sys_time.h"
 
-#include "gdb_select.h"
+#include "gdbsupport/gdb_select.h"
 #include "gdbcmd.h"
-#include "filestuff.h"
+#include "gdbsupport/filestuff.h"
 #include <termios.h>
+#include "gdbsupport/scoped_ignore_sigttou.h"
 
 struct hardwire_ttystate
   {
@@ -40,7 +41,7 @@ struct hardwire_ttystate
 
 #ifdef CRTSCTS
 /* Boolean to explicitly enable or disable h/w flow control.  */
-static int serial_hwflow;
+static bool serial_hwflow;
 static void
 show_serial_hwflow (struct ui_file *file, int from_tty,
 		    struct cmd_list_element *c, const char *value)
@@ -164,6 +165,9 @@ hardwire_print_tty_state (struct serial *scb,
 static int
 hardwire_drain_output (struct serial *scb)
 {
+  /* Ignore SIGTTOU which may occur during the drain.  */
+  scoped_ignore_sigttou ignore_sigttou;
+
   return tcdrain (scb->fd);
 }
 
@@ -339,31 +343,31 @@ rate_to_code (int rate)
     {
       /* test for perfect macth.  */
       if (rate == baudtab[i].rate)
-        return baudtab[i].code;
+	return baudtab[i].code;
       else
-        {
+	{
 	  /* check if it is in between valid values.  */
-          if (rate < baudtab[i].rate)
+	  if (rate < baudtab[i].rate)
 	    {
 	      if (i)
-	        {
-	          warning (_("Invalid baud rate %d.  "
+		{
+		  warning (_("Invalid baud rate %d.  "
 			     "Closest values are %d and %d."),
 			   rate, baudtab[i - 1].rate, baudtab[i].rate);
 		}
 	      else
-	        {
-	          warning (_("Invalid baud rate %d.  Minimum value is %d."),
+		{
+		  warning (_("Invalid baud rate %d.  Minimum value is %d."),
 			   rate, baudtab[0].rate);
 		}
 	      return -1;
 	    }
-        }
+	}
     }
  
   /* The requested speed was too large.  */
   warning (_("Invalid baud rate %d.  Maximum value is %d."),
-            rate, baudtab[i - 1].rate);
+	    rate, baudtab[i - 1].rate);
   return -1;
 }
 
@@ -376,7 +380,7 @@ hardwire_setbaudrate (struct serial *scb, int rate)
   if (baud_code < 0)
     {
       /* The baud rate was not valid.
-         A warning has already been issued.  */
+	 A warning has already been issued.  */
       errno = EINVAL;
       return -1;
     }
@@ -494,8 +498,9 @@ static const struct serial_ops hardwire_ops =
   ser_unix_write_prim
 };
 
+void _initialize_ser_hardwire ();
 void
-_initialize_ser_hardwire (void)
+_initialize_ser_hardwire ()
 {
   serial_add_interface (&hardwire_ops);
 

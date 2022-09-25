@@ -1,6 +1,6 @@
 /* Character set conversion support for GDB.
 
-   Copyright (C) 2001-2018 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -21,12 +21,11 @@
 #include "charset.h"
 #include "gdbcmd.h"
 #include "gdb_obstack.h"
-#include "gdb_wait.h"
+#include "gdbsupport/gdb_wait.h"
 #include "charset-list.h"
-#include "vec.h"
-#include "environ.h"
+#include "gdbsupport/environ.h"
 #include "arch-utils.h"
-#include "gdb_vecs.h"
+#include "gdbsupport/gdb_vecs.h"
 #include <ctype.h>
 
 #ifdef USE_WIN32API
@@ -248,7 +247,7 @@ show_target_charset_name (struct ui_file *file, int from_tty,
   if (!strcmp (value, "auto"))
     fprintf_filtered (file,
 		      _("The target character set is \"auto; "
-		        "currently %s\".\n"),
+			"currently %s\".\n"),
 		      gdbarch_auto_charset (get_current_arch ()));
   else
     fprintf_filtered (file, _("The target character set is \"%s\".\n"),
@@ -265,20 +264,20 @@ show_target_wide_charset_name (struct ui_file *file,
   if (!strcmp (value, "auto"))
     fprintf_filtered (file,
 		      _("The target wide character set is \"auto; "
-		        "currently %s\".\n"),
+			"currently %s\".\n"),
 		      gdbarch_auto_wide_charset (get_current_arch ()));
   else
     fprintf_filtered (file, _("The target wide character set is \"%s\".\n"),
 		      value);
 }
 
-static const char *default_charset_names[] =
+static const char * const default_charset_names[] =
 {
   DEFAULT_CHARSET_NAMES
   0
 };
 
-static const char **charset_enum;
+static const char * const *charset_enum;
 
 
 /* If the target wide character set has big- or little-endian
@@ -295,9 +294,6 @@ static struct gdbarch *be_le_arch;
 static void
 set_be_le_names (struct gdbarch *gdbarch)
 {
-  int i, len;
-  const char *target_wide;
-
   if (be_le_arch == gdbarch)
     return;
   be_le_arch = gdbarch;
@@ -307,6 +303,9 @@ set_be_le_names (struct gdbarch *gdbarch)
   target_wide_charset_le_name = "UTF-32LE";
   target_wide_charset_be_name = "UTF-32BE";
 #else
+  int i, len;
+  const char *target_wide;
+
   target_wide_charset_le_name = NULL;
   target_wide_charset_be_name = NULL;
 
@@ -548,7 +547,7 @@ convert_between_encodings (const char *from, const char *to,
 
       /* Now make sure that the object on the obstack only includes
 	 bytes we have converted.  */
-      obstack_blank_fast (output, -outleft);
+      obstack_blank_fast (output, -(ssize_t) outleft);
 
       if (r == (size_t) -1)
 	{
@@ -817,10 +816,10 @@ find_charset_names (void)
 
 #ifdef ICONV_BIN
   {
-    char *iconv_dir = relocate_gdb_directory (ICONV_BIN,
-					      ICONV_BIN_RELOCATABLE);
-    iconv_program = concat (iconv_dir, SLASH_STRING, "iconv", NULL);
-    xfree (iconv_dir);
+    std::string iconv_dir = relocate_gdb_directory (ICONV_BIN,
+						    ICONV_BIN_RELOCATABLE);
+    iconv_program
+      = concat (iconv_dir.c_str(), SLASH_STRING, "iconv", (char *) NULL);
   }
 #else
   iconv_program = xstrdup ("iconv");
@@ -946,15 +945,9 @@ default_auto_wide_charset (void)
 #define ENDIAN_SUFFIX "LE"
 #endif
 
-/* The code below serves to generate a compile time error if
-   gdb_wchar_t type is not of size 2 nor 4, despite the fact that
-   macro __STDC_ISO_10646__ is defined.
-   This is better than a gdb_assert call, because GDB cannot handle
-   strings correctly if this size is different.  */
+/* GDB cannot handle strings correctly if this size is different.  */
 
-extern char your_gdb_wchar_t_is_bogus[(sizeof (gdb_wchar_t) == 2
-				       || sizeof (gdb_wchar_t) == 4)
-				      ? 1 : -1];
+gdb_static_assert (sizeof (gdb_wchar_t) == 2 || sizeof (gdb_wchar_t) == 4);
 
 /* intermediate_encoding returns the charset used internally by
    GDB to convert between target and host encodings. As the test above
@@ -997,20 +990,21 @@ intermediate_encoding (void)
   /* Not valid, free the allocated memory.  */
   xfree (result);
   /* No valid charset found, generate error here.  */
-  error (_("Unable to find a vaild charset for string conversions"));
+  error (_("Unable to find a valid charset for string conversions"));
 }
 
 #endif /* USE_INTERMEDIATE_ENCODING_FUNCTION */
 
+void _initialize_charset ();
 void
-_initialize_charset (void)
+_initialize_charset ()
 {
   /* The first element is always "auto".  */
   charsets.charsets.push_back (xstrdup ("auto"));
   find_charset_names ();
 
   if (charsets.charsets.size () > 1)
-    charset_enum = (const char **) charsets.charsets.data ();
+    charset_enum = (const char * const *) charsets.charsets.data ();
   else
     charset_enum = default_charset_names;
 

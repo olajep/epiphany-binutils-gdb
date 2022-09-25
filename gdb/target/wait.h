@@ -1,6 +1,6 @@
 /* Target wait definitions and prototypes.
 
-   Copyright (C) 1990-2018 Free Software Foundation, Inc.
+   Copyright (C) 1990-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,14 +17,21 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef WAIT_H
-#define WAIT_H
+#ifndef TARGET_WAIT_H
+#define TARGET_WAIT_H
+
+#include "gdbsupport/enum-flags.h"
 
 /* Options that can be passed to target_wait.  */
 
-/* Return immediately if there's no event already queued.  If this
-   options is not requested, target_wait blocks waiting for an
-   event.  */
-#define TARGET_WNOHANG 1
+enum target_wait_flag : unsigned
+{
+  /* Return immediately if there's no event already queued.  If this
+     options is not requested, target_wait blocks waiting for an
+     event.  */
+  TARGET_WNOHANG = 1,
+};
 
-#endif /* WAIT_H */
+DEF_ENUM_FLAGS_TYPE (enum target_wait_flag, target_wait_flags);
+
+#endif /* TARGET_WAIT_H */

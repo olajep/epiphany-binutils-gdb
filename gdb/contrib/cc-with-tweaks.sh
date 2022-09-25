@@ -2,7 +2,7 @@
 # Wrapper around gcc to tweak the output in various ways when running
 # the testsuite.
 
-# Copyright (C) 2010-2018 Free Software Foundation, Inc.
+# Copyright (C) 2010-2022 Free Software Foundation, Inc.
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 3 of the License, or
@@ -42,8 +42,10 @@
 # -Z invoke objcopy --compress-debug-sections
 # -z compress using dwz
 # -m compress using dwz -m
-# -i make an index
+# -i make an index (.gdb_index)
+# -n make a dwarf5 index (.debug_names)
 # -p create .dwp files (Fission), you need to also use gcc option -gsplit-dwarf
+# -l creates separate debuginfo files linked to using .gnu_debuglink
 # If nothing is given, no changes are made
 
 myname=cc-with-tweaks.sh
@@ -77,18 +79,22 @@ next_is_output_file=no
 output_file=a.out
 
 want_index=false
+index_options=""
 want_dwz=false
 want_multi=false
 want_dwp=false
 want_objcopy_compress=false
+want_gnu_debuglink=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
 	-Z) want_objcopy_compress=true ;;
 	-z) want_dwz=true ;;
 	-i) want_index=true ;;
+	-n) want_index=true; index_options=-dwarf-5;;
 	-m) want_multi=true ;;
 	-p) want_dwp=true ;;
+	-l) want_gnu_debuglink=true ;;
 	*) break ;;
     esac
     shift
@@ -141,13 +147,6 @@ then
     exit $?
 fi
 
-index_file="${output_file}.gdb-index"
-if [ "$want_index" = true ] && [ -f "$index_file" ]
-then
-    echo "$myname: Index file $index_file exists, won't clobber." >&2
-    exit 1
-fi
-
 output_dir="${output_file%/*}"
 [ "$output_dir" = "$output_file" ] && output_dir="."
 
@@ -160,6 +159,17 @@ then
     exit 1
 fi
 
+get_tmpdir ()
+{
+    subdir="$1"
+    if [ "$subdir" = "" ]; then
+	subdir=.tmp
+    fi
+
+    tmpdir=$(dirname "$output_file")/"$subdir"
+    mkdir -p "$tmpdir"
+}
+
 if [ "$want_objcopy_compress" = true ]; then
     $OBJCOPY --compress-debug-sections "$output_file"
     rc=$?
@@ -167,19 +177,57 @@ if [ "$want_objcopy_compress" = true ]; then
 fi
 
 if [ "$want_index" = true ]; then
+    get_tmpdir
+    mv "$output_file" "$tmpdir"
+    tmpfile="$tmpdir/$(basename $output_file)"
     # Filter out these messages which would stop dejagnu testcase run:
     # echo "$myname: No index was created for $file" 1>&2
     # echo "$myname: [Was there no debuginfo? Was there already an index?]" 1>&2
-    GDB=$GDB $GDB_ADD_INDEX "$output_file" 2>&1|grep -v "^${GDB_ADD_INDEX##*/}: " >&2
+    GDB=$GDB $GDB_ADD_INDEX $index_options "$tmpfile" 2>&1 \
+	| grep -v "^${GDB_ADD_INDEX##*/}: " >&2
     rc=${PIPESTATUS[0]}
+    mv "$tmpfile" "$output_file"
     [ $rc != 0 ] && exit $rc
 fi
 
 if [ "$want_dwz" = true ]; then
-    $DWZ "$output_file" > /dev/null 2>&1
+    # Validate dwz's result by checking if the executable was modified.
+    cp "$output_file" "${output_file}.copy"
+    $DWZ "$output_file" > /dev/null
+    cmp "$output_file" "$output_file.copy" > /dev/null
+    cmp_rc=$?
+    rm -f "${output_file}.copy"
+
+    case $cmp_rc in
+    0)
+	echo "$myname: dwz did not modify ${output_file}."
+        exit 1
+	;;
+    1)
+	# File was modified, great.
+	;;
+    *)
+	# Other cmp error, it presumably has already printed something on
+	# stderr.
+	exit 1
+	;;
+    esac
 elif [ "$want_multi" = true ]; then
+    get_tmpdir
+    dwz_file=$tmpdir/$(basename "$output_file").dwz
+    # Remove the dwz output file if it exists, so we don't mistake it for a
+    # new file in case dwz fails.
+    rm -f "$dwz_file"
+
     cp $output_file ${output_file}.alt
-    $DWZ -m ${output_file}.dwz "$output_file" ${output_file}.alt > /dev/null 2>&1
+    $DWZ -m "$dwz_file" "$output_file" ${output_file}.alt > /dev/null
+    rm -f ${output_file}.alt
+
+    # Validate dwz's work by checking if the expected output file exists.
+    if [ ! -f "$dwz_file" ]; then
+	echo "$myname: dwz file $dwz_file missing."
+	exit 1
+    fi
 fi
 
 if [ "$want_dwp" = true ]; then
@@ -194,5 +242,40 @@ if [ "$want_dwp" = true ]; then
     fi
 fi
 
-rm -f "$index_file"
+if [ "$want_gnu_debuglink" = true ]; then
+    # Based on gdb_gnu_strip_debug.
+
+    # Gdb looks for the .gnu_debuglink file in the .debug subdirectory
+    # of the directory of the executable.
+    get_tmpdir .debug
+
+    stripped_file="$tmpdir"/$(basename "$output_file").stripped
+    debug_file="$tmpdir"/$(basename "$output_file").debug
+
+    # Create stripped and debug versions of output_file.
+    strip --strip-debug "${output_file}" \
+	  -o "${stripped_file}"
+    rc=$?
+    [ $rc != 0 ] && exit $rc
+    strip --only-keep-debug "${output_file}" \
+	  -o "${debug_file}"
+    rc=$?
+    [ $rc != 0 ] && exit $rc
+
+    # The .gnu_debuglink is supposed to contain no leading directories.
+    link=$(basename "${debug_file}")
+
+    (
+	# Temporarily cd to tmpdir to allow objcopy to find $link
+	cd "$tmpdir" || exit 1
+
+	# Overwrite output_file with stripped version containing
+	# .gnu_debuglink to debug_file.
+	objcopy --add-gnu-debuglink="$link" "${stripped_file}" \
+		"${output_file}"
+	rc=$?
+	[ $rc != 0 ] && exit $rc
+    )
+fi
+
 exit $rc

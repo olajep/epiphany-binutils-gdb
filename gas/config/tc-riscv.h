@@ -1,5 +1,5 @@
 /* tc-riscv.h -- header file for tc-riscv.c.
-   Copyright (C) 2011-2018 Free Software Foundation, Inc.
+   Copyright (C) 2011-2021 Free Software Foundation, Inc.
 
    Contributed by Andrew Waterman (andrew@sifive.com).
    Based on MIPS target.
@@ -28,7 +28,9 @@
 struct frag;
 struct expressionS;
 
+#ifndef TARGET_BYTES_BIG_ENDIAN
 #define TARGET_BYTES_BIG_ENDIAN 0
+#endif
 
 #define TARGET_ARCH bfd_arch_riscv
 
@@ -38,10 +40,10 @@ struct expressionS;
 /* Symbols named FAKE_LABEL_NAME are emitted when generating DWARF, so make
    sure FAKE_LABEL_NAME is printable.  It still must be distinct from any
    real label name.  So, append a space, which other labels can't contain.  */
-#define FAKE_LABEL_NAME ".L0 "
+#define FAKE_LABEL_NAME RISCV_FAKE_LABEL_NAME
 /* Changing the special character in FAKE_LABEL_NAME requires changing
    FAKE_LABEL_CHAR too.  */
-#define FAKE_LABEL_CHAR ' '
+#define FAKE_LABEL_CHAR RISCV_FAKE_LABEL_CHAR
 
 #define md_relax_frag(segment, fragp, stretch) \
   riscv_relax_frag (segment, fragp, stretch)
@@ -51,7 +53,7 @@ extern int riscv_relax_frag (asection *, struct frag *, long);
 #define md_undefined_symbol(name)	(0)
 #define md_operand(x)
 
-extern bfd_boolean riscv_frag_align_code (int);
+extern bool riscv_frag_align_code (int);
 #define md_do_align(N, FILL, LEN, MAX, LABEL)				\
   if ((N) != 0 && !(FILL) && !need_pass_2 && subseg_text_p (now_seg))	\
     {									\
@@ -65,16 +67,16 @@ extern void riscv_handle_align (fragS *);
 #define MAX_MEM_FOR_RS_ALIGN_CODE (3 + 4)
 
 /* The ISA of the target may change based on command-line arguments.  */
-#define TARGET_FORMAT riscv_target_format()
+#define TARGET_FORMAT riscv_target_format ()
 extern const char * riscv_target_format (void);
 
-#define md_after_parse_args() riscv_after_parse_args()
+#define md_after_parse_args() riscv_after_parse_args ()
 extern void riscv_after_parse_args (void);
 
 #define md_parse_long_option(arg) riscv_parse_long_option (arg)
 extern int riscv_parse_long_option (const char *);
 
-#define md_pre_output_hook riscv_pre_output_hook()
+#define md_pre_output_hook riscv_pre_output_hook ()
 extern void riscv_pre_output_hook (void);
 
 /* Let the linker resolve all the relocs due to relaxation.  */
@@ -119,5 +121,11 @@ extern void riscv_elf_final_processing (void);
 
 /* Adjust debug_line after relaxation.  */
 #define DWARF2_USE_FIXED_ADVANCE_PC 1
+
+#define md_end riscv_md_end
+#define CONVERT_SYMBOLIC_ATTRIBUTE riscv_convert_symbolic_attribute
+
+extern void riscv_md_end (void);
+extern int riscv_convert_symbolic_attribute (const char *);
 
 #endif /* TC_RISCV */

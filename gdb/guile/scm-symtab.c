@@ -1,6 +1,6 @@
 /* Scheme interface to symbol tables.
 
-   Copyright (C) 2008-2018 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -29,7 +29,7 @@
 
 /* A <gdb:symtab> smob.  */
 
-typedef struct
+struct symtab_smob
 {
   /* This always appears first.
      eqable_gdb_smob is used so that symtabs are eq?-able.
@@ -42,7 +42,7 @@ typedef struct
      If this is NULL the symtab is invalid.  This can happen when the
      underlying objfile is freed.  */
   struct symtab *symtab;
-} symtab_smob;
+};
 
 /* A <gdb:sal> smob.
    A smob describing a gdb symtab-and-line object.
@@ -50,7 +50,7 @@ typedef struct
    the validity of symtab_scm.
    TODO: Sals are not eq?-able at the moment, or even comparable.  */
 
-typedef struct
+struct sal_smob
 {
   /* This always appears first.  */
   gdb_smob base;
@@ -67,7 +67,7 @@ typedef struct
      this pointer will not be updated.  Use symtab_scm instead to determine
      if this sal is valid.  */
   struct symtab_and_line sal;
-} sal_smob;
+};
 
 static const char symtab_smob_name[] = "gdb:symtab";
 /* "symtab-and-line" is pretty long, and "sal" is short and unique.  */
@@ -395,7 +395,6 @@ static int
 stscm_print_sal_smob (SCM self, SCM port, scm_print_state *pstate)
 {
   sal_smob *s_smob = (sal_smob *) SCM_SMOB_DATA (self);
-  symtab_smob *st_smob = (symtab_smob *) SCM_SMOB_DATA (s_smob->symtab_scm);
 
   gdbscm_printf (port, "#<%s ", symtab_smob_name);
   scm_write (s_smob->symtab_scm, port);
@@ -592,18 +591,19 @@ gdbscm_find_pc_line (SCM pc_scm)
 
   gdbscm_parse_function_args (FUNC_NAME, SCM_ARG1, NULL, "U", pc_scm, &pc_ull);
 
-  TRY
+  gdbscm_gdb_exception exc {};
+  try
     {
       CORE_ADDR pc = (CORE_ADDR) pc_ull;
 
       sal = find_pc_line (pc, 0);
     }
-  CATCH (except, RETURN_MASK_ALL)
+  catch (const gdb_exception &except)
     {
-      GDBSCM_HANDLE_GDB_EXCEPTION (except);
+      exc = unpack (except);
     }
-  END_CATCH
 
+  GDBSCM_HANDLE_GDB_EXCEPTION (exc);
   return stscm_scm_from_sal (sal);
 }
 
@@ -688,7 +688,12 @@ gdbscm_initialize_symtabs (void)
   scm_set_smob_print (sal_smob_tag, stscm_print_sal_smob);
 
   gdbscm_define_functions (symtab_functions, 1);
+}
 
+void _initialize_scm_symtab ();
+void
+_initialize_scm_symtab ()
+{
   /* Register an objfile "free" callback so we can properly
      invalidate symbol tables, and symbol table and line data
      structures when an object file that is about to be deleted.  */

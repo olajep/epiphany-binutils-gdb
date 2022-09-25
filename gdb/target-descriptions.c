@@ -1,6 +1,6 @@
 /* Target description support for GDB.
 
-   Copyright (C) 2006-2018 Free Software Foundation, Inc.
+   Copyright (C) 2006-2022 Free Software Foundation, Inc.
 
    Contributed by CodeSourcery.
 
@@ -26,7 +26,6 @@
 #include "reggroups.h"
 #include "target.h"
 #include "target-descriptions.h"
-#include "vec.h"
 #include "xml-support.h"
 #include "xml-tdesc.h"
 #include "osabi.h"
@@ -119,6 +118,11 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
 
       switch (e->kind)
 	{
+	case TDESC_TYPE_IEEE_HALF:
+	  m_type = arch_float_type (m_gdbarch, -1, "builtin_type_ieee_half",
+				    floatformats_ieee_half);
+	  return;
+
 	case TDESC_TYPE_IEEE_SINGLE:
 	  m_type = arch_float_type (m_gdbarch, -1, "builtin_type_ieee_single",
 				    floatformats_ieee_single);
@@ -137,6 +141,11 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
 	  m_type = arch_float_type (m_gdbarch, -1, "builtin_type_i387_ext",
 				    floatformats_i387_ext);
 	  return;
+
+	case TDESC_TYPE_BFLOAT16:
+	  m_type = arch_float_type (m_gdbarch, -1, "builtin_type_bfloat16",
+				    floatformats_bfloat16);
+	  return;
 	}
 
       internal_error (__FILE__, __LINE__,
@@ -152,7 +161,7 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
 
       type *element_gdb_type = make_gdb_type (m_gdbarch, e->element_type);
       m_type = init_vector_type (element_gdb_type, e->count);
-      TYPE_NAME (m_type) = xstrdup (e->name.c_str ());
+      m_type->set_name (xstrdup (e->name.c_str ()));
       return;
     }
 
@@ -188,7 +197,7 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
     void make_gdb_type_struct (const tdesc_type_with_fields *e)
     {
       m_type = arch_composite_type (m_gdbarch, NULL, TYPE_CODE_STRUCT);
-      TYPE_NAME (m_type) = xstrdup (e->name.c_str ());
+      m_type->set_name (xstrdup (e->name.c_str ()));
 
       for (const tdesc_type_field &f : e->fields)
 	{
@@ -220,7 +229,7 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
 		 the total size of the structure.  */
 	      bitsize = f.end - f.start + 1;
 	      total_size = e->size * TARGET_CHAR_BIT;
-	      if (gdbarch_bits_big_endian (m_gdbarch))
+	      if (gdbarch_byte_order (m_gdbarch) == BFD_ENDIAN_BIG)
 		SET_FIELD_BITPOS (fld[0], total_size - f.start - bitsize);
 	      else
 		SET_FIELD_BITPOS (fld[0], f.start);
@@ -243,7 +252,7 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
     void make_gdb_type_union (const tdesc_type_with_fields *e)
     {
       m_type = arch_composite_type (m_gdbarch, NULL, TYPE_CODE_UNION);
-      TYPE_NAME (m_type) = xstrdup (e->name.c_str ());
+      m_type->set_name (xstrdup (e->name.c_str ()));
 
       for (const tdesc_type_field &f : e->fields)
 	{
@@ -254,8 +263,8 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
 	  /* If any of the children of a union are vectors, flag the
 	     union as a vector also.  This allows e.g. a union of two
 	     vector types to show up automatically in "info vector".  */
-	  if (TYPE_VECTOR (field_gdb_type))
-	    TYPE_VECTOR (m_type) = 1;
+	  if (field_gdb_type->is_vector ())
+	    m_type->set_is_vector (true);
 	}
     }
 
@@ -280,7 +289,8 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
       m_type = arch_type (m_gdbarch, TYPE_CODE_ENUM, e->size * TARGET_CHAR_BIT,
 			  e->name.c_str ());
 
-      TYPE_UNSIGNED (m_type) = 1;
+      m_type->set_is_unsigned (true);
+
       for (const tdesc_type_field &f : e->fields)
 	{
 	  struct field *fld
@@ -304,6 +314,29 @@ make_gdb_type (struct gdbarch *gdbarch, struct tdesc_type *ttype)
   return gdb_type.get_type ();
 }
 
+/* Wrapper around bfd_arch_info_type.  A class with this name is used in
+   the API that is shared between gdb and gdbserver code, but gdbserver
+   doesn't use compatibility information, so its version of this class is
+   empty.  */
+
+class tdesc_compatible_info
+{
+public:
+  /* Constructor.  */
+  explicit tdesc_compatible_info (const bfd_arch_info_type *arch)
+    : m_arch (arch)
+  { /* Nothing.  */ }
+
+  /* Access the contained pointer.  */
+  const bfd_arch_info_type *arch () const
+  { return m_arch; }
+
+private:
+  /* Architecture information looked up from the <compatible> entity within
+     a target description.  */
+  const bfd_arch_info_type *m_arch;
+};
+
 /* A target description.  */
 
 struct target_desc : tdesc_element
@@ -324,7 +357,7 @@ struct target_desc : tdesc_element
   enum gdb_osabi osabi = GDB_OSABI_UNKNOWN;
 
   /* The list of compatible architectures reported by the target.  */
-  std::vector<const bfd_arch_info *> compatible;
+  std::vector<tdesc_compatible_info_up> compatible;
 
   /* Any architecture-specific properties specified by the target.  */
   std::vector<property> properties;
@@ -413,20 +446,22 @@ struct target_desc_info
   /* A flag indicating that a description has already been fetched
      from the target, so it should not be queried again.  */
 
-  int fetched;
+  bool fetched = false;
 
   /* The description fetched from the target, or NULL if the target
      did not supply any description.  Only valid when
-     target_desc_fetched is set.  Only the description initialization
+     FETCHED is set.  Only the description initialization
      code should access this; normally, the description should be
      accessed through the gdbarch object.  */
 
-  const struct target_desc *tdesc;
+  const struct target_desc *tdesc = nullptr;
 
-  /* The filename to read a target description from, as set by "set
-     tdesc filename ..."  */
+  /* If not empty, the filename to read a target description from, as set by
+     "set tdesc filename ...".
 
-  char *filename;
+     If empty, there is not filename specified by the user.  */
+
+  std::string filename;
 };
 
 /* Get the inferior INF's target description info, allocating one on
@@ -436,7 +471,8 @@ static struct target_desc_info *
 get_tdesc_info (struct inferior *inf)
 {
   if (inf->tdesc_info == NULL)
-    inf->tdesc_info = XCNEW (struct target_desc_info);
+    inf->tdesc_info = new target_desc_info;
+
   return inf->tdesc_info;
 }
 
@@ -450,7 +486,7 @@ static struct gdbarch_data *tdesc_data;
 int
 target_desc_info_from_user_p (struct target_desc_info *info)
 {
-  return info != NULL && info->filename != NULL;
+  return info != nullptr && !info->filename.empty ();
 }
 
 /* See target-descriptions.h.  */
@@ -461,9 +497,7 @@ copy_inferior_target_desc_info (struct inferior *destinf, struct inferior *srcin
   struct target_desc_info *src = get_tdesc_info (srcinf);
   struct target_desc_info *dest = get_tdesc_info (destinf);
 
-  dest->fetched = src->fetched;
-  dest->tdesc = src->tdesc;
-  dest->filename = src->filename != NULL ? xstrdup (src->filename) : NULL;
+  *dest = *src;
 }
 
 /* See target-descriptions.h.  */
@@ -471,21 +505,8 @@ copy_inferior_target_desc_info (struct inferior *destinf, struct inferior *srcin
 void
 target_desc_info_free (struct target_desc_info *tdesc_info)
 {
-  if (tdesc_info != NULL)
-    {
-      xfree (tdesc_info->filename);
-      xfree (tdesc_info);
-    }
+  delete tdesc_info;
 }
-
-/* Convenience helper macros.  */
-
-#define target_desc_fetched \
-  get_tdesc_info (current_inferior ())->fetched
-#define current_target_desc \
-  get_tdesc_info (current_inferior ())->tdesc
-#define target_description_filename \
-  get_tdesc_info (current_inferior ())->filename
 
 /* The string manipulated by the "set tdesc filename ..." command.  */
 
@@ -497,11 +518,13 @@ static char *tdesc_filename_cmd_string;
 void
 target_find_description (void)
 {
+  target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
+
   /* If we've already fetched a description from the target, don't do
      it again.  This allows a target to fetch the description early,
      during its to_open or to_create_inferior, if it needs extra
      information about the target to initialize.  */
-  if (target_desc_fetched)
+  if (tdesc_info->fetched)
     return;
 
   /* The current architecture should not have any target description
@@ -511,29 +534,28 @@ target_find_description (void)
 
   /* First try to fetch an XML description from the user-specified
      file.  */
-  current_target_desc = NULL;
-  if (target_description_filename != NULL
-      && *target_description_filename != '\0')
-    current_target_desc
-      = file_read_description_xml (target_description_filename);
+  tdesc_info->tdesc = nullptr;
+  if (!tdesc_info->filename.empty ())
+    tdesc_info->tdesc = file_read_description_xml (tdesc_info->filename.data ());
 
   /* Next try to read the description from the current target using
      target objects.  */
-  if (current_target_desc == NULL)
-    current_target_desc = target_read_description_xml (current_top_target ());
+  if (tdesc_info->tdesc == nullptr)
+    tdesc_info->tdesc = target_read_description_xml
+      (current_inferior ()->top_target ());
 
   /* If that failed try a target-specific hook.  */
-  if (current_target_desc == NULL)
-    current_target_desc = target_read_description (current_top_target ());
+  if (tdesc_info->tdesc == nullptr)
+    tdesc_info->tdesc = target_read_description
+      (current_inferior ()->top_target ());
 
   /* If a non-NULL description was returned, then update the current
      architecture.  */
-  if (current_target_desc)
+  if (tdesc_info->tdesc != nullptr)
     {
       struct gdbarch_info info;
 
-      gdbarch_info_init (&info);
-      info.target_desc = current_target_desc;
+      info.target_desc = tdesc_info->tdesc;
       if (!gdbarch_update_p (info))
 	warning (_("Architecture rejected target-supplied description"));
       else
@@ -542,7 +564,7 @@ target_find_description (void)
 
 	  data = ((struct tdesc_arch_data *)
 		  gdbarch_data (target_gdbarch (), tdesc_data));
-	  if (tdesc_has_registers (current_target_desc)
+	  if (tdesc_has_registers (tdesc_info->tdesc)
 	      && data->arch_regs.empty ())
 	    warning (_("Target-supplied registers are not supported "
 		       "by the current architecture"));
@@ -551,7 +573,7 @@ target_find_description (void)
 
   /* Now that we know this description is usable, record that we
      fetched it.  */
-  target_desc_fetched = 1;
+  tdesc_info->fetched = true;
 }
 
 /* Discard any description fetched from the current target, and switch
@@ -560,15 +582,15 @@ target_find_description (void)
 void
 target_clear_description (void)
 {
-  struct gdbarch_info info;
+  target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
 
-  if (!target_desc_fetched)
+  if (!tdesc_info->fetched)
     return;
 
-  target_desc_fetched = 0;
-  current_target_desc = NULL;
+  tdesc_info->fetched = false;
+  tdesc_info->tdesc = nullptr;
 
-  gdbarch_info_init (&info);
+  gdbarch_info info;
   if (!gdbarch_update_p (info))
     internal_error (__FILE__, __LINE__,
 		    _("Could not remove target-supplied description"));
@@ -581,8 +603,10 @@ target_clear_description (void)
 const struct target_desc *
 target_current_description (void)
 {
-  if (target_desc_fetched)
-    return current_target_desc;
+  target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
+
+  if (tdesc_info->fetched)
+    return tdesc_info->tdesc;
 
   return NULL;
 }
@@ -594,11 +618,11 @@ int
 tdesc_compatible_p (const struct target_desc *target_desc,
 		    const struct bfd_arch_info *arch)
 {
-  for (const bfd_arch_info *compat : target_desc->compatible)
+  for (const tdesc_compatible_info_up &compat : target_desc->compatible)
     {
-      if (compat == arch
-	  || arch->compatible (arch, compat)
-	  || compat->compatible (compat, arch))
+      if (compat->arch () == arch
+	  || arch->compatible (arch, compat->arch ())
+	  || compat->arch ()->compatible (compat->arch (), arch))
 	return 1;
     }
 
@@ -630,12 +654,30 @@ tdesc_architecture (const struct target_desc *target_desc)
   return target_desc->arch;
 }
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 const char *
 tdesc_architecture_name (const struct target_desc *target_desc)
 {
-  return target_desc->arch->printable_name;
+  if (target_desc->arch != NULL)
+    return target_desc->arch->printable_name;
+  return NULL;
+}
+
+/* See gdbsupport/tdesc.h.  */
+
+const std::vector<tdesc_compatible_info_up> &
+tdesc_compatible_info_list (const target_desc *target_desc)
+{
+  return target_desc->compatible;
+}
+
+/* See gdbsupport/tdesc.h.  */
+
+const char *
+tdesc_compatible_info_arch_name (const tdesc_compatible_info_up &compatible)
+{
+  return compatible->arch ()->printable_name;
 }
 
 /* Return the OSABI associated with this target description, or
@@ -647,7 +689,7 @@ tdesc_osabi (const struct target_desc *target_desc)
   return target_desc->osabi;
 }
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 const char *
 tdesc_osabi_name (const struct target_desc *target_desc)
@@ -728,21 +770,17 @@ tdesc_data_init (struct obstack *obstack)
 /* Similar, but for the temporary copy used during architecture
    initialization.  */
 
-struct tdesc_arch_data *
+tdesc_arch_data_up
 tdesc_data_alloc (void)
 {
-  return new tdesc_arch_data ();
+  return tdesc_arch_data_up (new tdesc_arch_data ());
 }
 
-/* Free something allocated by tdesc_data_alloc, if it is not going
-   to be used (for instance if it was unsuitable for the
-   architecture).  */
+/* See target-descriptions.h.  */
 
 void
-tdesc_data_cleanup (void *data_untyped)
+tdesc_arch_data_deleter::operator() (struct tdesc_arch_data *data) const
 {
-  struct tdesc_arch_data *data = (struct tdesc_arch_data *) data_untyped;
-
   delete data;
 }
 
@@ -854,12 +892,11 @@ tdesc_register_name (struct gdbarch *gdbarch, int regno)
 {
   struct tdesc_reg *reg = tdesc_find_register (gdbarch, regno);
   int num_regs = gdbarch_num_regs (gdbarch);
-  int num_pseudo_regs = gdbarch_num_pseudo_regs (gdbarch);
 
   if (reg != NULL)
     return reg->name.c_str ();
 
-  if (regno >= num_regs && regno < num_regs + num_pseudo_regs)
+  if (regno >= num_regs && regno < gdbarch_num_cooked_regs (gdbarch))
     {
       struct tdesc_arch_data *data
 	= (struct tdesc_arch_data *) gdbarch_data (gdbarch, tdesc_data);
@@ -1053,11 +1090,11 @@ set_tdesc_pseudo_register_reggroup_p
 void
 tdesc_use_registers (struct gdbarch *gdbarch,
 		     const struct target_desc *target_desc,
-		     struct tdesc_arch_data *early_data)
+		     tdesc_arch_data_up &&early_data,
+		     tdesc_unknown_register_ftype unk_reg_cb)
 {
   int num_regs = gdbarch_num_regs (gdbarch);
   struct tdesc_arch_data *data;
-  htab_t reg_hash;
 
   /* We can't use the description for registers if it doesn't describe
      any.  This function should only be called after validating
@@ -1066,17 +1103,17 @@ tdesc_use_registers (struct gdbarch *gdbarch,
   gdb_assert (tdesc_has_registers (target_desc));
 
   data = (struct tdesc_arch_data *) gdbarch_data (gdbarch, tdesc_data);
-  data->arch_regs = early_data->arch_regs;
-  delete early_data;
+  data->arch_regs = std::move (early_data->arch_regs);
 
   /* Build up a set of all registers, so that we can assign register
      numbers where needed.  The hash table expands as necessary, so
      the initial size is arbitrary.  */
-  reg_hash = htab_create (37, htab_hash_pointer, htab_eq_pointer, NULL);
+  htab_up reg_hash (htab_create (37, htab_hash_pointer, htab_eq_pointer,
+				 NULL));
   for (const tdesc_feature_up &feature : target_desc->features)
     for (const tdesc_reg_up &reg : feature->registers)
       {
-	void **slot = htab_find_slot (reg_hash, reg.get (), INSERT);
+	void **slot = htab_find_slot (reg_hash.get (), reg.get (), INSERT);
 
 	*slot = reg.get ();
 	/* Add reggroup if its new.  */
@@ -1091,7 +1128,7 @@ tdesc_use_registers (struct gdbarch *gdbarch,
      architecture.  */
   for (const tdesc_arch_reg &arch_reg : data->arch_regs)
     if (arch_reg.reg != NULL)
-      htab_remove_elt (reg_hash, arch_reg.reg);
+      htab_remove_elt (reg_hash.get (), arch_reg.reg);
 
   /* Assign numbers to the remaining registers and add them to the
      list of registers.  The new numbers are always above gdbarch_num_regs.
@@ -1102,15 +1139,41 @@ tdesc_use_registers (struct gdbarch *gdbarch,
   while (data->arch_regs.size () < num_regs)
     data->arch_regs.emplace_back (nullptr, nullptr);
 
+  /* First we give the target a chance to number previously unknown
+     registers.  This allows targets to record the numbers assigned based
+     on which feature the register was from.  */
+  if (unk_reg_cb != NULL)
+    {
+      for (const tdesc_feature_up &feature : target_desc->features)
+	for (const tdesc_reg_up &reg : feature->registers)
+	  if (htab_find (reg_hash.get (), reg.get ()) != NULL)
+	    {
+	      int regno = unk_reg_cb (gdbarch, feature.get (),
+				      reg->name.c_str (), num_regs);
+	      gdb_assert (regno == -1 || regno >= num_regs);
+	      if (regno != -1)
+		{
+		  while (regno >= data->arch_regs.size ())
+		    data->arch_regs.emplace_back (nullptr, nullptr);
+		  data->arch_regs[regno] = tdesc_arch_reg (reg.get (), NULL);
+		  num_regs = regno + 1;
+		  htab_remove_elt (reg_hash.get (), reg.get ());
+		}
+	    }
+    }
+
+  /* Ensure the array was sized correctly above.  */
+  gdb_assert (data->arch_regs.size () == num_regs);
+
+  /* Now in a final pass we assign register numbers to any remaining
+     unnumbered registers.  */
   for (const tdesc_feature_up &feature : target_desc->features)
     for (const tdesc_reg_up &reg : feature->registers)
-      if (htab_find (reg_hash, reg.get ()) != NULL)
+      if (htab_find (reg_hash.get (), reg.get ()) != NULL)
 	{
 	  data->arch_regs.emplace_back (reg.get (), nullptr);
 	  num_regs++;
 	}
-
-  htab_delete (reg_hash);
 
   /* Update the architecture.  */
   set_gdbarch_num_regs (gdbarch, num_regs);
@@ -1121,7 +1184,7 @@ tdesc_use_registers (struct gdbarch *gdbarch,
   set_gdbarch_register_reggroup_p (gdbarch, tdesc_register_reggroup_p);
 }
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 struct tdesc_feature *
 tdesc_create_feature (struct target_desc *tdesc, const char *name)
@@ -1133,24 +1196,20 @@ tdesc_create_feature (struct target_desc *tdesc, const char *name)
   return new_feature;
 }
 
-struct target_desc *
+/* See gdbsupport/tdesc.h.  */
+
+target_desc_up
 allocate_target_description (void)
 {
-  return new target_desc ();
+  return target_desc_up (new target_desc ());
 }
 
-static void
-free_target_description (void *arg)
-{
-  struct target_desc *target_desc = (struct target_desc *) arg;
+/* See gdbsupport/tdesc.h.  */
 
+void
+target_desc_deleter::operator() (struct target_desc *target_desc) const
+{
   delete target_desc;
-}
-
-struct cleanup *
-make_cleanup_free_target_description (struct target_desc *target_desc)
-{
-  return make_cleanup (free_target_description, target_desc);
 }
 
 void
@@ -1163,14 +1222,16 @@ tdesc_add_compatible (struct target_desc *target_desc,
   if (compatible == NULL)
     return;
 
-  for (const bfd_arch_info *compat : target_desc->compatible)
-    if (compat == compatible)
+  for (const tdesc_compatible_info_up &compat : target_desc->compatible)
+    if (compat->arch () == compatible)
       internal_error (__FILE__, __LINE__,
 		      _("Attempted to add duplicate "
 			"compatible architecture \"%s\""),
 		      compatible->printable_name);
 
-  target_desc->compatible.push_back (compatible);
+  target_desc->compatible.push_back
+    (std::unique_ptr<tdesc_compatible_info>
+     (new tdesc_compatible_info (compatible)));
 }
 
 void
@@ -1186,7 +1247,7 @@ set_tdesc_property (struct target_desc *target_desc,
   target_desc->properties.emplace_back (key, value);
 }
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 void
 set_tdesc_architecture (struct target_desc *target_desc,
@@ -1202,7 +1263,7 @@ set_tdesc_architecture (struct target_desc *target_desc,
   target_desc->arch = arch;
 }
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 void
 set_tdesc_osabi (struct target_desc *target_desc, const char *name)
@@ -1223,29 +1284,12 @@ static struct cmd_list_element *tdesc_unset_cmdlist;
 /* Helper functions for the CLI commands.  */
 
 static void
-set_tdesc_cmd (const char *args, int from_tty)
-{
-  help_list (tdesc_set_cmdlist, "set tdesc ", all_commands, gdb_stdout);
-}
-
-static void
-show_tdesc_cmd (const char *args, int from_tty)
-{
-  cmd_show_list (tdesc_show_cmdlist, from_tty, "");
-}
-
-static void
-unset_tdesc_cmd (const char *args, int from_tty)
-{
-  help_list (tdesc_unset_cmdlist, "unset tdesc ", all_commands, gdb_stdout);
-}
-
-static void
 set_tdesc_filename_cmd (const char *args, int from_tty,
 			struct cmd_list_element *c)
 {
-  xfree (target_description_filename);
-  target_description_filename = xstrdup (tdesc_filename_cmd_string);
+  target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
+
+  tdesc_info->filename = tdesc_filename_cmd_string;
 
   target_clear_description ();
   target_find_description ();
@@ -1256,7 +1300,7 @@ show_tdesc_filename_cmd (struct ui_file *file, int from_tty,
 			 struct cmd_list_element *c,
 			 const char *value)
 {
-  value = target_description_filename;
+  value = get_tdesc_info (current_inferior ())->filename.data ();
 
   if (value != NULL && *value != '\0')
     printf_filtered (_("The target description will be read from \"%s\".\n"),
@@ -1269,8 +1313,9 @@ show_tdesc_filename_cmd (struct ui_file *file, int from_tty,
 static void
 unset_tdesc_filename_cmd (const char *args, int from_tty)
 {
-  xfree (target_description_filename);
-  target_description_filename = NULL;
+  target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
+
+  tdesc_info->filename.clear ();
   target_clear_description ();
   target_find_description ();
 }
@@ -1292,6 +1337,8 @@ public:
       if (*inp == '.')
 	break;
       else if (*inp == '-')
+	*outp++ = '_';
+      else if (*inp == ' ')
 	*outp++ = '_';
       else
 	*outp++ = *inp;
@@ -1323,12 +1370,12 @@ public:
     printf_unfiltered ("initialize_tdesc_%s (void)\n", m_function);
     printf_unfiltered ("{\n");
     printf_unfiltered
-      ("  struct target_desc *result = allocate_target_description ();\n");
+      ("  target_desc_up result = allocate_target_description ();\n");
 
     if (tdesc_architecture (e) != NULL)
       {
 	printf_unfiltered
-	  ("  set_tdesc_architecture (result, bfd_scan_arch (\"%s\"));\n",
+	  ("  set_tdesc_architecture (result.get (), bfd_scan_arch (\"%s\"));\n",
 	   tdesc_architecture (e)->printable_name);
 	printf_unfiltered ("\n");
       }
@@ -1336,21 +1383,21 @@ public:
 	&& tdesc_osabi (e) < GDB_OSABI_INVALID)
       {
 	printf_unfiltered
-	  ("  set_tdesc_osabi (result, osabi_from_tdesc_string (\"%s\"));\n",
+	  ("  set_tdesc_osabi (result.get (), osabi_from_tdesc_string (\"%s\"));\n",
 	   gdbarch_osabi_name (tdesc_osabi (e)));
 	printf_unfiltered ("\n");
       }
 
-    for (const bfd_arch_info_type *compatible : e->compatible)
+    for (const tdesc_compatible_info_up &compatible : e->compatible)
       printf_unfiltered
-	("  tdesc_add_compatible (result, bfd_scan_arch (\"%s\"));\n",
-	 compatible->printable_name);
+	("  tdesc_add_compatible (result.get (), bfd_scan_arch (\"%s\"));\n",
+	 compatible->arch ()->printable_name);
 
     if (!e->compatible.empty ())
       printf_unfiltered ("\n");
 
     for (const property &prop : e->properties)
-      printf_unfiltered ("  set_tdesc_property (result, \"%s\", \"%s\");\n",
+      printf_unfiltered ("  set_tdesc_property (result.get (), \"%s\", \"%s\");\n",
 			 prop.key.c_str (), prop.value.c_str ());
 
     printf_unfiltered ("  struct tdesc_feature *feature;\n");
@@ -1358,7 +1405,7 @@ public:
 
   void visit_pre (const tdesc_feature *e) override
   {
-    printf_unfiltered ("\n  feature = tdesc_create_feature (result, \"%s\");\n",
+    printf_unfiltered ("\n  feature = tdesc_create_feature (result.get (), \"%s\");\n",
 		       e->name.c_str ());
   }
 
@@ -1367,7 +1414,7 @@ public:
 
   void visit_post (const target_desc *e) override
   {
-    printf_unfiltered ("\n  tdesc_%s = result;\n", m_function);
+    printf_unfiltered ("\n  tdesc_%s = result.release ();\n", m_function);
     printf_unfiltered ("}\n");
   }
 
@@ -1567,7 +1614,7 @@ public:
     printf_unfiltered ("  Original: %s */\n\n",
 		       lbasename (m_filename_after_features.c_str ()));
 
-    printf_unfiltered ("#include \"common/tdesc.h\"\n");
+    printf_unfiltered ("#include \"gdbsupport/tdesc.h\"\n");
     printf_unfiltered ("\n");
   }
 
@@ -1662,7 +1709,7 @@ private:
   int m_next_regnum = 0;
 };
 
-/* See common/tdesc.h.  */
+/* See gdbsupport/tdesc.h.  */
 
 const char *
 tdesc_get_features_xml (const target_desc *tdesc)
@@ -1677,11 +1724,44 @@ tdesc_get_features_xml (const target_desc *tdesc)
   return tdesc->xmltarget;
 }
 
+/* Data structures and functions to setup the option flags for 'maintenance
+   print c-tdesc command.  */
+
+struct maint_print_c_tdesc_options
+{
+  /* True when the '-single-feature' flag was passed.  */
+  bool single_feature = false;
+};
+
+using maint_print_c_tdesc_opt_def
+  = gdb::option::flag_option_def<maint_print_c_tdesc_options>;
+
+static const gdb::option::option_def maint_print_c_tdesc_opt_defs[] = {
+  maint_print_c_tdesc_opt_def {
+    "single-feature",
+    [] (maint_print_c_tdesc_options *opt) { return &opt->single_feature; },
+    N_("Print C description of just a single feature.")
+  },
+};
+
+static inline gdb::option::option_def_group
+make_maint_print_c_tdesc_options_def_group (maint_print_c_tdesc_options *opts)
+{
+  return {{maint_print_c_tdesc_opt_defs}, opts};
+}
+
+/* Implement 'maintenance print c-tdesc' command.  */
+
 static void
 maint_print_c_tdesc_cmd (const char *args, int from_tty)
 {
   const struct target_desc *tdesc;
   const char *filename;
+
+  maint_print_c_tdesc_options opts;
+  auto grp = make_maint_print_c_tdesc_options_def_group (&opts);
+  gdb::option::process_options
+    (&args, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR, grp);
 
   if (args == NULL)
     {
@@ -1689,8 +1769,9 @@ maint_print_c_tdesc_cmd (const char *args, int from_tty)
 	 architecture's.  This lets a GDB for one architecture generate C
 	 for another architecture's description, even though the gdbarch
 	 initialization code will reject the new description.  */
-      tdesc = current_target_desc;
-      filename = target_description_filename;
+      target_desc_info *tdesc_info = get_tdesc_info (current_inferior ());
+      tdesc = tdesc_info->tdesc;
+      filename = tdesc_info->filename.data ();
     }
   else
     {
@@ -1703,7 +1784,7 @@ maint_print_c_tdesc_cmd (const char *args, int from_tty)
     error (_("There is no target description to print."));
 
   if (filename == NULL)
-    error (_("The current target description did not come from an XML file."));
+    filename = "fetched from target";
 
   std::string filename_after_features (filename);
   auto loc = filename_after_features.rfind ("/features/");
@@ -1714,12 +1795,12 @@ maint_print_c_tdesc_cmd (const char *args, int from_tty)
   /* Print c files for target features instead of target descriptions,
      because c files got from target features are more flexible than the
      counterparts.  */
-  if (startswith (filename_after_features.c_str (), "i386/32bit-")
-      || startswith (filename_after_features.c_str (), "i386/64bit-")
-      || startswith (filename_after_features.c_str (), "i386/x32-core.xml")
-      || startswith (filename_after_features.c_str (), "tic6x-")
-      || startswith (filename_after_features.c_str (), "aarch64"))
+  if (opts.single_feature)
     {
+      if (tdesc->features.size () != 1)
+	error (_("only target descriptions with 1 feature can be used "
+		 "with -single-feature option"));
+
       print_c_feature v (filename_after_features);
 
       tdesc->accept (v);
@@ -1732,24 +1813,82 @@ maint_print_c_tdesc_cmd (const char *args, int from_tty)
     }
 }
 
+/* Completer for the "backtrace" command.  */
+
+static void
+maint_print_c_tdesc_cmd_completer (struct cmd_list_element *ignore,
+				   completion_tracker &tracker,
+				   const char *text, const char *word)
+{
+  auto grp = make_maint_print_c_tdesc_options_def_group (nullptr);
+  if (gdb::option::complete_options
+      (tracker, &text, gdb::option::PROCESS_OPTIONS_UNKNOWN_IS_ERROR, grp))
+    return;
+
+  word = advance_to_filename_complete_word_point (tracker, text);
+  filename_completer (ignore, tracker, text, word);
+}
+
+/* Implement the maintenance print xml-tdesc command.  */
+
+static void
+maint_print_xml_tdesc_cmd (const char *args, int from_tty)
+{
+  const struct target_desc *tdesc;
+
+  if (args == NULL)
+    {
+      /* Use the global target-supplied description, not the current
+	 architecture's.  This lets a GDB for one architecture generate XML
+	 for another architecture's description, even though the gdbarch
+	 initialization code will reject the new description.  */
+      tdesc = get_tdesc_info (current_inferior ())->tdesc;
+    }
+  else
+    {
+      /* Use the target description from the XML file.  */
+      tdesc = file_read_description_xml (args);
+    }
+
+  if (tdesc == NULL)
+    error (_("There is no target description to print."));
+
+  std::string buf;
+  print_xml_feature v (&buf);
+  tdesc->accept (v);
+  puts_unfiltered (buf.c_str ());
+}
+
 namespace selftests {
 
-static std::vector<std::pair<const char*, const target_desc *>> xml_tdesc;
+/* A reference target description, used for testing (see record_xml_tdesc).  */
+
+struct xml_test_tdesc
+{
+  xml_test_tdesc (const char *name, std::unique_ptr<const target_desc> &&tdesc)
+    : name (name), tdesc (std::move (tdesc))
+  {}
+
+  const char *name;
+  std::unique_ptr<const target_desc> tdesc;
+};
+
+static std::vector<xml_test_tdesc> xml_tdesc;
 
 #if GDB_SELF_TEST
 
-/* See target-descritpions.h.  */
+/* See target-descriptions.h.  */
 
 void
 record_xml_tdesc (const char *xml_file, const struct target_desc *tdesc)
 {
-  xml_tdesc.emplace_back (xml_file, tdesc);
+  xml_tdesc.emplace_back (xml_file, std::unique_ptr<const target_desc> (tdesc));
 }
 #endif
 
 }
 
-/* Test the convesion process of a target description to/from xml: Take a target
+/* Test the conversion process of a target description to/from xml: Take a target
    description TDESC, convert to xml, back to a description, and confirm the new
    tdesc is identical to the original.  */
 static bool
@@ -1798,46 +1937,49 @@ maintenance_check_xml_descriptions (const char *dir, int from_tty)
 
   for (auto const &e : selftests::xml_tdesc)
     {
-      std::string tdesc_xml = (feature_dir + SLASH_STRING + e.first);
+      std::string tdesc_xml = (feature_dir + SLASH_STRING + e.name);
       const target_desc *tdesc
 	= file_read_description_xml (tdesc_xml.data ());
 
-      if (tdesc == NULL || *tdesc != *e.second)
+      if (tdesc == NULL || *tdesc != *e.tdesc)
 	{
-	  printf_filtered ( _("Descriptions for %s do not match.\n"), e.first);
+	  printf_filtered ( _("Descriptions for %s do not match.\n"), e.name);
 	  failed++;
 	}
-      else if (!maintenance_check_tdesc_xml_convert (tdesc, e.first)
-	       || !maintenance_check_tdesc_xml_convert (e.second, e.first))
+      else if (!maintenance_check_tdesc_xml_convert (tdesc, e.name)
+	       || !maintenance_check_tdesc_xml_convert (e.tdesc.get (), e.name))
 	failed++;
     }
   printf_filtered (_("Tested %lu XML files, %d failed\n"),
 		   (long) selftests::xml_tdesc.size (), failed);
 }
 
+void _initialize_target_descriptions ();
 void
-_initialize_target_descriptions (void)
+_initialize_target_descriptions ()
 {
+  cmd_list_element *cmd;
+
   tdesc_data = gdbarch_data_register_pre_init (tdesc_data_init);
 
-  add_prefix_cmd ("tdesc", class_maintenance, set_tdesc_cmd, _("\
+  add_basic_prefix_cmd ("tdesc", class_maintenance, _("\
 Set target description specific variables."),
-		  &tdesc_set_cmdlist, "set tdesc ",
-		  0 /* allow-unknown */, &setlist);
-  add_prefix_cmd ("tdesc", class_maintenance, show_tdesc_cmd, _("\
+			&tdesc_set_cmdlist,
+			0 /* allow-unknown */, &setlist);
+  add_show_prefix_cmd ("tdesc", class_maintenance, _("\
 Show target description specific variables."),
-		  &tdesc_show_cmdlist, "show tdesc ",
-		  0 /* allow-unknown */, &showlist);
-  add_prefix_cmd ("tdesc", class_maintenance, unset_tdesc_cmd, _("\
+		       &tdesc_show_cmdlist,
+		       0 /* allow-unknown */, &showlist);
+  add_basic_prefix_cmd ("tdesc", class_maintenance, _("\
 Unset target description specific variables."),
-		  &tdesc_unset_cmdlist, "unset tdesc ",
-		  0 /* allow-unknown */, &unsetlist);
+			&tdesc_unset_cmdlist,
+			0 /* allow-unknown */, &unsetlist);
 
   add_setshow_filename_cmd ("filename", class_obscure,
 			    &tdesc_filename_cmd_string,
 			    _("\
-Set the file to read for an XML target description"), _("\
-Show the file to read for an XML target description"), _("\
+Set the file to read for an XML target description."), _("\
+Show the file to read for an XML target description."), _("\
 When set, GDB will read the target description from a local\n\
 file instead of querying the remote target."),
 			    set_tdesc_filename_cmd,
@@ -1845,18 +1987,38 @@ file instead of querying the remote target."),
 			    &tdesc_set_cmdlist, &tdesc_show_cmdlist);
 
   add_cmd ("filename", class_obscure, unset_tdesc_filename_cmd, _("\
-Unset the file to read for an XML target description.  When unset,\n\
-GDB will read the description from the target."),
+Unset the file to read for an XML target description.\n\
+When unset, GDB will read the description from the target."),
 	   &tdesc_unset_cmdlist);
 
-  add_cmd ("c-tdesc", class_maintenance, maint_print_c_tdesc_cmd, _("\
-Print the current target description as a C source file."),
-	   &maintenanceprintlist);
+  auto grp = make_maint_print_c_tdesc_options_def_group (nullptr);
+  static std::string help_text
+    = gdb::option::build_help (_("\
+Print the current target description as a C source file.\n\
+Usage: maintenance print c-tdesc [OPTION] [FILENAME]\n\
+\n\
+Options:\n\
+%OPTIONS%\n\
+\n\
+When FILENAME is not provided then print the current target\n\
+description, otherwise an XML target description is read from\n\
+FILENAME and printed as a C function.\n\
+\n\
+When '-single-feature' is used then the target description should\n\
+contain a single feature and the generated C code will only create\n\
+that feature within an already existing target_desc object."), grp);
+  cmd = add_cmd ("c-tdesc", class_maintenance, maint_print_c_tdesc_cmd,
+		 help_text.c_str (), &maintenanceprintlist);
+  set_cmd_completer_handle_brkchars (cmd, maint_print_c_tdesc_cmd_completer);
 
-  cmd_list_element *cmd;
+  cmd = add_cmd ("xml-tdesc", class_maintenance, maint_print_xml_tdesc_cmd, _("\
+Print the current target description as an XML file."),
+		 &maintenanceprintlist);
+  set_cmd_completer (cmd, filename_completer);
 
   cmd = add_cmd ("xml-descriptions", class_maintenance,
 		 maintenance_check_xml_descriptions, _("\
+Check equality of GDB target descriptions and XML created descriptions.\n\
 Check the target descriptions created in GDB equal the descriptions\n\
 created from XML files in the directory.\n\
 The parameter is the directory name."),

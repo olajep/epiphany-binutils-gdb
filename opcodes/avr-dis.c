@@ -1,5 +1,5 @@
 /* Disassemble AVR instructions.
-   Copyright (C) 1999-2018 Free Software Foundation, Inc.
+   Copyright (C) 1999-2021 Free Software Foundation, Inc.
 
    Contributed by Denis Chertykov <denisc@overta.ru>
 
@@ -25,7 +25,7 @@
 #include "disassemble.h"
 #include "opintl.h"
 #include "libiberty.h"
-#include "bfd_stdint.h"
+#include <stdint.h>
 
 struct avr_opcodes_s
 {
@@ -198,6 +198,8 @@ avr_operand (unsigned int insn, unsigned int insn2, unsigned int pc, int constra
       {
         unsigned int val = ((insn & 0xf) | ((insn & 0x600) >> 5)
                                          | ((insn & 0x100) >> 2));
+	if ((insn & 0x100) == 0)
+	  val |= 0x80;
         *sym = 1;
         *sym_addr = val | 0x800000;
         sprintf (buf, "0x%02x", val);

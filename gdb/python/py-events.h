@@ -1,6 +1,6 @@
 /* Python interface to inferior events.
 
-   Copyright (C) 2009-2018 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,8 +17,8 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#ifndef GDB_PY_EVENTS_H
-#define GDB_PY_EVENTS_H
+#ifndef PYTHON_PY_EVENTS_H
+#define PYTHON_PY_EVENTS_H
 
 #include "command.h"
 #include "python-internal.h"
@@ -27,17 +27,17 @@
 /* Stores a list of objects to be notified when the event for which this
    registry tracks occurs.  */
 
-typedef struct
+struct eventregistry_object
 {
   PyObject_HEAD
 
   PyObject *callbacks;
-} eventregistry_object;
+};
 
 /* Struct holding references to event registries both in python and c.
    This is meant to be a singleton.  */
 
-typedef struct
+struct events_object
 {
 #define GDB_PY_DEFINE_EVENT(name)		\
   eventregistry_object *name;
@@ -46,7 +46,7 @@ typedef struct
 
   PyObject *module;
 
-} events_object;
+};
 
 /* Python events singleton.  */
 extern events_object gdb_py_events;
@@ -54,4 +54,4 @@ extern events_object gdb_py_events;
 extern eventregistry_object *create_eventregistry_object (void);
 extern int evregpy_no_listeners_p (eventregistry_object *registry);
 
-#endif /* GDB_PY_EVENTS_H */
+#endif /* PYTHON_PY_EVENTS_H */

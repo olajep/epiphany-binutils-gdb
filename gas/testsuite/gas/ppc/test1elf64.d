@@ -1,4 +1,5 @@
 #objdump: -Drx
+#as:  --generate-missing-build-notes=no
 #name: PowerPC Test 1, 64 bit elf
 
 .*
@@ -20,7 +21,6 @@ Idx Name          Size      VMA               LMA               File off  Algn
 SYMBOL TABLE:
 0000000000000000 l    d  \.text	0000000000000000 (|\.text)
 0000000000000000 l    d  \.data	0000000000000000 (|\.data)
-0000000000000000 l    d  \.bss	0000000000000000 (|\.bss)
 0000000000000000 l       \.data	0000000000000000 dsym0
 0000000000000008 l       \.data	0000000000000000 dsym1
 0000000000000000 l    d  \.toc	0000000000000000 (|\.toc)

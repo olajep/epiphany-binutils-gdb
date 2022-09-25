@@ -1,5 +1,5 @@
 /* Target-dependent code for the 32-bit OpenRISC 1000, for the GDB.
-   Copyright (C) 2008-2018 Free Software Foundation, Inc.
+   Copyright (C) 2008-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -33,10 +33,9 @@
 #include "block.h"
 #include "reggroups.h"
 #include "arch-utils.h"
-#include "frame.h"
 #include "frame-unwind.h"
 #include "frame-base.h"
-#include "dwarf2-frame.h"
+#include "dwarf2/frame.h"
 #include "trad-frame.h"
 #include "regset.h"
 #include "remote.h"
@@ -51,7 +50,7 @@
 
 /* Global debug flag.  */
 
-static int or1k_debug = 0;
+static bool or1k_debug = false;
 
 static void
 show_or1k_debug (struct ui_file *file, int from_tty,
@@ -246,7 +245,7 @@ or1k_return_value (struct gdbarch *gdbarch, struct value *functype,
 		   gdb_byte *readbuf, const gdb_byte *writebuf)
 {
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
-  enum type_code rv_type = TYPE_CODE (valtype);
+  enum type_code rv_type = valtype->code ();
   unsigned int rv_size = TYPE_LENGTH (valtype);
   int bpw = (gdbarch_tdep (gdbarch))->bytes_per_word;
 
@@ -595,7 +594,8 @@ static CORE_ADDR
 or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 		      struct regcache *regcache, CORE_ADDR bp_addr,
 		      int nargs, struct value **args, CORE_ADDR sp,
-		      int struct_return, CORE_ADDR struct_addr)
+		      function_call_return_method return_method,
+		      CORE_ADDR struct_addr)
 {
 
   int argreg;
@@ -617,7 +617,7 @@ or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
 
   /* Location for a returned structure.  This is passed as a silent first
      argument.  */
-  if (struct_return)
+  if (return_method == return_method_struct)
     {
       regcache_cooked_write_unsigned (regcache, OR1K_FIRST_ARG_REGNUM,
 				      struct_addr);
@@ -633,9 +633,9 @@ or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       struct value *arg = args[argnum];
       struct type *arg_type = check_typedef (value_type (arg));
       int len = TYPE_LENGTH (arg_type);
-      enum type_code typecode = TYPE_CODE (arg_type);
+      enum type_code typecode = arg_type->code ();
 
-      if (TYPE_VARARGS (func_type) && argnum >= TYPE_NFIELDS (func_type))
+      if (func_type->has_varargs () && argnum >= func_type->num_fields ())
 	break; /* end or regular args, varargs go to stack.  */
 
       /* Extract the value, either a reference or the data.  */
@@ -723,7 +723,7 @@ or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       struct value *arg = args[argnum];
       struct type *arg_type = check_typedef (value_type (arg));
       int len = TYPE_LENGTH (arg_type);
-      enum type_code typecode = TYPE_CODE (arg_type);
+      enum type_code typecode = arg_type->code ();
 
       if ((TYPE_CODE_STRUCT == typecode) || (TYPE_CODE_UNION == typecode)
 	  || (len > bpw * 2))
@@ -755,9 +755,9 @@ or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
       struct value *arg = args[argnum];
       struct type *arg_type = check_typedef (value_type (arg));
       int len = TYPE_LENGTH (arg_type);
-      enum type_code typecode = TYPE_CODE (arg_type);
+      enum type_code typecode = arg_type->code ();
       /* The EABI passes structures that do not fit in a register by
-         reference.  In all other cases, pass the structure by value.  */
+	 reference.  In all other cases, pass the structure by value.  */
       if ((TYPE_CODE_STRUCT == typecode) || (TYPE_CODE_UNION == typecode)
 	  || (len > bpw * 2))
 	{
@@ -789,14 +789,6 @@ or1k_push_dummy_call (struct gdbarch *gdbarch, struct value *function,
   return sp;
 }
 
-/* Implement the dummy_id gdbarch method.  */
-
-static struct frame_id
-or1k_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
-{
-  return frame_id_build (get_frame_sp (this_frame),
-			 get_frame_pc (this_frame));
-}
 
 
 /* Support functions for frame handling.  */
@@ -832,7 +824,7 @@ or1k_dummy_id (struct gdbarch *gdbarch, struct frame_info *this_frame)
 
    l.sw    lr_loc(r1),r9        # Link (return) address
 
-   The link register is usally saved at fp_loc - 4.  It may not be saved at
+   The link register is usually saved at fp_loc - 4.  It may not be saved at
    all in a leaf function.
 
    l.sw    reg_loc(r1),ry       # Save any callee saved regs
@@ -982,8 +974,8 @@ or1k_frame_cache (struct frame_info *this_frame, void **prologue_cache)
 	  else
 	    {
 	      /* We are past this point, so the stack pointer of the prev
-	         frame is frame_size greater than the stack pointer of this
-	         frame.  */
+		 frame is frame_size greater than the stack pointer of this
+		 frame.  */
 	      trad_frame_set_reg_value (info, OR1K_SP_REGNUM,
 					this_sp + frame_size);
 	    }
@@ -1016,7 +1008,7 @@ or1k_frame_cache (struct frame_info *this_frame, void **prologue_cache)
 	      inst = or1k_fetch_instruction (gdbarch, addr);
 
 	      /* If we have got this far, the stack pointer of the previous
-	         frame is the frame pointer of this frame.  */
+		 frame is the frame pointer of this frame.  */
 	      trad_frame_set_reg_realreg (info, OR1K_SP_REGNUM,
 					  OR1K_FP_REGNUM);
 	    }
@@ -1055,7 +1047,7 @@ or1k_frame_cache (struct frame_info *this_frame, void **prologue_cache)
 	      inst = or1k_fetch_instruction (gdbarch, addr);
 
 	      /* The register in the previous frame can be found at this
-	         location in this frame.  */
+		 location in this frame.  */
 	      trad_frame_set_reg_addr (info, rb, this_sp + simm);
 	    }
 	  else
@@ -1104,6 +1096,7 @@ or1k_frame_prev_register (struct frame_info *this_frame,
 /* Data structures for the normal prologue-analysis-based unwinder.  */
 
 static const struct frame_unwind or1k_frame_unwind = {
+  "or1k prologue",
   NORMAL_FRAME,
   default_frame_unwind_stop_reason,
   or1k_frame_this_id,
@@ -1121,7 +1114,7 @@ or1k_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   struct gdbarch *gdbarch;
   struct gdbarch_tdep *tdep;
   const struct bfd_arch_info *binfo;
-  struct tdesc_arch_data *tdesc_data = NULL;
+  tdesc_arch_data_up tdesc_data;
   const struct target_desc *tdesc = info.target_desc;
 
   /* Find a candidate among the list of pre-declared architectures.  */
@@ -1184,7 +1177,6 @@ or1k_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
   set_gdbarch_call_dummy_location (gdbarch, ON_STACK);
   set_gdbarch_push_dummy_code (gdbarch, or1k_push_dummy_code);
   set_gdbarch_push_dummy_call (gdbarch, or1k_push_dummy_call);
-  set_gdbarch_dummy_id (gdbarch, or1k_dummy_id);
 
   /* Frame unwinders.  Use DWARF debug info if available, otherwise use our
      own unwinder.  */
@@ -1223,21 +1215,18 @@ or1k_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
 
       feature = tdesc_find_feature (tdesc, "org.gnu.gdb.or1k.group0");
       if (feature == NULL)
-        return NULL;
+	return NULL;
 
       tdesc_data = tdesc_data_alloc ();
 
       valid_p = 1;
 
       for (i = 0; i < OR1K_NUM_REGS; i++)
-        valid_p &= tdesc_numbered_register (feature, tdesc_data, i,
-                                            or1k_reg_names[i]);
+	valid_p &= tdesc_numbered_register (feature, tdesc_data.get (), i,
+					    or1k_reg_names[i]);
 
       if (!valid_p)
-        {
-          tdesc_data_cleanup (tdesc_data);
-          return NULL;
-        }
+	return NULL;
     }
 
   if (tdesc_data != NULL)
@@ -1252,8 +1241,11 @@ or1k_gdbarch_init (struct gdbarch_info info, struct gdbarch_list *arches)
       reggroup_add (gdbarch, save_reggroup);
       reggroup_add (gdbarch, restore_reggroup);
 
-      tdesc_use_registers (gdbarch, tdesc, tdesc_data);
+      tdesc_use_registers (gdbarch, tdesc, std::move (tdesc_data));
     }
+
+  /* Hook in ABI-specific overrides, if they have been registered.  */
+  gdbarch_init_osabi (info, gdbarch);
 
   return gdbarch;
 }
@@ -1275,8 +1267,9 @@ or1k_dump_tdep (struct gdbarch *gdbarch, struct ui_file *file)
 }
 
 
+void _initialize_or1k_tdep ();
 void
-_initialize_or1k_tdep (void)
+_initialize_or1k_tdep ()
 {
   /* Register this architecture.  */
   gdbarch_register (bfd_arch_or1k, or1k_gdbarch_init, or1k_dump_tdep);

@@ -1,6 +1,6 @@
 /* Target-dependent code for OpenBSD/mips64.
 
-   Copyright (C) 2004-2018 Free Software Foundation, Inc.
+   Copyright (C) 2004-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -128,11 +128,11 @@ static const struct tramp_frame mips64obsd_sigframe =
   SIGTRAMP_FRAME,
   MIPS_INSN32_SIZE,
   {
-    { 0x67a40020, -1 },		/* daddiu  a0,sp,32 */
-    { 0x24020067, -1 },		/* li      v0,103 */
-    { 0x0000000c, -1 },		/* syscall */
-    { 0x0000000d, -1 },		/* break */
-    { TRAMP_SENTINEL_INSN, -1 }
+    { 0x67a40020, ULONGEST_MAX },		/* daddiu  a0,sp,32 */
+    { 0x24020067, ULONGEST_MAX },		/* li      v0,103 */
+    { 0x0000000c, ULONGEST_MAX },		/* syscall */
+    { 0x0000000d, ULONGEST_MAX },		/* break */
+    { TRAMP_SENTINEL_INSN, ULONGEST_MAX }
   },
   mips64obsd_sigframe_init
 };
@@ -159,8 +159,9 @@ mips64obsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
     (gdbarch, svr4_lp64_fetch_link_map_offsets);
 }
 
+void _initialize_mips64obsd_tdep ();
 void
-_initialize_mips64obsd_tdep (void)
+_initialize_mips64obsd_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_mips, 0, GDB_OSABI_OPENBSD,
 			  mips64obsd_init_abi);

@@ -7,7 +7,7 @@ else
 fi
 fragment <<EOF
 /* This file is part of GLD, the Gnu Linker.
-   Copyright (C) 1995-2018 Free Software Foundation, Inc.
+   Copyright (C) 1995-2021 Free Software Foundation, Inc.
 
    This file is part of the GNU Binutils.
 
@@ -37,6 +37,7 @@ fragment <<EOF
 #include "sysdep.h"
 #include "bfd.h"
 #include "bfdlink.h"
+#include "ctf-api.h"
 #include "getopt.h"
 #include "libiberty.h"
 #include "filenames.h"
@@ -259,13 +260,13 @@ set_pe_stack_heap (char *resname, char *comname)
 }
 
 
-static bfd_boolean
+static bool
 gld${EMULATION_NAME}_handle_option (int optc)
 {
   switch (optc)
     {
     default:
-      return FALSE;
+      return false;
 
     case OPTION_BASE_FILE:
       link_info.base_file = fopen (optarg, FOPEN_WB);
@@ -314,7 +315,7 @@ gld${EMULATION_NAME}_handle_option (int optc)
       set_pe_value ("__image_base__");
       break;
     }
-  return TRUE;
+  return true;
 }
 
 /* Assign values to the special symbols before the linker script is
@@ -348,7 +349,7 @@ gld_${EMULATION_NAME}_set_symbols (void)
     {
       long val = init[j].value;
       lang_add_assignment (exp_assign (init[j].symbol, exp_intop (val),
-				       FALSE));
+				       false));
       if (init[j].size == sizeof(short))
 	*(short *)init[j].ptr = val;
       else if (init[j].size == sizeof(int))
@@ -393,17 +394,19 @@ gld_${EMULATION_NAME}_after_open (void)
 static int
 sort_by_file_name (const void *a, const void *b)
 {
-  const lang_statement_union_type *const *ra = a;
-  const lang_statement_union_type *const *rb = b;
+  const lang_input_section_type *const *ra = a;
+  const lang_input_section_type *const *rb = b;
+  asection *sa = (*ra)->section;
+  asection *sb = (*rb)->section;
   int i, a_sec, b_sec;
 
-  i = filename_cmp ((*ra)->input_section.section->owner->my_archive->filename,
-		    (*rb)->input_section.section->owner->my_archive->filename);
+  i = filename_cmp (bfd_get_filename (sa->owner->my_archive),
+		    bfd_get_filename (sb->owner->my_archive));
   if (i != 0)
     return i;
 
-  i = filename_cmp ((*ra)->input_section.section->owner->filename,
-		    (*rb)->input_section.section->owner->filename);
+  i = filename_cmp (bfd_get_filename (sa->owner),
+		    bfd_get_filename (sb->owner));
   if (i != 0)
     return i;
   /* the tail idata4/5 are the only ones without relocs to an
@@ -412,36 +415,29 @@ sort_by_file_name (const void *a, const void *b)
      and HNT properly. if no reloc this one is import by ordinal
      so we have to sort by section contents */
 
-  if ((*ra)->input_section.section->reloc_count
-      + (*rb)->input_section.section->reloc_count)
+  if (sa->reloc_count + sb->reloc_count != 0)
     {
-      i = ((*ra)->input_section.section->reloc_count
-	   > (*rb)->input_section.section->reloc_count) ? -1 : 0;
+      i = sa->reloc_count > sb->reloc_count ? -1 : 0;
       if (i != 0)
 	return i;
 
-      return ((*ra)->input_section.section->reloc_count
-	      > (*rb)->input_section.section->reloc_count) ? 0 : 1;
+      return sa->reloc_count > sb->reloc_count ? 0 : 1;
     }
   else
     {
       /* don't sort .idata$6 or .idata$7 FIXME dlltool eliminate .idata$7 */
-      if ((strcmp ((*ra)->input_section.section->name, ".idata$6") == 0))
+      if ((strcmp (sa->name, ".idata$6") == 0))
 	return 0;
 
-      if (!bfd_get_section_contents ((*ra)->input_section.section->owner,
-				     (*ra)->input_section.section, &a_sec,
-				     (file_ptr) 0,
-				     (bfd_size_type) sizeof(a_sec)))
+      if (!bfd_get_section_contents (sa->owner, sa, &a_sec, (file_ptr) 0,
+				     (bfd_size_type) sizeof (a_sec)))
 	einfo (_("%F%P: %pB: can't read contents of section .idata: %E\n"),
-	       (*ra)->input_section.section->owner);
+	       sa->owner);
 
-      if (!bfd_get_section_contents ((*rb)->input_section.section->owner,
-				     (*rb)->input_section.section, &b_sec,
-				     (file_ptr) 0,
-				     (bfd_size_type) sizeof(b_sec)))
+      if (!bfd_get_section_contents (sb->owner, sb, &b_sec, (file_ptr) 0,
+				     (bfd_size_type) sizeof (b_sec)))
 	einfo (_("%F%P: %pB: can't read contents of section .idata: %E\n"),
-	       (*rb)->input_section.section->owner);
+	       sb->owner);
 
       i = a_sec < b_sec ? -1 : 0;
       if (i != 0)
@@ -454,18 +450,19 @@ sort_by_file_name (const void *a, const void *b)
 static int
 sort_by_section_name (const void *a, const void *b)
 {
-  const lang_statement_union_type *const *ra = a;
-  const lang_statement_union_type *const *rb = b;
+  const lang_input_section_type *const *ra = a;
+  const lang_input_section_type *const *rb = b;
+  const char *sna = (*ra)->section->name;
+  const char *snb = (*rb)->section->name;
   int i;
-  i = strcmp ((*ra)->input_section.section->name,
-	      (*rb)->input_section.section->name);
+  i = strcmp (sna, snb);
   /* This is a hack to make .stab and .stabstr last, so we don't have
      to fix strip/objcopy for .reloc sections.
      FIXME stripping images with a .rsrc section still needs to be fixed.  */
   if (i != 0)
     {
-      if ((CONST_STRNEQ ((*ra)->input_section.section->name, ".stab"))
-	  && (! CONST_STRNEQ ((*rb)->input_section.section->name, ".stab")))
+      if ((startswith (sna, ".stab"))
+	  && (!startswith (snb, ".stab")))
 	return 1;
     }
   return i;
@@ -539,7 +536,7 @@ sort_sections (lang_statement_union_type *s)
 	    {
 	      /* Is this the .idata section?  */
 	      if (sec->spec.name != NULL
-		  && CONST_STRNEQ (sec->spec.name, ".idata"))
+		  && startswith (sec->spec.name, ".idata"))
 		{
 		  /* Sort the children.  We want to sort any objects in
 		     the same archive.  In order to handle the case of
@@ -611,22 +608,6 @@ sort_sections (lang_statement_union_type *s)
 static void
 gld_${EMULATION_NAME}_before_allocation (void)
 {
-#ifdef TARGET_IS_ppcpe
-  /* Here we rummage through the found bfds to collect toc information */
-  {
-    LANG_FOR_EACH_INPUT_STATEMENT (is)
-    {
-      if (!ppc_process_before_allocation(is->the_bfd, &link_info))
-	{
-	  einfo (_("%P: errors encountered processing file %s\n"),
-		 is->filename);
-	}
-    }
-  }
-
-  /* We have seen it all. Allocate it, and carry on */
-  ppc_allocate_toc_section (&link_info);
-#else
 #ifdef TARGET_IS_armpe
   /* FIXME: we should be able to set the size of the interworking stub
      section.
@@ -648,7 +629,6 @@ gld_${EMULATION_NAME}_before_allocation (void)
   /* We have seen it all. Allocate it, and carry on */
   arm_allocate_interworking_sections (& link_info);
 #endif /* TARGET_IS_armpe */
-#endif /* TARGET_IS_ppcpe */
 
   sort_sections (stat_ptr->head);
 
@@ -698,12 +678,10 @@ gld${EMULATION_NAME}_place_orphan (asection *s,
   output_secname = xstrdup (secname);
   ps = strchr (output_secname + 1, '\$');
   *ps = 0;
-  os = lang_output_section_statement_lookup (output_secname, constraint, TRUE);
+  os = lang_output_section_statement_lookup (output_secname, constraint, true);
 
   /* Find the '\$' wild statement for this section.  We currently require the
-     linker script to explicitly mention "*(.foo\$)".
-     FIXME: ppcpe.sc has .CRT\$foo in the .rdata section.  According to the
-     Microsoft docs this isn't correct so it's not (currently) handled.  */
+     linker script to explicitly mention "*(.foo\$)".  */
 
   ps[0] = '\$';
   ps[1] = 0;
@@ -726,7 +704,7 @@ gld${EMULATION_NAME}_place_orphan (asection *s,
      The sections still have to be sorted, but that has to wait until
      all such sections have been processed by us.  The sorting is done by
      sort_sections.  */
-  lang_add_section (&l->wild_statement.children, s, NULL, os);
+  lang_add_section (&l->wild_statement.children, s, NULL, NULL, os);
 
   return os;
 }
@@ -734,7 +712,11 @@ gld${EMULATION_NAME}_place_orphan (asection *s,
 static char *
 gld_${EMULATION_NAME}_get_script (int *isfile)
 EOF
+
+if test x"$COMPILE_IN" = xyes
+then
 # Scripts compiled in.
+
 # sed commands to quote an ld script as a C string.
 sc="-f stringify.sed"
 
@@ -756,6 +738,27 @@ echo '  ; else return'                                 >> e${EMULATION_NAME}.c
 sed $sc ldscripts/${EMULATION_NAME}.x                  >> e${EMULATION_NAME}.c
 echo '; }'                                             >> e${EMULATION_NAME}.c
 
+else
+# Scripts read from the filesystem.
+
+fragment <<EOF
+{
+  *isfile = 1;
+
+  if (bfd_link_relocatable (&link_info) && config.build_constructors)
+    return "ldscripts/${EMULATION_NAME}.xu";
+  else if (bfd_link_relocatable (&link_info))
+    return "ldscripts/${EMULATION_NAME}.xr";
+  else if (!config.text_read_only)
+    return "ldscripts/${EMULATION_NAME}.xbn";
+  else if (!config.magic_demand_paged)
+    return "ldscripts/${EMULATION_NAME}.xn";
+  else
+    return "ldscripts/${EMULATION_NAME}.x";
+}
+EOF
+fi
+
 fragment <<EOF
 
 
@@ -767,6 +770,7 @@ struct ld_emulation_xfer_struct ld_${EMULATION_NAME}_emulation =
   after_parse_default,
   gld_${EMULATION_NAME}_after_open,
   after_check_relocs_default,
+  before_place_orphans_default,
   after_allocation_default,
   set_output_arch_default,
   ldemul_default_target,
@@ -787,6 +791,10 @@ struct ld_emulation_xfer_struct ld_${EMULATION_NAME}_emulation =
   NULL,	/* recognized file */
   NULL,	/* find_potential_libraries */
   NULL,	/* new_vers_pattern */
-  NULL	/* extra_map_file_text */
+  NULL,	/* extra_map_file_text */
+  ${LDEMUL_EMIT_CTF_EARLY-NULL},
+  ${LDEMUL_ACQUIRE_STRINGS_FOR_CTF-NULL},
+  ${LDEMUL_NEW_DYNSYM_FOR_CTF-NULL},
+  ${LDEMUL_PRINT_SYMBOL-NULL}
 };
 EOF

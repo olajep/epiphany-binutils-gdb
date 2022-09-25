@@ -1,6 +1,6 @@
 /* The common simulator framework for GDB, the GNU Debugger.
 
-   Copyright 2002-2018 Free Software Foundation, Inc.
+   Copyright 2002-2022 Free Software Foundation, Inc.
 
    Contributed by Andrew Cagney and Red Hat.
 
@@ -23,12 +23,19 @@
 #ifndef SIM_CORE_C
 #define SIM_CORE_C
 
+/* This must come before any other includes.  */
+#include "defs.h"
+
 #include "sim-main.h"
 #include "sim-assert.h"
+#include "sim-signal.h"
+#include "libiberty.h"
 
 #if (WITH_HW)
 #include "sim-hw.h"
 #endif
+
+#include <stdlib.h>
 
 /* "core" module install handler.
 
@@ -451,6 +458,64 @@ sim_core_translate (sim_core_mapping *mapping,
 
 
 #if EXTERN_SIM_CORE_P
+/* See include/sim/sim.h.  */
+char *
+sim_memory_map (SIM_DESC sd)
+{
+  sim_core *core = STATE_CORE (sd);
+  unsigned map;
+  char *s1, *s2, *entry;
+
+  s1 = xstrdup (
+    "<?xml version='1.0'?>\n"
+    "<!DOCTYPE memory-map PUBLIC '+//IDN gnu.org//DTD GDB Memory Map V1.0//EN'"
+    " 'http://sourceware.org/gdb/gdb-memory-map.dtd'>\n"
+    "<memory-map>\n");
+
+  for (map = 0; map < nr_maps; ++map)
+    {
+      sim_core_mapping *mapping;
+
+      for (mapping = core->common.map[map].first;
+	   mapping != NULL;
+	   mapping = mapping->next)
+	{
+	  /* GDB can only handle a single address space.  */
+	  if (mapping->level != 0)
+	    continue;
+
+	  entry = xasprintf ("<memory type='ram' start='%#" PRIxTW "' "
+			     "length='%#" PRIxTW "'/>\n",
+			     mapping->base, mapping->nr_bytes);
+	  /* The sim memory map is organized by access, not by addresses.
+	     So a RWX memory map will have three independent mappings.
+	     GDB's format cannot support overlapping regions, so we have
+	     to filter those out.
+
+	     Further, GDB can only handle RX ("rom") or RWX ("ram") mappings.
+	     We just emit "ram" everywhere to keep it simple.  If GDB ever
+	     gains support for more stuff, we can expand this.
+
+	     Using strstr is kind of hacky, but as long as the map is not huge
+	     (we're talking <10K), should be fine.  */
+	  if (strstr (s1, entry) == NULL)
+	    {
+	      s2 = concat (s1, entry, NULL);
+	      free (s1);
+	      s1 = s2;
+	    }
+	  free (entry);
+	}
+    }
+
+  s2 = concat (s1, "</memory-map>", NULL);
+  free (s1);
+  return s2;
+}
+#endif
+
+
+#if EXTERN_SIM_CORE_P
 unsigned
 sim_core_read_buffer (SIM_DESC sd,
 		      sim_cpu *cpu,
@@ -587,7 +652,7 @@ sim_core_set_xor (SIM_DESC sd,
 	    mask = 0;
 	  while (i - 1 < WITH_XOR_ENDIAN)
 	    {
-	      cpu_core->xor[i-1] = mask;
+	      cpu_core->byte_xor[i-1] = mask;
 	      mask = (mask << 1) & (WITH_XOR_ENDIAN - 1);
 	      i = (i << 1);
 	    }
@@ -634,7 +699,8 @@ sim_core_xor_read_buffer (SIM_DESC sd,
 			  address_word addr,
 			  unsigned nr_bytes)
 {
-  address_word byte_xor = (cpu == NULL ? STATE_CORE (sd)->byte_xor : CPU_CORE (cpu)->xor[0]);
+  address_word byte_xor
+    = (cpu == NULL ? STATE_CORE (sd)->byte_xor : CPU_CORE (cpu)->byte_xor[0]);
   if (!WITH_XOR_ENDIAN || !byte_xor)
     return sim_core_read_buffer (sd, cpu, map, buffer, addr, nr_bytes);
   else
@@ -686,7 +752,8 @@ sim_core_xor_write_buffer (SIM_DESC sd,
 			   address_word addr,
 			   unsigned nr_bytes)
 {
-  address_word byte_xor = (cpu == NULL ? STATE_CORE (sd)->byte_xor : CPU_CORE (cpu)->xor[0]);
+  address_word byte_xor
+    = (cpu == NULL ? STATE_CORE (sd)->byte_xor : CPU_CORE (cpu)->byte_xor[0]);
   if (!WITH_XOR_ENDIAN || !byte_xor)
     return sim_core_write_buffer (sd, cpu, map, buffer, addr, nr_bytes);
   else

@@ -1,6 +1,6 @@
 /* Generic symbol file reading for the GNU debugger, GDB.
 
-   Copyright (C) 1990-2018 Free Software Foundation, Inc.
+   Copyright (C) 1990-2022 Free Software Foundation, Inc.
 
    Contributed by Cygnus Support, using pieces from other GDB modules.
 
@@ -44,7 +44,7 @@
 #include "completer.h"
 #include "bcache.h"
 #include "hashtab.h"
-#include "readline/readline.h"
+#include "readline/tilde.h"
 #include "block.h"
 #include "observable.h"
 #include "exec.h"
@@ -56,8 +56,11 @@
 #include "stack.h"
 #include "gdb_bfd.h"
 #include "cli/cli-utils.h"
-#include "common/byte-vector.h"
-#include "selftest.h"
+#include "gdbsupport/byte-vector.h"
+#include "gdbsupport/pathstuff.h"
+#include "gdbsupport/selftest.h"
+#include "cli/cli-style.h"
+#include "gdbsupport/forward-scope-exit.h"
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -65,8 +68,6 @@
 #include <ctype.h>
 #include <chrono>
 #include <algorithm>
-
-#include "psymtab.h"
 
 int (*deprecated_ui_load_progress_hook) (const char *section,
 					 unsigned long num);
@@ -78,11 +79,18 @@ void (*deprecated_show_load_progress) (const char *section,
 void (*deprecated_pre_add_symbol_hook) (const char *);
 void (*deprecated_post_add_symbol_hook) (void);
 
-static void clear_symtab_users_cleanup (void *ignore);
+using clear_symtab_users_cleanup
+  = FORWARD_SCOPE_EXIT (clear_symtab_users);
 
 /* Global variables owned by this file.  */
-int readnow_symbol_files;	/* Read full symbols immediately.  */
-int readnever_symbol_files;	/* Never read full symbols.  */
+
+/* See symfile.h.  */
+
+int readnow_symbol_files;
+
+/* See symfile.h.  */
+
+int readnever_symbol_files;
 
 /* Functions this file defines.  */
 
@@ -137,17 +145,9 @@ static const char *print_symbol_loading_enums[] =
 };
 static const char *print_symbol_loading = print_symbol_loading_full;
 
-/* If non-zero, shared library symbols will be added automatically
-   when the inferior is created, new libraries are loaded, or when
-   attaching to the inferior.  This is almost always what users will
-   want to have happen; but for very large programs, the startup time
-   will be excessive, and so if this is a problem, the user can clear
-   this flag and then add the shared library symbols as needed.  Note
-   that there is a potential for confusion, since if the shared
-   library symbols are not loaded, commands like "info fun" will *not*
-   report all the functions that are actually present.  */
+/* See symfile.h.  */
 
-int auto_solib_add = 1;
+bool auto_solib_add = true;
 
 
 /* Return non-zero if symbol-loading messages should be printed.
@@ -191,7 +191,6 @@ increment_reading_symtab (void)
 }
 
 /* Remember the lowest-addressed loadable section we've seen.
-   This function is called via bfd_map_over_sections.
 
    In case of equal vmas, the section with the largest size becomes the
    lowest-addressed loadable section.
@@ -199,20 +198,17 @@ increment_reading_symtab (void)
    If the vmas and sizes are equal, the last section is considered the
    lowest-addressed loadable section.  */
 
-void
-find_lowest_section (bfd *abfd, asection *sect, void *obj)
+static void
+find_lowest_section (asection *sect, asection **lowest)
 {
-  asection **lowest = (asection **) obj;
-
-  if (0 == (bfd_get_section_flags (abfd, sect) & (SEC_ALLOC | SEC_LOAD)))
+  if (0 == (bfd_section_flags (sect) & (SEC_ALLOC | SEC_LOAD)))
     return;
   if (!*lowest)
     *lowest = sect;		/* First loadable section */
-  else if (bfd_section_vma (abfd, *lowest) > bfd_section_vma (abfd, sect))
+  else if (bfd_section_vma (*lowest) > bfd_section_vma (sect))
     *lowest = sect;		/* A lower loadable section */
-  else if (bfd_section_vma (abfd, *lowest) == bfd_section_vma (abfd, sect)
-	   && (bfd_section_size (abfd, (*lowest))
-	       <= bfd_section_size (abfd, sect)))
+  else if (bfd_section_vma (*lowest) == bfd_section_vma (sect)
+	   && (bfd_section_size (*lowest) <= bfd_section_size (sect)))
     *lowest = sect;
 }
 
@@ -220,22 +216,19 @@ find_lowest_section (bfd *abfd, asection *sect, void *obj)
    an existing section table.  */
 
 section_addr_info
-build_section_addr_info_from_section_table (const struct target_section *start,
-                                            const struct target_section *end)
+build_section_addr_info_from_section_table (const target_section_table &table)
 {
-  const struct target_section *stp;
-
   section_addr_info sap;
 
-  for (stp = start; stp != end; stp++)
+  for (const target_section &stp : table)
     {
-      struct bfd_section *asect = stp->the_bfd_section;
+      struct bfd_section *asect = stp.the_bfd_section;
       bfd *abfd = asect->owner;
 
-      if (bfd_get_section_flags (abfd, asect) & (SEC_ALLOC | SEC_LOAD)
-	  && sap.size () < end - start)
-	sap.emplace_back (stp->addr,
-			  bfd_section_name (abfd, asect),
+      if (bfd_section_flags (asect) & (SEC_ALLOC | SEC_LOAD)
+	  && sap.size () < table.size ())
+	sap.emplace_back (stp.addr,
+			  bfd_section_name (asect),
 			  gdb_bfd_section_index (abfd, asect));
     }
 
@@ -251,9 +244,9 @@ build_section_addr_info_from_bfd (bfd *abfd)
 
   section_addr_info sap;
   for (sec = abfd->sections; sec != NULL; sec = sec->next)
-    if (bfd_get_section_flags (abfd, sec) & (SEC_ALLOC | SEC_LOAD))
-      sap.emplace_back (bfd_get_section_vma (abfd, sec),
-			bfd_get_section_name (abfd, sec),
+    if (bfd_section_flags (sec) & (SEC_ALLOC | SEC_LOAD))
+      sap.emplace_back (bfd_section_vma (sec),
+			bfd_section_name (sec),
 			gdb_bfd_section_index (abfd, sec));
 
   return sap;
@@ -274,7 +267,7 @@ build_section_addr_info_from_objfile (const struct objfile *objfile)
     {
       int sectindex = sap[i].sectindex;
 
-      sap[i].addr += objfile->section_offsets->offsets[sectindex];
+      sap[i].addr += objfile->section_offsets[sectindex];
     }
   return sap;
 }
@@ -320,14 +313,14 @@ init_objfile_sect_indices (struct objfile *objfile)
      later, e.g. by the remote qOffsets packet, and then this will
      be wrong!  That's why we try segments first.  */
 
-  for (i = 0; i < objfile->num_sections; i++)
+  for (i = 0; i < objfile->section_offsets.size (); i++)
     {
-      if (ANOFFSET (objfile->section_offsets, i) != 0)
+      if (objfile->section_offsets[i] != 0)
 	{
 	  break;
 	}
     }
-  if (i == objfile->num_sections)
+  if (i == objfile->section_offsets.size ())
     {
       if (objfile->sect_index_text == -1)
 	objfile->sect_index_text = 0;
@@ -340,27 +333,19 @@ init_objfile_sect_indices (struct objfile *objfile)
     }
 }
 
-/* The arguments to place_section.  */
-
-struct place_section_arg
-{
-  struct section_offsets *offsets;
-  CORE_ADDR lowest;
-};
-
 /* Find a unique offset to use for loadable section SECT if
    the user did not provide an offset.  */
 
 static void
-place_section (bfd *abfd, asection *sect, void *obj)
+place_section (bfd *abfd, asection *sect, section_offsets &offsets,
+	       CORE_ADDR &lowest)
 {
-  struct place_section_arg *arg = (struct place_section_arg *) obj;
-  CORE_ADDR *offsets = arg->offsets->offsets, start_addr;
+  CORE_ADDR start_addr;
   int done;
-  ULONGEST align = ((ULONGEST) 1) << bfd_get_section_alignment (abfd, sect);
+  ULONGEST align = ((ULONGEST) 1) << bfd_section_alignment (sect);
 
   /* We are only interested in allocated sections.  */
-  if ((bfd_get_section_flags (abfd, sect) & SEC_ALLOC) == 0)
+  if ((bfd_section_flags (sect) & SEC_ALLOC) == 0)
     return;
 
   /* If the user specified an offset, honor it.  */
@@ -368,7 +353,7 @@ place_section (bfd *abfd, asection *sect, void *obj)
     return;
 
   /* Otherwise, let's try to find a place for the section.  */
-  start_addr = (arg->lowest + align - 1) & -align;
+  start_addr = (lowest + align - 1) & -align;
 
   do {
     asection *cur_sec;
@@ -384,7 +369,7 @@ place_section (bfd *abfd, asection *sect, void *obj)
 	  continue;
 
 	/* We can only conflict with allocated sections.  */
-	if ((bfd_get_section_flags (abfd, cur_sec) & SEC_ALLOC) == 0)
+	if ((bfd_section_flags (cur_sec) & SEC_ALLOC) == 0)
 	  continue;
 
 	/* If the section offset is 0, either the section has not been placed
@@ -394,10 +379,10 @@ place_section (bfd *abfd, asection *sect, void *obj)
 	  continue;
 
 	/* If this section would overlap us, then we must move up.  */
-	if (start_addr + bfd_get_section_size (sect) > offsets[indx]
-	    && start_addr < offsets[indx] + bfd_get_section_size (cur_sec))
+	if (start_addr + bfd_section_size (sect) > offsets[indx]
+	    && start_addr < offsets[indx] + bfd_section_size (cur_sec))
 	  {
-	    start_addr = offsets[indx] + bfd_get_section_size (cur_sec);
+	    start_addr = offsets[indx] + bfd_section_size (cur_sec);
 	    start_addr = (start_addr + align - 1) & -align;
 	    done = 0;
 	    break;
@@ -409,21 +394,19 @@ place_section (bfd *abfd, asection *sect, void *obj)
   while (!done);
 
   offsets[gdb_bfd_section_index (abfd, sect)] = start_addr;
-  arg->lowest = start_addr + bfd_get_section_size (sect);
+  lowest = start_addr + bfd_section_size (sect);
 }
 
 /* Store section_addr_info as prepared (made relative and with SECTINDEX
-   filled-in) by addr_info_make_relative into SECTION_OFFSETS of NUM_SECTIONS
-   entries.  */
+   filled-in) by addr_info_make_relative into SECTION_OFFSETS.  */
 
 void
-relative_addr_info_to_section_offsets (struct section_offsets *section_offsets,
-				       int num_sections,
+relative_addr_info_to_section_offsets (section_offsets &section_offsets,
 				       const section_addr_info &addrs)
 {
   int i;
 
-  memset (section_offsets, 0, SIZEOF_N_SECTION_OFFSETS (num_sections));
+  section_offsets.assign (section_offsets.size (), 0);
 
   /* Now calculate offsets for section that were specified by the caller.  */
   for (i = 0; i < addrs.size (); i++)
@@ -432,12 +415,12 @@ relative_addr_info_to_section_offsets (struct section_offsets *section_offsets,
 
       osp = &addrs[i];
       if (osp->sectindex == -1)
-  	continue;
+	continue;
 
       /* Record all sections in offsets.  */
       /* The section_offsets in the objfile are here filled in using
-         the BFD index.  */
-      section_offsets->offsets[osp->sectindex] = osp->addr;
+	 the BFD index.  */
+      section_offsets[osp->sectindex] = osp->addr;
     }
 }
 
@@ -504,9 +487,10 @@ addr_info_make_relative (section_addr_info *addrs, bfd *abfd)
   int i;
 
   /* Find lowest loadable section to be used as starting point for
-     continguous sections.  */
+     contiguous sections.  */
   lower_sect = NULL;
-  bfd_map_over_sections (abfd, find_lowest_section, &lower_sect);
+  for (asection *iter : gdb_bfd_sections (abfd))
+    find_lowest_section (iter, &lower_sect);
   if (lower_sect == NULL)
     {
       warning (_("no loadable sections found in added symbol-file %s"),
@@ -514,7 +498,7 @@ addr_info_make_relative (section_addr_info *addrs, bfd *abfd)
       lower_offset = 0;
     }
   else
-    lower_offset = bfd_section_vma (bfd_get_filename (abfd), lower_sect);
+    lower_offset = bfd_section_vma (lower_sect);
 
   /* Create ADDRS_TO_ABFD_ADDRS array to map the sections in ADDRS to sections
      in ABFD.  Section names are not unique - there can be multiple sections of
@@ -641,12 +625,8 @@ void
 default_symfile_offsets (struct objfile *objfile,
 			 const section_addr_info &addrs)
 {
-  objfile->num_sections = gdb_bfd_count_sections (objfile->obfd);
-  objfile->section_offsets = (struct section_offsets *)
-    obstack_alloc (&objfile->objfile_obstack,
-		   SIZEOF_N_SECTION_OFFSETS (objfile->num_sections));
-  relative_addr_info_to_section_offsets (objfile->section_offsets,
-					 objfile->num_sections, addrs);
+  objfile->section_offsets.resize (gdb_bfd_count_sections (objfile->obfd));
+  relative_addr_info_to_section_offsets (objfile->section_offsets, addrs);
 
   /* For relocatable files, all loadable sections will start at zero.
      The zero is meaningless, so try to pick arbitrary addresses such
@@ -655,25 +635,25 @@ default_symfile_offsets (struct objfile *objfile,
      small.  */
   if ((bfd_get_file_flags (objfile->obfd) & (EXEC_P | DYNAMIC)) == 0)
     {
-      struct place_section_arg arg;
       bfd *abfd = objfile->obfd;
       asection *cur_sec;
 
       for (cur_sec = abfd->sections; cur_sec != NULL; cur_sec = cur_sec->next)
 	/* We do not expect this to happen; just skip this step if the
 	   relocatable file has a section with an assigned VMA.  */
-	if (bfd_section_vma (abfd, cur_sec) != 0)
+	if (bfd_section_vma (cur_sec) != 0)
 	  break;
 
       if (cur_sec == NULL)
 	{
-	  CORE_ADDR *offsets = objfile->section_offsets->offsets;
+	  section_offsets &offsets = objfile->section_offsets;
 
 	  /* Pick non-overlapping offsets for sections the user did not
 	     place explicitly.  */
-	  arg.offsets = objfile->section_offsets;
-	  arg.lowest = 0;
-	  bfd_map_over_sections (objfile->obfd, place_section, &arg);
+	  CORE_ADDR lowest = 0;
+	  for (asection *sect : gdb_bfd_sections (objfile->obfd))
+	    place_section (objfile->obfd, sect, objfile->section_offsets,
+			   lowest);
 
 	  /* Correctly filling in the section offsets is not quite
 	     enough.  Relocatable files have two properties that
@@ -704,10 +684,10 @@ default_symfile_offsets (struct objfile *objfile,
 	  for (cur_sec = abfd->sections; cur_sec != NULL;
 	       cur_sec = cur_sec->next)
 	    {
-	      if ((bfd_get_section_flags (abfd, cur_sec) & SEC_ALLOC) == 0)
+	      if ((bfd_section_flags (cur_sec) & SEC_ALLOC) == 0)
 		continue;
 
-	      bfd_set_section_vma (abfd, cur_sec, offsets[cur_sec->index]);
+	      bfd_set_section_vma (cur_sec, offsets[cur_sec->index]);
 	      exec_set_section_address (bfd_get_filename (abfd),
 					cur_sec->index,
 					offsets[cur_sec->index]);
@@ -727,12 +707,11 @@ default_symfile_offsets (struct objfile *objfile,
    It assumes that object files do not have segments, and fully linked
    files have a single segment.  */
 
-struct symfile_segment_data *
+symfile_segment_data_up
 default_symfile_segments (bfd *abfd)
 {
   int num_sections, i;
   asection *sect;
-  struct symfile_segment_data *data;
   CORE_ADDR low, high;
 
   /* Relocatable files contain enough information to position each
@@ -744,7 +723,7 @@ default_symfile_segments (bfd *abfd)
   /* Make sure there is at least one loadable section in the file.  */
   for (sect = abfd->sections; sect != NULL; sect = sect->next)
     {
-      if ((bfd_get_section_flags (abfd, sect) & SEC_ALLOC) == 0)
+      if ((bfd_section_flags (sect) & SEC_ALLOC) == 0)
 	continue;
 
       break;
@@ -752,35 +731,33 @@ default_symfile_segments (bfd *abfd)
   if (sect == NULL)
     return NULL;
 
-  low = bfd_get_section_vma (abfd, sect);
-  high = low + bfd_get_section_size (sect);
+  low = bfd_section_vma (sect);
+  high = low + bfd_section_size (sect);
 
-  data = XCNEW (struct symfile_segment_data);
-  data->num_segments = 1;
-  data->segment_bases = XCNEW (CORE_ADDR);
-  data->segment_sizes = XCNEW (CORE_ADDR);
+  symfile_segment_data_up data (new symfile_segment_data);
 
   num_sections = bfd_count_sections (abfd);
-  data->segment_info = XCNEWVEC (int, num_sections);
+
+  /* All elements are initialized to 0 (map to no segment).  */
+  data->segment_info.resize (num_sections);
 
   for (i = 0, sect = abfd->sections; sect != NULL; i++, sect = sect->next)
     {
       CORE_ADDR vma;
 
-      if ((bfd_get_section_flags (abfd, sect) & SEC_ALLOC) == 0)
+      if ((bfd_section_flags (sect) & SEC_ALLOC) == 0)
 	continue;
 
-      vma = bfd_get_section_vma (abfd, sect);
+      vma = bfd_section_vma (sect);
       if (vma < low)
 	low = vma;
-      if (vma + bfd_get_section_size (sect) > high)
-	high = vma + bfd_get_section_size (sect);
+      if (vma + bfd_section_size (sect) > high)
+	high = vma + bfd_section_size (sect);
 
       data->segment_info[i] = 1;
     }
 
-  data->segment_bases[0] = low;
-  data->segment_sizes[0] = high - low;
+  data->segments.emplace_back (low, high - low);
 
   return data;
 }
@@ -796,7 +773,7 @@ read_symbols (struct objfile *objfile, symfile_add_flags add_flags)
 
   /* find_separate_debug_file_in_section should be called only if there is
      single binary with no existing separate debug info file.  */
-  if (!objfile_has_partial_symbols (objfile)
+  if (!objfile->has_partial_symbols ()
       && objfile->separate_debug_objfile == NULL
       && objfile->separate_debug_objfile_backlink == NULL)
     {
@@ -814,7 +791,7 @@ read_symbols (struct objfile *objfile, symfile_add_flags add_flags)
 	}
     }
   if ((add_flags & SYMFILE_NO_READ) == 0)
-    require_partial_symbols (objfile, 0);
+    objfile->require_partial_symbols (false);
 }
 
 /* Initialize entry point information for this objfile.  */
@@ -834,7 +811,7 @@ init_entry_point_info (struct objfile *objfile)
   if (bfd_get_file_flags (objfile->obfd) & EXEC_P)
     {
       /* Executable file -- record its entry point so we'll recognize
-         the startup file because it contains the entry point.  */
+	 the startup file because it contains the entry point.  */
       ei->entry_point = bfd_get_start_address (objfile->obfd);
       ei->entry_point_p = 1;
     }
@@ -861,24 +838,22 @@ init_entry_point_info (struct objfile *objfile)
 
       /* Make certain that the address points at real code, and not a
 	 function descriptor.  */
-      entry_point
-	= gdbarch_convert_from_func_ptr_addr (get_objfile_arch (objfile),
-					      entry_point,
-					      current_top_target ());
+      entry_point = gdbarch_convert_from_func_ptr_addr
+	(objfile->arch (), entry_point, current_inferior ()->top_target ());
 
       /* Remove any ISA markers, so that this matches entries in the
 	 symbol table.  */
       ei->entry_point
-	= gdbarch_addr_bits_remove (get_objfile_arch (objfile), entry_point);
+	= gdbarch_addr_bits_remove (objfile->arch (), entry_point);
 
       found = 0;
       ALL_OBJFILE_OSECTIONS (objfile, osect)
 	{
 	  struct bfd_section *sect = osect->the_bfd_section;
 
-	  if (entry_point >= bfd_get_section_vma (objfile->obfd, sect)
-	      && entry_point < (bfd_get_section_vma (objfile->obfd, sect)
-				+ bfd_get_section_size (sect)))
+	  if (entry_point >= bfd_section_vma (sect)
+	      && entry_point < (bfd_section_vma (sect)
+				+ bfd_section_size (sect)))
 	    {
 	      ei->the_bfd_section_index
 		= gdb_bfd_section_index (objfile->obfd, sect);
@@ -907,13 +882,13 @@ init_entry_point_info (struct objfile *objfile)
    (as gleaned by GDB's shared library code).  We convert each address
    into an offset from the section VMA's as it appears in the object
    file, and then call the file's sym_offsets function to convert this
-   into a format-specific offset table --- a `struct section_offsets'.
+   into a format-specific offset table --- a `section_offsets'.
    The sectindex field is used to control the ordering of sections
    with the same name.  Upon return, it is updated to contain the
-   correspondig BFD section index, or -1 if the section was not found.
+   corresponding BFD section index, or -1 if the section was not found.
 
    ADD_FLAGS encodes verbosity level, whether this is main symbol or
-   an extra symbol file such as dynamically loaded code, and wether
+   an extra symbol file such as dynamically loaded code, and whether
    breakpoint reset should be deferred.  */
 
 static void
@@ -922,30 +897,26 @@ syms_from_objfile_1 (struct objfile *objfile,
 		     symfile_add_flags add_flags)
 {
   section_addr_info local_addr;
-  struct cleanup *old_chain;
   const int mainline = add_flags & SYMFILE_MAINLINE;
 
   objfile_set_sym_fns (objfile, find_sym_fns (objfile->obfd));
+  objfile->qf.clear ();
 
   if (objfile->sf == NULL)
     {
       /* No symbols to load, but we still need to make sure
 	 that the section_offsets table is allocated.  */
       int num_sections = gdb_bfd_count_sections (objfile->obfd);
-      size_t size = SIZEOF_N_SECTION_OFFSETS (num_sections);
 
-      objfile->num_sections = num_sections;
-      objfile->section_offsets
-	= (struct section_offsets *) obstack_alloc (&objfile->objfile_obstack,
-						    size);
-      memset (objfile->section_offsets, 0, size);
+      objfile->section_offsets.assign (num_sections, 0);
       return;
     }
 
   /* Make sure that partially constructed symbol tables will be cleaned up
      if an error occurs during symbol reading.  */
-  old_chain = make_cleanup (null_cleanup, NULL);
-  std::unique_ptr<struct objfile> objfile_holder (objfile);
+  gdb::optional<clear_symtab_users_cleanup> defer_clear_users;
+
+  objfile_up objfile_holder (objfile);
 
   /* If ADDRS is NULL, put together a dummy address list.
      We now establish the convention that an addr of zero means
@@ -956,21 +927,21 @@ syms_from_objfile_1 (struct objfile *objfile,
   if (mainline)
     {
       /* We will modify the main symbol table, make sure that all its users
-         will be cleaned up if an error occurs during symbol reading.  */
-      make_cleanup (clear_symtab_users_cleanup, 0 /*ignore*/);
+	 will be cleaned up if an error occurs during symbol reading.  */
+      defer_clear_users.emplace ((symfile_add_flag) 0);
 
       /* Since no error yet, throw away the old symbol table.  */
 
-      if (symfile_objfile != NULL)
+      if (current_program_space->symfile_object_file != NULL)
 	{
-	  delete symfile_objfile;
-	  gdb_assert (symfile_objfile == NULL);
+	  current_program_space->symfile_object_file->unlink ();
+	  gdb_assert (current_program_space->symfile_object_file == NULL);
 	}
 
       /* Currently we keep symbols from the add-symbol-file command.
-         If the user wants to get rid of them, they should do "symbol-file"
-         without arguments first.  Not sure this is the best behavior
-         (PR 2207).  */
+	 If the user wants to get rid of them, they should do "symbol-file"
+	 without arguments first.  Not sure this is the best behavior
+	 (PR 2207).  */
 
       (*objfile->sf->sym_new_init) (objfile);
     }
@@ -989,7 +960,7 @@ syms_from_objfile_1 (struct objfile *objfile,
      initial symbol reading for this file.  */
 
   (*objfile->sf->sym_init) (objfile);
-  clear_complaints (1);
+  clear_complaints ();
 
   (*objfile->sf->sym_offsets) (objfile, *addrs);
 
@@ -998,7 +969,8 @@ syms_from_objfile_1 (struct objfile *objfile,
   /* Discard cleanups as symbol reading was successful.  */
 
   objfile_holder.release ();
-  discard_cleanups (old_chain);
+  if (defer_clear_users)
+    defer_clear_users->release ();
 }
 
 /* Same as syms_from_objfile_1, but also initializes the objfile
@@ -1026,7 +998,7 @@ finish_new_objfile (struct objfile *objfile, symfile_add_flags add_flags)
   if (add_flags & SYMFILE_MAINLINE)
     {
       /* OK, make it the "real" symbol file.  */
-      symfile_objfile = objfile;
+      current_program_space->symfile_object_file = objfile;
 
       clear_symtab_users (add_flags);
     }
@@ -1036,7 +1008,7 @@ finish_new_objfile (struct objfile *objfile, symfile_add_flags add_flags)
     }
 
   /* We're done reading the symbol file; finish off complaints.  */
-  clear_complaints (0);
+  clear_complaints ();
 }
 
 /* Process a symbol file, as either the main file or as a dynamically
@@ -1048,7 +1020,7 @@ finish_new_objfile (struct objfile *objfile, symfile_add_flags add_flags)
    For NAME description see the objfile constructor.
 
    ADD_FLAGS encodes verbosity, whether this is main symbol file or
-   extra, such as dynamically loaded code, and what to do with breakpoins.
+   extra, such as dynamically loaded code, and what to do with breakpoints.
 
    ADDRS is as described for syms_from_objfile_1, above.
    ADDRS is ignored when SYMFILE_MAINLINE bit is set in ADD_FLAGS.
@@ -1068,6 +1040,7 @@ symbol_file_add_with_addrs (bfd *abfd, const char *name,
   struct objfile *objfile;
   const int from_tty = add_flags & SYMFILE_VERBOSE;
   const int mainline = add_flags & SYMFILE_MAINLINE;
+  const int always_confirm = add_flags & SYMFILE_ALWAYS_CONFIRM;
   const int should_print = (print_symbol_loading_p (from_tty, mainline, 1)
 			    && (readnow_symbol_files
 				|| (add_flags & SYMFILE_NO_READ) == 0));
@@ -1086,21 +1059,19 @@ symbol_file_add_with_addrs (bfd *abfd, const char *name,
   if ((add_flags & SYMFILE_NOT_FILENAME) != 0)
     flags |= OBJF_NOT_FILENAME;
 
-  /* Give user a chance to burp if we'd be
+  /* Give user a chance to burp if ALWAYS_CONFIRM or we'd be
      interactively wiping out any existing symbols.  */
 
-  if ((have_full_symbols () || have_partial_symbols ())
-      && mainline
-      && from_tty
+  if (from_tty
+      && (always_confirm
+	  || ((have_full_symbols () || have_partial_symbols ())
+	      && mainline))
       && !query (_("Load new symbol table from \"%s\"? "), name))
     error (_("Not confirmed."));
 
   if (mainline)
     flags |= OBJF_MAINLINE;
-  objfile = new struct objfile (abfd, name, flags);
-
-  if (parent)
-    add_separate_debug_objfile (objfile, parent);
+  objfile = objfile::make (abfd, name, flags, parent);
 
   /* We either created a new mapped symbol table, mapped an existing
      symbol table file which has not had initial symbol reading
@@ -1110,11 +1081,8 @@ symbol_file_add_with_addrs (bfd *abfd, const char *name,
       if (deprecated_pre_add_symbol_hook)
 	deprecated_pre_add_symbol_hook (name);
       else
-	{
-	  printf_unfiltered (_("Reading symbols from %s..."), name);
-	  wrap_here ("");
-	  gdb_flush (gdb_stdout);
-	}
+	printf_filtered (_("Reading symbols from %ps...\n"),
+			 styled_string (file_name_style.style (), name));
     }
   syms_from_objfile (objfile, addrs, add_flags);
 
@@ -1126,29 +1094,25 @@ symbol_file_add_with_addrs (bfd *abfd, const char *name,
   if ((flags & OBJF_READNOW))
     {
       if (should_print)
-	{
-	  printf_unfiltered (_("expanding to full symbols..."));
-	  wrap_here ("");
-	  gdb_flush (gdb_stdout);
-	}
+	printf_filtered (_("Expanding full symbols from %ps...\n"),
+			 styled_string (file_name_style.style (), name));
 
-      if (objfile->sf)
-	objfile->sf->qf->expand_all_symtabs (objfile);
+      objfile->expand_all_symtabs ();
     }
 
-  if (should_print && !objfile_has_symbols (objfile))
-    {
-      wrap_here ("");
-      printf_unfiltered (_("(no debugging symbols found)..."));
-      wrap_here ("");
-    }
+  /* Note that we only print a message if we have no symbols and have
+     no separate debug file.  If there is a separate debug file which
+     does not have symbols, we'll have emitted this message for that
+     file, and so printing it twice is just redundant.  */
+  if (should_print && !objfile_has_symbols (objfile)
+      && objfile->separate_debug_objfile == nullptr)
+    printf_filtered (_("(No debugging symbols found in %ps)\n"),
+		     styled_string (file_name_style.style (), name));
 
   if (should_print)
     {
       if (deprecated_post_add_symbol_hook)
 	deprecated_post_add_symbol_hook ();
-      else
-	printf_unfiltered (_("done.\n"));
     }
 
   /* We print some messages regardless of whether 'from_tty ||
@@ -1186,7 +1150,7 @@ symbol_file_add_separate (bfd *bfd, const char *name,
   symbol_file_add_with_addrs
     (bfd, name, symfile_flags, &sap,
      objfile->flags & (OBJF_REORDERED | OBJF_SHARED | OBJF_READNOW
-		       | OBJF_USERLOADED),
+		       | OBJF_USERLOADED | OBJF_MAINLINE),
      objfile);
 }
 
@@ -1198,7 +1162,7 @@ struct objfile *
 symbol_file_add_from_bfd (bfd *abfd, const char *name,
 			  symfile_add_flags add_flags,
 			  section_addr_info *addrs,
-                          objfile_flags flags, struct objfile *parent)
+			  objfile_flags flags, struct objfile *parent)
 {
   return symbol_file_add_with_addrs (abfd, name, add_flags, addrs, flags,
 				     parent);
@@ -1254,9 +1218,9 @@ symbol_file_clear (int from_tty)
 {
   if ((have_full_symbols () || have_partial_symbols ())
       && from_tty
-      && (symfile_objfile
+      && (current_program_space->symfile_object_file
 	  ? !query (_("Discard symbol table from `%s'? "),
-		    objfile_name (symfile_objfile))
+		    objfile_name (current_program_space->symfile_object_file))
 	  : !query (_("Discard symbol table? "))))
     error (_("Not confirmed."));
 
@@ -1264,16 +1228,18 @@ symbol_file_clear (int from_tty)
      objfiles get stale by free_all_objfiles.  */
   no_shared_libraries (NULL, from_tty);
 
-  free_all_objfiles ();
+  current_program_space->free_all_objfiles ();
 
-  gdb_assert (symfile_objfile == NULL);
+  clear_symtab_users (0);
+
+  gdb_assert (current_program_space->symfile_object_file == NULL);
   if (from_tty)
-    printf_unfiltered (_("No symbol file now.\n"));
+    printf_filtered (_("No symbol file now.\n"));
 }
 
 /* See symfile.h.  */
 
-int separate_debug_file_debug = 0;
+bool separate_debug_file_debug = false;
 
 static int
 separate_debug_file_exists (const std::string &name, unsigned long crc,
@@ -1294,12 +1260,20 @@ separate_debug_file_exists (const std::string &name, unsigned long crc,
     return 0;
 
   if (separate_debug_file_debug)
-    printf_unfiltered (_("  Trying %s\n"), name.c_str ());
+    {
+      printf_filtered (_("  Trying %s..."), name.c_str ());
+      gdb_flush (gdb_stdout);
+    }
 
-  gdb_bfd_ref_ptr abfd (gdb_bfd_open (name.c_str (), gnutarget, -1));
+  gdb_bfd_ref_ptr abfd (gdb_bfd_open (name.c_str (), gnutarget));
 
   if (abfd == NULL)
-    return 0;
+    {
+      if (separate_debug_file_debug)
+	printf_filtered (_(" no, unable to open.\n"));
+
+      return 0;
+    }
 
   /* Verify symlinks were not the cause of filename_cmp name difference above.
 
@@ -1318,7 +1292,12 @@ separate_debug_file_exists (const std::string &name, unsigned long crc,
     {
       if (abfd_stat.st_dev == parent_stat.st_dev
 	  && abfd_stat.st_ino == parent_stat.st_ino)
-	return 0;
+	{
+	  if (separate_debug_file_debug)
+	    printf_filtered (_(" no, same file as the objfile.\n"));
+
+	  return 0;
+	}
       verified_as_different = 1;
     }
   else
@@ -1327,7 +1306,12 @@ separate_debug_file_exists (const std::string &name, unsigned long crc,
   file_crc_p = gdb_bfd_crc (abfd.get (), &file_crc);
 
   if (!file_crc_p)
-    return 0;
+    {
+      if (separate_debug_file_debug)
+	printf_filtered (_(" no, error computing CRC.\n"));
+
+      return 0;
+    }
 
   if (crc != file_crc)
     {
@@ -1340,7 +1324,12 @@ separate_debug_file_exists (const std::string &name, unsigned long crc,
       if (!verified_as_different)
 	{
 	  if (!gdb_bfd_crc (parent_objfile->obfd, &parent_crc))
-	    return 0;
+	    {
+	      if (separate_debug_file_debug)
+		printf_filtered (_(" no, error computing CRC.\n"));
+
+	      return 0;
+	    }
 	}
 
       if (verified_as_different || parent_crc != file_crc)
@@ -1348,8 +1337,14 @@ separate_debug_file_exists (const std::string &name, unsigned long crc,
 		   " does not match \"%s\" (CRC mismatch).\n"),
 		 name.c_str (), objfile_name (parent_objfile));
 
+      if (separate_debug_file_debug)
+	printf_filtered (_(" no, CRC doesn't match.\n"));
+
       return 0;
     }
+
+  if (separate_debug_file_debug)
+    printf_filtered (_(" yes!\n"));
 
   return 1;
 }
@@ -1384,8 +1379,8 @@ find_separate_debug_file (const char *dir,
 			  unsigned long crc32, struct objfile *objfile)
 {
   if (separate_debug_file_debug)
-    printf_unfiltered (_("\nLooking for separate debug info (debug link) for "
-		         "%s\n"), objfile_name (objfile));
+    printf_filtered (_("\nLooking for separate debug info (debug link) for "
+		       "%s\n"), objfile_name (objfile));
 
   /* First try in the same directory as the original file.  */
   std::string debugfile = dir;
@@ -1408,34 +1403,81 @@ find_separate_debug_file (const char *dir,
      Keep backward compatibility so that DEBUG_FILE_DIRECTORY being "" will
      cause "/..." lookups.  */
 
+  bool target_prefix = startswith (dir, "target:");
+  const char *dir_notarget = target_prefix ? dir + strlen ("target:") : dir;
   std::vector<gdb::unique_xmalloc_ptr<char>> debugdir_vec
     = dirnames_to_char_ptr_vec (debug_file_directory);
+  gdb::unique_xmalloc_ptr<char> canon_sysroot = gdb_realpath (gdb_sysroot);
+
+ /* MS-Windows/MS-DOS don't allow colons in file names; we must
+    convert the drive letter into a one-letter directory, so that the
+    file name resulting from splicing below will be valid.
+
+    FIXME: The below only works when GDB runs on MS-Windows/MS-DOS.
+    There are various remote-debugging scenarios where such a
+    transformation of the drive letter might be required when GDB runs
+    on a Posix host, see
+
+    https://sourceware.org/ml/gdb-patches/2019-04/msg00605.html
+
+    If some of those scenarios need to be supported, we will need to
+    use a different condition for HAS_DRIVE_SPEC and a different macro
+    instead of STRIP_DRIVE_SPEC, which work on Posix systems as well.  */
+  std::string drive;
+  if (HAS_DRIVE_SPEC (dir_notarget))
+    {
+      drive = dir_notarget[0];
+      dir_notarget = STRIP_DRIVE_SPEC (dir_notarget);
+    }
 
   for (const gdb::unique_xmalloc_ptr<char> &debugdir : debugdir_vec)
     {
-      debugfile = debugdir.get ();
+      debugfile = target_prefix ? "target:" : "";
+      debugfile += debugdir.get ();
       debugfile += "/";
-      debugfile += dir;
+      debugfile += drive;
+      debugfile += dir_notarget;
       debugfile += debuglink;
 
       if (separate_debug_file_exists (debugfile, crc32, objfile))
 	return debugfile;
 
-      /* If the file is in the sysroot, try using its base path in the
-	 global debugfile directory.  */
-      if (canon_dir != NULL
-	  && filename_ncmp (canon_dir, gdb_sysroot,
-			    strlen (gdb_sysroot)) == 0
-	  && IS_DIR_SEPARATOR (canon_dir[strlen (gdb_sysroot)]))
+      const char *base_path = NULL;
+      if (canon_dir != NULL)
 	{
-	  debugfile = debugdir.get ();
-	  debugfile += (canon_dir + strlen (gdb_sysroot));
+	  if (canon_sysroot.get () != NULL)
+	    base_path = child_path (canon_sysroot.get (), canon_dir);
+	  else
+	    base_path = child_path (gdb_sysroot, canon_dir);
+	}
+      if (base_path != NULL)
+	{
+	  /* If the file is in the sysroot, try using its base path in
+	     the global debugfile directory.  */
+	  debugfile = target_prefix ? "target:" : "";
+	  debugfile += debugdir.get ();
+	  debugfile += "/";
+	  debugfile += base_path;
+	  debugfile += "/";
+	  debugfile += debuglink;
+
+	  if (separate_debug_file_exists (debugfile, crc32, objfile))
+	    return debugfile;
+
+	  /* If the file is in the sysroot, try using its base path in
+	     the sysroot's global debugfile directory.  */
+	  debugfile = target_prefix ? "target:" : "";
+	  debugfile += gdb_sysroot;
+	  debugfile += debugdir.get ();
+	  debugfile += "/";
+	  debugfile += base_path;
 	  debugfile += "/";
 	  debugfile += debuglink;
 
 	  if (separate_debug_file_exists (debugfile, crc32, objfile))
 	    return debugfile;
 	}
+
     }
 
   return std::string ();
@@ -1596,39 +1638,47 @@ symbol_file_command (const char *args, int from_tty)
 
       validate_readnow_readnever (flags);
 
+      /* Set SYMFILE_DEFER_BP_RESET because the proper displacement for a PIE
+	 (Position Independent Executable) main symbol file will only be
+	 computed by the solib_create_inferior_hook below.  Without it,
+	 breakpoint_re_set would fail to insert the breakpoints with the zero
+	 displacement.  */
+      add_flags |= SYMFILE_DEFER_BP_RESET;
+
       symbol_file_add_main_1 (name, add_flags, flags, offset);
+
+      solib_create_inferior_hook (from_tty);
+
+      /* Now it's safe to re-add the breakpoints.  */
+      breakpoint_re_set ();
     }
 }
 
-/* Set the initial language.
-
-   FIXME: A better solution would be to record the language in the
-   psymtab when reading partial symbols, and then use it (if known) to
-   set the language.  This would be a win for formats that encode the
-   language in an easily discoverable place, such as DWARF.  For
-   stabs, we can jump through hoops looking for specially named
-   symbols or try to intuit the language from the specific type of
-   stabs we find, but we can't do that until later when we read in
-   full symbols.  */
+/* Set the initial language.  */
 
 void
 set_initial_language (void)
 {
+  if (language_mode == language_mode_manual)
+    return;
   enum language lang = main_language ();
+  /* Make C the default language.  */
+  enum language default_lang = language_c;
 
   if (lang == language_unknown)
     {
-      char *name = main_name ();
-      struct symbol *sym = lookup_symbol (name, NULL, VAR_DOMAIN, NULL).symbol;
+      const char *name = main_name ();
+      struct symbol *sym
+	= lookup_symbol_in_language (name, NULL, VAR_DOMAIN, default_lang,
+				     NULL).symbol;
 
       if (sym != NULL)
-	lang = SYMBOL_LANGUAGE (sym);
+	lang = sym->language ();
     }
 
   if (lang == language_unknown)
     {
-      /* Make C the default language */
-      lang = language_c;
+      lang = default_lang;
     }
 
   set_language (lang);
@@ -1791,16 +1841,6 @@ load_command (const char *arg, int from_tty)
 
 static int validate_download = 0;
 
-/* Callback service function for generic_load (bfd_map_over_sections).  */
-
-static void
-add_section_size_callback (bfd *abfd, asection *asec, void *data)
-{
-  bfd_size_type *sum = (bfd_size_type *) data;
-
-  *sum += bfd_get_section_size (asec);
-}
-
 /* Opaque data for load_progress.  */
 struct load_progress_data
 {
@@ -1915,22 +1955,22 @@ load_progress (ULONGEST bytes, void *untyped_arg)
 				   totals->total_size);
 }
 
-/* Callback service function for generic_load (bfd_map_over_sections).  */
+/* Service function for generic_load.  */
 
 static void
-load_section_callback (bfd *abfd, asection *asec, void *data)
+load_one_section (bfd *abfd, asection *asec,
+		  struct load_section_data *args)
 {
-  struct load_section_data *args = (struct load_section_data *) data;
-  bfd_size_type size = bfd_get_section_size (asec);
-  const char *sect_name = bfd_get_section_name (abfd, asec);
+  bfd_size_type size = bfd_section_size (asec);
+  const char *sect_name = bfd_section_name (asec);
 
-  if ((bfd_get_section_flags (abfd, asec) & SEC_LOAD) == 0)
+  if ((bfd_section_flags (asec) & SEC_LOAD) == 0)
     return;
 
   if (size == 0)
     return;
 
-  ULONGEST begin = bfd_section_lma (abfd, asec) + args->load_offset;
+  ULONGEST begin = bfd_section_lma (asec) + args->load_offset;
   ULONGEST end = begin + size;
   gdb_byte *buffer = (gdb_byte *) xmalloc (size);
   bfd_get_section_contents (abfd, asec, buffer, 0, size);
@@ -1945,7 +1985,9 @@ load_section_callback (bfd *abfd, asection *asec, void *data)
 static void print_transfer_performance (struct ui_file *stream,
 					unsigned long data_count,
 					unsigned long write_count,
-				        std::chrono::steady_clock::duration d);
+					std::chrono::steady_clock::duration d);
+
+/* See symfile.h.  */
 
 void
 generic_load (const char *args, int from_tty)
@@ -1968,16 +2010,16 @@ generic_load (const char *args, int from_tty)
       cbdata.load_offset = strtoulst (argv[1], &endptr, 0);
 
       /* If the last word was not a valid number then
-         treat it as a file name with spaces in.  */
+	 treat it as a file name with spaces in.  */
       if (argv[1] == endptr)
-        error (_("Invalid download offset:%s."), argv[1]);
+	error (_("Invalid download offset:%s."), argv[1]);
 
       if (argv[2] != NULL)
 	error (_("Too many parameters."));
     }
 
   /* Open the file for loading.  */
-  gdb_bfd_ref_ptr loadfile_bfd (gdb_bfd_open (filename.get (), gnutarget, -1));
+  gdb_bfd_ref_ptr loadfile_bfd (gdb_bfd_open (filename.get (), gnutarget));
   if (loadfile_bfd == NULL)
     perror_with_name (filename.get ());
 
@@ -1987,10 +2029,11 @@ generic_load (const char *args, int from_tty)
 	     bfd_errmsg (bfd_get_error ()));
     }
 
-  bfd_map_over_sections (loadfile_bfd.get (), add_section_size_callback,
-			 (void *) &total_progress.total_size);
+  for (asection *asec : gdb_bfd_sections (loadfile_bfd))
+    total_progress.total_size += bfd_section_size (asec);
 
-  bfd_map_over_sections (loadfile_bfd.get (), load_section_callback, &cbdata);
+  for (asection *asec : gdb_bfd_sections (loadfile_bfd))
+    load_one_section (loadfile_bfd.get (), asec, &cbdata);
 
   using namespace std::chrono;
 
@@ -2005,9 +2048,9 @@ generic_load (const char *args, int from_tty)
   CORE_ADDR entry = bfd_get_start_address (loadfile_bfd.get ());
   entry = gdbarch_addr_bits_remove (target_gdbarch (), entry);
   uiout->text ("Start address ");
-  uiout->field_fmt ("address", "%s", paddress (target_gdbarch (), entry));
+  uiout->field_core_addr ("address", target_gdbarch (), entry);
   uiout->text (", load size ");
-  uiout->field_fmt ("load-size", "%lu", total_progress.data_count);
+  uiout->field_unsigned ("load-size", total_progress.data_count);
   uiout->text ("\n");
   regcache_write_pc (get_current_regcache (), entry);
 
@@ -2050,29 +2093,29 @@ print_transfer_performance (struct ui_file *stream,
 
       if (uiout->is_mi_like_p ())
 	{
-	  uiout->field_fmt ("transfer-rate", "%lu", rate * 8);
+	  uiout->field_unsigned ("transfer-rate", rate * 8);
 	  uiout->text (" bits/sec");
 	}
       else if (rate < 1024)
 	{
-	  uiout->field_fmt ("transfer-rate", "%lu", rate);
+	  uiout->field_unsigned ("transfer-rate", rate);
 	  uiout->text (" bytes/sec");
 	}
       else
 	{
-	  uiout->field_fmt ("transfer-rate", "%lu", rate / 1024);
+	  uiout->field_unsigned ("transfer-rate", rate / 1024);
 	  uiout->text (" KB/sec");
 	}
     }
   else
     {
-      uiout->field_fmt ("transferred-bits", "%lu", (data_count * 8));
+      uiout->field_unsigned ("transferred-bits", (data_count * 8));
       uiout->text (" bits in <1 sec");
     }
   if (write_count > 0)
     {
       uiout->text (", ");
-      uiout->field_fmt ("write-rate", "%lu", data_count / write_count);
+      uiout->field_unsigned ("write-rate", data_count / write_count);
       uiout->text (" bytes/write");
     }
   uiout->text (".\n");
@@ -2087,8 +2130,7 @@ set_objfile_default_section_offset (struct objfile *objf,
 				    CORE_ADDR offset)
 {
   /* Add OFFSET to all sections by default.  */
-  std::vector<struct section_offsets> offsets (objf->num_sections,
-					       { offset });
+  section_offsets offsets (objf->section_offsets.size (), offset);
 
   /* Create sorted lists of all sections in ADDRS as well as all
      sections in OBJF.  */
@@ -2126,21 +2168,15 @@ set_objfile_default_section_offset (struct objfile *objf,
 	}
 
       if (cmp == 0)
-	offsets[objf_sect->sectindex].offsets[0] = 0;
+	offsets[objf_sect->sectindex] = 0;
     }
 
   /* Apply the new section offsets.  */
-  objfile_relocate (objf, offsets.data ());
+  objfile_relocate (objf, offsets);
 }
 
 /* This function allows the addition of incrementally linked object files.
    It does not modify any state in the target, only in the debugger.  */
-/* Note: ezannoni 2000-04-13 This function/command used to have a
-   special case syntax for the rombug target (Rombug is the boot
-   monitor for Microware's OS-9 / OS-9000, see remote-os9k.c). In the
-   rombug case, the user doesn't need to supply a text address,
-   instead a call to target_link() (in target.c) would supply the
-   value to use.  We are now discontinuing this type of ad hoc syntax.  */
 
 static void
 add_symbol_file_command (const char *args, int from_tty)
@@ -2253,14 +2289,14 @@ add_symbol_file_command (const char *args, int from_tty)
       addr = parse_and_eval_address (val);
 
       /* Here we store the section offsets in the order they were
-         entered on the command line.  Every array element is
-         assigned an ascending section index to preserve the above
-         order over an unstable sorting algorithm.  This dummy
-         index is not used for any other purpose.
+	 entered on the command line.  Every array element is
+	 assigned an ascending section index to preserve the above
+	 order over an unstable sorting algorithm.  This dummy
+	 index is not used for any other purpose.
       */
       section_addrs.emplace_back (addr, sec, section_addrs.size ());
-      printf_unfiltered ("\t%s_addr = %s\n", sec,
-			 paddress (gdbarch, addr));
+      printf_filtered ("\t%s_addr = %s\n", sec,
+		       paddress (gdbarch, addr));
 
       /* The object's sections are initialized when a
 	 call is made to build_objfile_section_table (objfile).
@@ -2282,11 +2318,14 @@ add_symbol_file_command (const char *args, int from_tty)
 
   objf = symbol_file_add (filename.get (), add_flags, &section_addrs,
 			  flags);
+  if (!objfile_has_symbols (objf) && objf->per_bfd->minimal_symbol_count <= 0)
+    warning (_("newly-added symbol file \"%s\" does not provide any symbols"),
+	     filename.get ());
 
   if (seen_offset)
     set_objfile_default_section_offset (objf, section_addrs, offset);
 
-  add_target_sections_of_objfile (objf);
+  current_program_space->add_target_sections (objf);
 
   /* Getting new symbols may change our opinion about what is
      frameless.  */
@@ -2322,12 +2361,16 @@ remove_symbol_file_command (const char *args, int from_tty)
 
       addr = parse_and_eval_address (argv[1]);
 
-      ALL_OBJFILES (objf)
+      for (objfile *objfile : current_program_space->objfiles ())
 	{
-	  if ((objf->flags & OBJF_USERLOADED) != 0
-	      && (objf->flags & OBJF_SHARED) != 0
-	      && objf->pspace == pspace && is_addr_in_objfile (addr, objf))
-	    break;
+	  if ((objfile->flags & OBJF_USERLOADED) != 0
+	      && (objfile->flags & OBJF_SHARED) != 0
+	      && objfile->pspace == pspace
+	      && is_addr_in_objfile (addr, objfile))
+	    {
+	      objf = objfile;
+	      break;
+	    }
 	}
     }
   else if (argv[0] != NULL)
@@ -2339,13 +2382,16 @@ remove_symbol_file_command (const char *args, int from_tty)
 
       gdb::unique_xmalloc_ptr<char> filename (tilde_expand (argv[0]));
 
-      ALL_OBJFILES (objf)
+      for (objfile *objfile : current_program_space->objfiles ())
 	{
-	  if ((objf->flags & OBJF_USERLOADED) != 0
-	      && (objf->flags & OBJF_SHARED) != 0
-	      && objf->pspace == pspace
-	      && filename_cmp (filename.get (), objfile_name (objf)) == 0)
-	    break;
+	  if ((objfile->flags & OBJF_USERLOADED) != 0
+	      && (objfile->flags & OBJF_SHARED) != 0
+	      && objfile->pspace == pspace
+	      && filename_cmp (filename.get (), objfile_name (objfile)) == 0)
+	    {
+	      objf = objfile;
+	      break;
+	    }
 	}
     }
 
@@ -2357,7 +2403,7 @@ remove_symbol_file_command (const char *args, int from_tty)
 		 objfile_name (objf)))
     error (_("Not confirmed."));
 
-  delete objf;
+  objf->unlink ();
   clear_symtab_users (0);
 }
 
@@ -2366,19 +2412,12 @@ remove_symbol_file_command (const char *args, int from_tty)
 void
 reread_symbols (void)
 {
-  struct objfile *objfile;
   long new_modtime;
   struct stat new_statbuf;
   int res;
   std::vector<struct objfile *> new_objfiles;
 
-  /* With the addition of shared libraries, this should be modified,
-     the load time should be saved in the partial symbol tables, since
-     different tables may come from different source files.  FIXME.
-     This routine should then walk down each partial symbol table
-     and see if the symbol table that it originates from has been changed.  */
-
-  for (objfile = object_files; objfile; objfile = objfile->next)
+  for (objfile *objfile : current_program_space->objfiles ())
     {
       if (objfile->obfd == NULL)
 	continue;
@@ -2392,25 +2431,21 @@ reread_symbols (void)
 	 a `shared library' on AIX is also an archive), then you should
 	 stat on the archive name, not member name.  */
       if (objfile->obfd->my_archive)
-	res = stat (objfile->obfd->my_archive->filename, &new_statbuf);
+	res = stat (bfd_get_filename (objfile->obfd->my_archive), &new_statbuf);
       else
 	res = stat (objfile_name (objfile), &new_statbuf);
       if (res != 0)
 	{
 	  /* FIXME, should use print_sys_errmsg but it's not filtered.  */
-	  printf_unfiltered (_("`%s' has disappeared; keeping its symbols.\n"),
-			     objfile_name (objfile));
+	  printf_filtered (_("`%s' has disappeared; keeping its symbols.\n"),
+			   objfile_name (objfile));
 	  continue;
 	}
       new_modtime = new_statbuf.st_mtime;
       if (new_modtime != objfile->mtime)
 	{
-	  struct cleanup *old_cleanups;
-	  struct section_offsets *offsets;
-	  int num_offsets;
-
-	  printf_unfiltered (_("`%s' has changed; re-reading symbols.\n"),
-			     objfile_name (objfile));
+	  printf_filtered (_("`%s' has changed; re-reading symbols.\n"),
+			   objfile_name (objfile));
 
 	  /* There are various functions like symbol_file_add,
 	     symfile_bfd_open, syms_from_objfile, etc., which might
@@ -2422,14 +2457,14 @@ reread_symbols (void)
 	  /* If we get an error, blow away this objfile (not sure if
 	     that is the correct response for things like shared
 	     libraries).  */
-	  std::unique_ptr<struct objfile> objfile_holder (objfile);
+	  objfile_up objfile_holder (objfile);
 
 	  /* We need to do this whenever any symbols go away.  */
-	  old_cleanups = make_cleanup (clear_symtab_users_cleanup, 0 /*ignore*/);
+	  clear_symtab_users_cleanup defer_clear_users (0);
 
-	  if (exec_bfd != NULL
+	  if (current_program_space->exec_bfd () != NULL
 	      && filename_cmp (bfd_get_filename (objfile->obfd),
-			       bfd_get_filename (exec_bfd)) == 0)
+			       bfd_get_filename (current_program_space->exec_bfd ())) == 0)
 	    {
 	      /* Reload EXEC_BFD without asking anything.  */
 
@@ -2441,6 +2476,9 @@ reread_symbols (void)
 	  /* Free the separate debug objfiles.  It will be
 	     automatically recreated by sym_read.  */
 	  free_objfile_separate_debug (objfile);
+
+	  /* Clear the stale source cache.  */
+	  forget_cached_source_info ();
 
 	  /* Remove any references to this objfile in the global
 	     value lists.  */
@@ -2462,12 +2500,12 @@ reread_symbols (void)
 	  /* Clean up any state BFD has sitting around.  */
 	  {
 	    gdb_bfd_ref_ptr obfd (objfile->obfd);
-	    char *obfd_filename;
+	    const char *obfd_filename;
 
 	    obfd_filename = bfd_get_filename (objfile->obfd);
 	    /* Open the new BFD before freeing the old one, so that
 	       the filename remains live.  */
-	    gdb_bfd_ref_ptr temp (gdb_bfd_open (obfd_filename, gnutarget, -1));
+	    gdb_bfd_ref_ptr temp (gdb_bfd_open (obfd_filename, gnutarget));
 	    objfile->obfd = temp.release ();
 	    if (objfile->obfd == NULL)
 	      error (_("Can't open %s to read symbols."), obfd_filename);
@@ -2480,32 +2518,18 @@ reread_symbols (void)
 	    error (_("Can't read symbols from %s: %s."), objfile_name (objfile),
 		   bfd_errmsg (bfd_get_error ()));
 
-	  /* Save the offsets, we will nuke them with the rest of the
-	     objfile_obstack.  */
-	  num_offsets = objfile->num_sections;
-	  offsets = ((struct section_offsets *)
-		     alloca (SIZEOF_N_SECTION_OFFSETS (num_offsets)));
-	  memcpy (offsets, objfile->section_offsets,
-		  SIZEOF_N_SECTION_OFFSETS (num_offsets));
-
-	  /* FIXME: Do we have to free a whole linked list, or is this
-	     enough?  */
-	  objfile->global_psymbols.clear ();
-	  objfile->static_psymbols.clear ();
-
-	  /* Free the obstacks for non-reusable objfiles.  */
-	  psymbol_bcache_free (objfile->psymbol_cache);
-	  objfile->psymbol_cache = psymbol_bcache_init ();
-
 	  /* NB: after this call to obstack_free, objfiles_changed
 	     will need to be called (see discussion below).  */
 	  obstack_free (&objfile->objfile_obstack, 0);
 	  objfile->sections = NULL;
+	  objfile->section_offsets.clear ();
+	  objfile->sect_index_bss = -1;
+	  objfile->sect_index_data = -1;
+	  objfile->sect_index_rodata = -1;
+	  objfile->sect_index_text = -1;
 	  objfile->compunit_symtabs = NULL;
-	  objfile->psymtabs = NULL;
-	  objfile->psymtabs_addrmap = NULL;
-	  objfile->free_psymtabs = NULL;
 	  objfile->template_symbols = NULL;
+	  objfile->static_links.reset (nullptr);
 
 	  /* obstack_init also initializes the obstack so it is
 	     empty.  We could use obstack_specify_allocation but
@@ -2519,37 +2543,26 @@ reread_symbols (void)
 	  set_objfile_per_bfd (objfile);
 
 	  objfile->original_name
-	    = (char *) obstack_copy0 (&objfile->objfile_obstack,
-				      original_name.c_str (),
-				      original_name.size ());
+	    = obstack_strdup (&objfile->objfile_obstack, original_name);
 
 	  /* Reset the sym_fns pointer.  The ELF reader can change it
 	     based on whether .gdb_index is present, and we need it to
 	     start over.  PR symtab/15885  */
 	  objfile_set_sym_fns (objfile, find_sym_fns (objfile->obfd));
+	  objfile->qf.clear ();
 
 	  build_objfile_section_table (objfile);
-	  terminate_minimal_symbol_table (objfile);
-
-	  /* We use the same section offsets as from last time.  I'm not
-	     sure whether that is always correct for shared libraries.  */
-	  objfile->section_offsets = (struct section_offsets *)
-	    obstack_alloc (&objfile->objfile_obstack,
-			   SIZEOF_N_SECTION_OFFSETS (num_offsets));
-	  memcpy (objfile->section_offsets, offsets,
-		  SIZEOF_N_SECTION_OFFSETS (num_offsets));
-	  objfile->num_sections = num_offsets;
 
 	  /* What the hell is sym_new_init for, anyway?  The concept of
 	     distinguishing between the main file and additional files
 	     in this way seems rather dubious.  */
-	  if (objfile == symfile_objfile)
+	  if (objfile == current_program_space->symfile_object_file)
 	    {
 	      (*objfile->sf->sym_new_init) (objfile);
 	    }
 
 	  (*objfile->sf->sym_init) (objfile);
-	  clear_complaints (1);
+	  clear_complaints ();
 
 	  objfile->flags &= ~OBJF_PSYMTABS_READ;
 
@@ -2569,17 +2582,20 @@ reread_symbols (void)
 
 	  objfiles_changed ();
 
+	  /* Recompute section offsets and section indices.  */
+	  objfile->sf->sym_offsets (objfile, {});
+
 	  read_symbols (objfile, 0);
 
 	  if (!objfile_has_symbols (objfile))
 	    {
 	      wrap_here ("");
-	      printf_unfiltered (_("(no debugging symbols found)\n"));
+	      printf_filtered (_("(no debugging symbols found)\n"));
 	      wrap_here ("");
 	    }
 
 	  /* We're done reading the symbol file; finish off complaints.  */
-	  clear_complaints (0);
+	  clear_complaints ();
 
 	  /* Getting new symbols may change our opinion about what is
 	     frameless.  */
@@ -2588,7 +2604,7 @@ reread_symbols (void)
 
 	  /* Discard cleanups as symbol reading was successful.  */
 	  objfile_holder.release ();
-	  discard_cleanups (old_cleanups);
+	  defer_clear_users.release ();
 
 	  /* If the mtime has changed between the time we set new_modtime
 	     and now, we *want* this to be out of date, so don't call stat
@@ -2611,7 +2627,7 @@ reread_symbols (void)
 	gdb::observers::new_objfile.notify (iter);
 
       /* At least one objfile has changed, so we can consider that
-         the executable we're debugging has changed too.  */
+	 the executable we're debugging has changed too.  */
       gdb::observers::executable_changed.notify ();
     }
 }
@@ -2634,6 +2650,7 @@ static std::vector<filename_language> filename_language_table;
 void
 add_filename_language (const char *ext, enum language lang)
 {
+  gdb_assert (ext != nullptr);
   filename_language_table.emplace_back (ext, lang);
 }
 
@@ -2743,9 +2760,7 @@ allocate_symtab (struct compunit_symtab *cust, const char *filename)
   struct symtab *symtab
     = OBSTACK_ZALLOC (&objfile->objfile_obstack, struct symtab);
 
-  symtab->filename
-    = (const char *) bcache (filename, strlen (filename) + 1,
-			     objfile->per_bfd->filename_cache);
+  symtab->filename = objfile->intern (filename);
   symtab->fullname = NULL;
   symtab->language = deduce_language_from_filename (filename);
 
@@ -2755,20 +2770,19 @@ allocate_symtab (struct compunit_symtab *cust, const char *filename)
     {
       /* Be a bit clever with debugging messages, and don't print objfile
 	 every time, only when it changes.  */
-      static char *last_objfile_name = NULL;
+      static std::string last_objfile_name;
+      const char *this_objfile_name = objfile_name (objfile);
 
-      if (last_objfile_name == NULL
-	  || strcmp (last_objfile_name, objfile_name (objfile)) != 0)
+      if (last_objfile_name.empty () || last_objfile_name != this_objfile_name)
 	{
-	  xfree (last_objfile_name);
-	  last_objfile_name = xstrdup (objfile_name (objfile));
-	  fprintf_unfiltered (gdb_stdlog,
-			      "Creating one or more symtabs for objfile %s ...\n",
-			      last_objfile_name);
+	  last_objfile_name = this_objfile_name;
+	  fprintf_filtered (gdb_stdlog,
+			    "Creating one or more symtabs for objfile %s ...\n",
+			    this_objfile_name);
 	}
-      fprintf_unfiltered (gdb_stdlog,
-			  "Created symtab %s for module %s.\n",
-			  host_address_to_string (symtab), filename);
+      fprintf_filtered (gdb_stdlog,
+			"Created symtab %s for module %s.\n",
+			host_address_to_string (symtab), filename);
     }
 
   /* Add it to CUST's list of symtabs.  */
@@ -2806,18 +2820,16 @@ allocate_compunit_symtab (struct objfile *objfile, const char *name)
      Just save the basename to avoid path issues (too long for display,
      relative vs absolute, etc.).  */
   saved_name = lbasename (name);
-  cu->name
-    = (const char *) obstack_copy0 (&objfile->objfile_obstack, saved_name,
-				    strlen (saved_name));
+  cu->name = obstack_strdup (&objfile->objfile_obstack, saved_name);
 
   COMPUNIT_DEBUGFORMAT (cu) = "unknown";
 
   if (symtab_create_debug)
     {
-      fprintf_unfiltered (gdb_stdlog,
-			  "Created compunit symtab %s for %s.\n",
-			  host_address_to_string (cu),
-			  cu->name);
+      fprintf_filtered (gdb_stdlog,
+			"Created compunit symtab %s for %s.\n",
+			host_address_to_string (cu),
+			cu->name);
     }
 
   return cu;
@@ -2851,12 +2863,6 @@ clear_symtab_users (symfile_add_flags add_flags)
   clear_pc_function_cache ();
   gdb::observers::new_objfile.notify (NULL);
 
-  /* Clear globals which might have pointed into a removed objfile.
-     FIXME: It's not clear which of these are supposed to persist
-     between expressions and which ought to be reset each time.  */
-  expression_context_block = NULL;
-  innermost_block.reset ();
-
   /* Varobj may refer to old symbols, perform a cleanup.  */
   varobj_invalidate ();
 
@@ -2864,12 +2870,6 @@ clear_symtab_users (symfile_add_flags add_flags)
      our breakpoints without risking it using stale data.  */
   if ((add_flags & SYMFILE_DEFER_BP_RESET) == 0)
     breakpoint_re_set ();
-}
-
-static void
-clear_symtab_users_cleanup (void *ignore)
-{
-  clear_symtab_users (0);
 }
 
 /* OVERLAYS:
@@ -2936,9 +2936,8 @@ section_is_overlay (struct obj_section *section)
     {
       asection *bfd_section = section->the_bfd_section;
 
-      if (bfd_section_lma (abfd, bfd_section) != 0
-	  && bfd_section_lma (abfd, bfd_section)
-	     != bfd_section_vma (abfd, bfd_section))
+      if (bfd_section_lma (bfd_section) != 0
+	  && bfd_section_lma (bfd_section) != bfd_section_vma (bfd_section))
 	return 1;
     }
 
@@ -2951,12 +2950,12 @@ section_is_overlay (struct obj_section *section)
 static void
 overlay_invalidate_all (void)
 {
-  struct objfile *objfile;
   struct obj_section *sect;
 
-  ALL_OBJSECTIONS (objfile, sect)
-    if (section_is_overlay (sect))
-      sect->ovly_mapped = -1;
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, sect)
+      if (section_is_overlay (sect))
+	sect->ovly_mapped = -1;
 }
 
 /* Function: section_is_mapped (SECTION)
@@ -2983,8 +2982,8 @@ section_is_mapped (struct obj_section *osect)
       return 0;			/* overlay debugging off */
     case ovly_auto:		/* overlay debugging automatic */
       /* Unles there is a gdbarch_overlay_update function,
-         there's really nothing useful to do here (can't really go auto).  */
-      gdbarch = get_objfile_arch (osect->objfile);
+	 there's really nothing useful to do here (can't really go auto).  */
+      gdbarch = osect->objfile->arch ();
       if (gdbarch_overlay_update_p (gdbarch))
 	{
 	  if (overlay_cache_invalid)
@@ -3009,15 +3008,14 @@ pc_in_unmapped_range (CORE_ADDR pc, struct obj_section *section)
 {
   if (section_is_overlay (section))
     {
-      bfd *abfd = section->objfile->obfd;
       asection *bfd_section = section->the_bfd_section;
 
       /* We assume the LMA is relocated by the same offset as the VMA.  */
-      bfd_vma size = bfd_get_section_size (bfd_section);
-      CORE_ADDR offset = obj_section_offset (section);
+      bfd_vma size = bfd_section_size (bfd_section);
+      CORE_ADDR offset = section->offset ();
 
-      if (bfd_get_section_lma (abfd, bfd_section) + offset <= pc
-	  && pc < bfd_get_section_lma (abfd, bfd_section) + offset + size)
+      if (bfd_section_lma (bfd_section) + offset <= pc
+	  && pc < bfd_section_lma (bfd_section) + offset + size)
 	return 1;
     }
 
@@ -3032,8 +3030,8 @@ pc_in_mapped_range (CORE_ADDR pc, struct obj_section *section)
 {
   if (section_is_overlay (section))
     {
-      if (obj_section_addr (section) <= pc
-	  && pc < obj_section_endaddr (section))
+      if (section->addr () <= pc
+	  && pc < section->endaddr ())
 	return 1;
     }
 
@@ -3046,10 +3044,10 @@ pc_in_mapped_range (CORE_ADDR pc, struct obj_section *section)
 static int
 sections_overlap (struct obj_section *a, struct obj_section *b)
 {
-  CORE_ADDR a_start = obj_section_addr (a);
-  CORE_ADDR a_end = obj_section_endaddr (a);
-  CORE_ADDR b_start = obj_section_addr (b);
-  CORE_ADDR b_end = obj_section_endaddr (b);
+  CORE_ADDR a_start = a->addr ();
+  CORE_ADDR a_end = a->endaddr ();
+  CORE_ADDR b_start = b->addr ();
+  CORE_ADDR b_end = b->endaddr ();
 
   return (a_start < b_end && b_start < a_end);
 }
@@ -3065,8 +3063,8 @@ overlay_unmapped_address (CORE_ADDR pc, struct obj_section *section)
     {
       asection *bfd_section = section->the_bfd_section;
 
-      return pc + bfd_section_lma (abfd, bfd_section)
-		- bfd_section_vma (abfd, bfd_section);
+      return (pc + bfd_section_lma (bfd_section)
+	      - bfd_section_vma (bfd_section));
     }
 
   return pc;
@@ -3083,8 +3081,8 @@ overlay_mapped_address (CORE_ADDR pc, struct obj_section *section)
     {
       asection *bfd_section = section->the_bfd_section;
 
-      return pc + bfd_section_vma (abfd, bfd_section)
-		- bfd_section_lma (abfd, bfd_section);
+      return (pc + bfd_section_vma (bfd_section)
+	      - bfd_section_lma (bfd_section));
     }
 
   return pc;
@@ -3127,24 +3125,24 @@ symbol_overlayed_address (CORE_ADDR address, struct obj_section *section)
 struct obj_section *
 find_pc_overlay (CORE_ADDR pc)
 {
-  struct objfile *objfile;
   struct obj_section *osect, *best_match = NULL;
 
   if (overlay_debugging)
     {
-      ALL_OBJSECTIONS (objfile, osect)
-	if (section_is_overlay (osect))
-	  {
-	    if (pc_in_mapped_range (pc, osect))
-	      {
-		if (section_is_mapped (osect))
-		  return osect;
-		else
-		  best_match = osect;
-	      }
-	    else if (pc_in_unmapped_range (pc, osect))
-	      best_match = osect;
-	  }
+      for (objfile *objfile : current_program_space->objfiles ())
+	ALL_OBJFILE_OSECTIONS (objfile, osect)
+	  if (section_is_overlay (osect))
+	    {
+	      if (pc_in_mapped_range (pc, osect))
+		{
+		  if (section_is_mapped (osect))
+		    return osect;
+		  else
+		    best_match = osect;
+		}
+	      else if (pc_in_unmapped_range (pc, osect))
+		best_match = osect;
+	    }
     }
   return best_match;
 }
@@ -3156,14 +3154,14 @@ find_pc_overlay (CORE_ADDR pc)
 struct obj_section *
 find_pc_mapped_section (CORE_ADDR pc)
 {
-  struct objfile *objfile;
   struct obj_section *osect;
 
   if (overlay_debugging)
     {
-      ALL_OBJSECTIONS (objfile, osect)
-	if (pc_in_mapped_range (pc, osect) && section_is_mapped (osect))
-	  return osect;
+      for (objfile *objfile : current_program_space->objfiles ())
+	ALL_OBJFILE_OSECTIONS (objfile, osect)
+	  if (pc_in_mapped_range (pc, osect) && section_is_mapped (osect))
+	    return osect;
     }
 
   return NULL;
@@ -3176,36 +3174,36 @@ static void
 list_overlays_command (const char *args, int from_tty)
 {
   int nmapped = 0;
-  struct objfile *objfile;
   struct obj_section *osect;
 
   if (overlay_debugging)
     {
-      ALL_OBJSECTIONS (objfile, osect)
-      if (section_is_mapped (osect))
-	{
-	  struct gdbarch *gdbarch = get_objfile_arch (objfile);
-	  const char *name;
-	  bfd_vma lma, vma;
-	  int size;
+      for (objfile *objfile : current_program_space->objfiles ())
+	ALL_OBJFILE_OSECTIONS (objfile, osect)
+	  if (section_is_mapped (osect))
+	    {
+	      struct gdbarch *gdbarch = objfile->arch ();
+	      const char *name;
+	      bfd_vma lma, vma;
+	      int size;
 
-	  vma = bfd_section_vma (objfile->obfd, osect->the_bfd_section);
-	  lma = bfd_section_lma (objfile->obfd, osect->the_bfd_section);
-	  size = bfd_get_section_size (osect->the_bfd_section);
-	  name = bfd_section_name (objfile->obfd, osect->the_bfd_section);
+	      vma = bfd_section_vma (osect->the_bfd_section);
+	      lma = bfd_section_lma (osect->the_bfd_section);
+	      size = bfd_section_size (osect->the_bfd_section);
+	      name = bfd_section_name (osect->the_bfd_section);
 
-	  printf_filtered ("Section %s, loaded at ", name);
-	  fputs_filtered (paddress (gdbarch, lma), gdb_stdout);
-	  puts_filtered (" - ");
-	  fputs_filtered (paddress (gdbarch, lma + size), gdb_stdout);
-	  printf_filtered (", mapped at ");
-	  fputs_filtered (paddress (gdbarch, vma), gdb_stdout);
-	  puts_filtered (" - ");
-	  fputs_filtered (paddress (gdbarch, vma + size), gdb_stdout);
-	  puts_filtered ("\n");
+	      printf_filtered ("Section %s, loaded at ", name);
+	      fputs_filtered (paddress (gdbarch, lma), gdb_stdout);
+	      puts_filtered (" - ");
+	      fputs_filtered (paddress (gdbarch, lma + size), gdb_stdout);
+	      printf_filtered (", mapped at ");
+	      fputs_filtered (paddress (gdbarch, vma), gdb_stdout);
+	      puts_filtered (" - ");
+	      fputs_filtered (paddress (gdbarch, vma + size), gdb_stdout);
+	      puts_filtered ("\n");
 
-	  nmapped++;
-	}
+	      nmapped++;
+	    }
     }
   if (nmapped == 0)
     printf_filtered (_("No sections are mapped.\n"));
@@ -3217,7 +3215,6 @@ list_overlays_command (const char *args, int from_tty)
 static void
 map_overlay_command (const char *args, int from_tty)
 {
-  struct objfile *objfile, *objfile2;
   struct obj_section *sec, *sec2;
 
   if (!overlay_debugging)
@@ -3229,29 +3226,31 @@ map_overlay_command (const char *args, int from_tty)
     error (_("Argument required: name of an overlay section"));
 
   /* First, find a section matching the user supplied argument.  */
-  ALL_OBJSECTIONS (objfile, sec)
-    if (!strcmp (bfd_section_name (objfile->obfd, sec->the_bfd_section), args))
-    {
-      /* Now, check to see if the section is an overlay.  */
-      if (!section_is_overlay (sec))
-	continue;		/* not an overlay section */
-
-      /* Mark the overlay as "mapped".  */
-      sec->ovly_mapped = 1;
-
-      /* Next, make a pass and unmap any sections that are
-         overlapped by this new section: */
-      ALL_OBJSECTIONS (objfile2, sec2)
-	if (sec2->ovly_mapped && sec != sec2 && sections_overlap (sec, sec2))
+  for (objfile *obj_file : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (obj_file, sec)
+      if (!strcmp (bfd_section_name (sec->the_bfd_section), args))
 	{
-	  if (info_verbose)
-	    printf_unfiltered (_("Note: section %s unmapped by overlap\n"),
-			     bfd_section_name (objfile->obfd,
-					       sec2->the_bfd_section));
-	  sec2->ovly_mapped = 0;	/* sec2 overlaps sec: unmap sec2.  */
+	  /* Now, check to see if the section is an overlay.  */
+	  if (!section_is_overlay (sec))
+	    continue;		/* not an overlay section */
+
+	  /* Mark the overlay as "mapped".  */
+	  sec->ovly_mapped = 1;
+
+	  /* Next, make a pass and unmap any sections that are
+	     overlapped by this new section: */
+	  for (objfile *objfile2 : current_program_space->objfiles ())
+	    ALL_OBJFILE_OSECTIONS (objfile2, sec2)
+	      if (sec2->ovly_mapped && sec != sec2 && sections_overlap (sec,
+									sec2))
+		{
+		  if (info_verbose)
+		    printf_unfiltered (_("Note: section %s unmapped by overlap\n"),
+				       bfd_section_name (sec2->the_bfd_section));
+		  sec2->ovly_mapped = 0; /* sec2 overlaps sec: unmap sec2.  */
+		}
+	  return;
 	}
-      return;
-    }
   error (_("No overlay section called %s"), args);
 }
 
@@ -3262,7 +3261,6 @@ map_overlay_command (const char *args, int from_tty)
 static void
 unmap_overlay_command (const char *args, int from_tty)
 {
-  struct objfile *objfile;
   struct obj_section *sec = NULL;
 
   if (!overlay_debugging)
@@ -3274,14 +3272,15 @@ unmap_overlay_command (const char *args, int from_tty)
     error (_("Argument required: name of an overlay section"));
 
   /* First, find a section matching the user supplied argument.  */
-  ALL_OBJSECTIONS (objfile, sec)
-    if (!strcmp (bfd_section_name (objfile->obfd, sec->the_bfd_section), args))
-    {
-      if (!sec->ovly_mapped)
-	error (_("Section %s is not mapped"), args);
-      sec->ovly_mapped = 0;
-      return;
-    }
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, sec)
+      if (!strcmp (bfd_section_name (sec->the_bfd_section), args))
+	{
+	  if (!sec->ovly_mapped)
+	    error (_("Section %s is not mapped"), args);
+	  sec->ovly_mapped = 0;
+	  return;
+	}
   error (_("No overlay section called %s"), args);
 }
 
@@ -3335,19 +3334,8 @@ overlay_load_command (const char *args, int from_tty)
     error (_("This target does not know how to read its overlay state."));
 }
 
-/* Function: overlay_command
-   A place-holder for a mis-typed command.  */
-
 /* Command list chain containing all defined "overlay" subcommands.  */
 static struct cmd_list_element *overlaylist;
-
-static void
-overlay_command (const char *args, int from_tty)
-{
-  printf_unfiltered
-    ("\"overlay\" must be followed by the name of an overlay command.\n");
-  help_list (overlaylist, "overlay ", all_commands, gdb_stdout);
-}
 
 /* Target Overlays for the "Simplest" overlay manager:
 
@@ -3396,8 +3384,7 @@ enum ovly_index
 static void
 simple_free_overlay_table (void)
 {
-  if (cache_ovly_table)
-    xfree (cache_ovly_table);
+  xfree (cache_ovly_table);
   cache_novlys = 0;
   cache_ovly_table = NULL;
   cache_ovly_table_base = 0;
@@ -3436,8 +3423,8 @@ simple_read_overlay_table (void)
   if (! novlys_msym.minsym)
     {
       error (_("Error reading inferior's overlay table: "
-             "couldn't find `_novlys' variable\n"
-             "in inferior.  Use `overlay manual' mode."));
+	     "couldn't find `_novlys' variable\n"
+	     "in inferior.  Use `overlay manual' mode."));
       return 0;
     }
 
@@ -3445,12 +3432,12 @@ simple_read_overlay_table (void)
   if (! ovly_table_msym.minsym)
     {
       error (_("Error reading inferior's overlay table: couldn't find "
-             "`_ovly_table' array\n"
-             "in inferior.  Use `overlay manual' mode."));
+	     "`_ovly_table' array\n"
+	     "in inferior.  Use `overlay manual' mode."));
       return 0;
     }
 
-  gdbarch = get_objfile_arch (ovly_table_msym.objfile);
+  gdbarch = ovly_table_msym.objfile->arch ();
   word_size = gdbarch_long_bit (gdbarch) / TARGET_CHAR_BIT;
   byte_order = gdbarch_byte_order (gdbarch);
 
@@ -3460,8 +3447,8 @@ simple_read_overlay_table (void)
     = (unsigned int (*)[4]) xmalloc (cache_novlys * sizeof (*cache_ovly_table));
   cache_ovly_table_base = BMSYMBOL_VALUE_ADDRESS (ovly_table_msym);
   read_target_long_array (cache_ovly_table_base,
-                          (unsigned int *) cache_ovly_table,
-                          cache_novlys * 4, word_size, byte_order);
+			  (unsigned int *) cache_ovly_table,
+			  cache_novlys * 4, word_size, byte_order);
 
   return 1;			/* SUCCESS */
 }
@@ -3479,19 +3466,19 @@ simple_overlay_update_1 (struct obj_section *osect)
 {
   int i;
   asection *bsect = osect->the_bfd_section;
-  struct gdbarch *gdbarch = get_objfile_arch (osect->objfile);
+  struct gdbarch *gdbarch = osect->objfile->arch ();
   int word_size = gdbarch_long_bit (gdbarch) / TARGET_CHAR_BIT;
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
 
   for (i = 0; i < cache_novlys; i++)
-    if (cache_ovly_table[i][VMA] == bfd_section_vma (obfd, bsect)
-	&& cache_ovly_table[i][LMA] == bfd_section_lma (obfd, bsect))
+    if (cache_ovly_table[i][VMA] == bfd_section_vma (bsect)
+	&& cache_ovly_table[i][LMA] == bfd_section_lma (bsect))
       {
 	read_target_long_array (cache_ovly_table_base + i * word_size,
 				(unsigned int *) cache_ovly_table[i],
 				4, word_size, byte_order);
-	if (cache_ovly_table[i][VMA] == bfd_section_vma (obfd, bsect)
-	    && cache_ovly_table[i][LMA] == bfd_section_lma (obfd, bsect))
+	if (cache_ovly_table[i][VMA] == bfd_section_vma (bsect)
+	    && cache_ovly_table[i][LMA] == bfd_section_lma (bsect))
 	  {
 	    osect->ovly_mapped = cache_ovly_table[i][MAPPED];
 	    return 1;
@@ -3513,8 +3500,6 @@ simple_overlay_update_1 (struct obj_section *osect)
 void
 simple_overlay_update (struct obj_section *osect)
 {
-  struct objfile *objfile;
-
   /* Were we given an osect to look up?  NULL means do all of them.  */
   if (osect)
     /* Have we got a cached copy of the target's overlay table?  */
@@ -3546,39 +3531,28 @@ simple_overlay_update (struct obj_section *osect)
     return;
 
   /* Now may as well update all sections, even if only one was requested.  */
-  ALL_OBJSECTIONS (objfile, osect)
-    if (section_is_overlay (osect))
-    {
-      int i;
-      asection *bsect = osect->the_bfd_section;
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, osect)
+      if (section_is_overlay (osect))
+	{
+	  int i;
+	  asection *bsect = osect->the_bfd_section;
 
-      for (i = 0; i < cache_novlys; i++)
-	if (cache_ovly_table[i][VMA] == bfd_section_vma (obfd, bsect)
-	    && cache_ovly_table[i][LMA] == bfd_section_lma (obfd, bsect))
-	  { /* obj_section matches i'th entry in ovly_table.  */
-	    osect->ovly_mapped = cache_ovly_table[i][MAPPED];
-	    break;		/* finished with inner for loop: break out.  */
-	  }
-    }
-}
-
-/* Set the output sections and output offsets for section SECTP in
-   ABFD.  The relocation code in BFD will read these offsets, so we
-   need to be sure they're initialized.  We map each section to itself,
-   with no offset; this means that SECTP->vma will be honored.  */
-
-static void
-symfile_dummy_outputs (bfd *abfd, asection *sectp, void *dummy)
-{
-  sectp->output_section = sectp;
-  sectp->output_offset = 0;
+	  for (i = 0; i < cache_novlys; i++)
+	    if (cache_ovly_table[i][VMA] == bfd_section_vma (bsect)
+		&& cache_ovly_table[i][LMA] == bfd_section_lma (bsect))
+	      { /* obj_section matches i'th entry in ovly_table.  */
+		osect->ovly_mapped = cache_ovly_table[i][MAPPED];
+		break;		/* finished with inner for loop: break out.  */
+	      }
+	}
 }
 
 /* Default implementation for sym_relocate.  */
 
 bfd_byte *
 default_symfile_relocate (struct objfile *objfile, asection *sectp,
-                          bfd_byte *buf)
+			  bfd_byte *buf)
 {
   /* Use sectp->owner instead of objfile->obfd.  sectp may point to a
      DWO file.  */
@@ -3591,7 +3565,11 @@ default_symfile_relocate (struct objfile *objfile, asection *sectp,
 
   /* We will handle section offsets properly elsewhere, so relocate as if
      all sections begin at 0.  */
-  bfd_map_over_sections (abfd, symfile_dummy_outputs, NULL);
+  for (asection *sect : gdb_bfd_sections (abfd))
+    {
+      sect->output_section = sect;
+      sect->output_offset = 0;
+    }
 
   return bfd_simple_get_relocated_section_contents (abfd, sectp, buf, NULL);
 }
@@ -3612,14 +3590,14 @@ default_symfile_relocate (struct objfile *objfile, asection *sectp,
 
 bfd_byte *
 symfile_relocate_debug_section (struct objfile *objfile,
-                                asection *sectp, bfd_byte *buf)
+				asection *sectp, bfd_byte *buf)
 {
   gdb_assert (objfile->sf->sym_relocate);
 
   return (*objfile->sf->sym_relocate) (objfile, sectp, buf);
 }
 
-struct symfile_segment_data *
+symfile_segment_data_up
 get_symfile_segment_data (bfd *abfd)
 {
   const struct sym_fns *sf = find_sym_fns (abfd);
@@ -3628,15 +3606,6 @@ get_symfile_segment_data (bfd *abfd)
     return NULL;
 
   return sf->sym_segments (abfd);
-}
-
-void
-free_symfile_segment_data (struct symfile_segment_data *data)
-{
-  xfree (data->segment_bases);
-  xfree (data->segment_sizes);
-  xfree (data->segment_info);
-  xfree (data);
 }
 
 /* Given:
@@ -3657,7 +3626,7 @@ free_symfile_segment_data (struct symfile_segment_data *data)
 int
 symfile_map_offsets_to_segments (bfd *abfd,
 				 const struct symfile_segment_data *data,
-				 struct section_offsets *offsets,
+				 section_offsets &offsets,
 				 int num_segment_bases,
 				 const CORE_ADDR *segment_bases)
 {
@@ -3671,26 +3640,25 @@ symfile_map_offsets_to_segments (bfd *abfd,
   /* If we do not have segment mappings for the object file, we
      can not relocate it by segments.  */
   gdb_assert (data != NULL);
-  gdb_assert (data->num_segments > 0);
+  gdb_assert (data->segments.size () > 0);
 
   for (i = 0, sect = abfd->sections; sect != NULL; i++, sect = sect->next)
     {
       int which = data->segment_info[i];
 
-      gdb_assert (0 <= which && which <= data->num_segments);
+      gdb_assert (0 <= which && which <= data->segments.size ());
 
       /* Don't bother computing offsets for sections that aren't
-         loaded as part of any segment.  */
+	 loaded as part of any segment.  */
       if (! which)
-        continue;
+	continue;
 
       /* Use the last SEGMENT_BASES entry as the address of any extra
-         segments mentioned in DATA->segment_info.  */
+	 segments mentioned in DATA->segment_info.  */
       if (which > num_segment_bases)
-        which = num_segment_bases;
+	which = num_segment_bases;
 
-      offsets->offsets[i] = (segment_bases[which - 1]
-                             - data->segment_bases[which - 1]);
+      offsets[i] = segment_bases[which - 1] - data->segments[which - 1].base;
     }
 
   return 1;
@@ -3702,17 +3670,14 @@ symfile_find_segment_sections (struct objfile *objfile)
   bfd *abfd = objfile->obfd;
   int i;
   asection *sect;
-  struct symfile_segment_data *data;
 
-  data = get_symfile_segment_data (objfile->obfd);
+  symfile_segment_data_up data
+    = get_symfile_segment_data (objfile->obfd);
   if (data == NULL)
     return;
 
-  if (data->num_segments != 1 && data->num_segments != 2)
-    {
-      free_symfile_segment_data (data);
-      return;
-    }
+  if (data->segments.size () != 1 && data->segments.size () != 2)
+    return;
 
   for (i = 0, sect = abfd->sections; sect != NULL; i++, sect = sect->next)
     {
@@ -3735,8 +3700,6 @@ symfile_find_segment_sections (struct objfile *objfile)
 	    objfile->sect_index_bss = sect->index;
 	}
     }
-
-  free_symfile_segment_data (data);
 }
 
 /* Listen for free_objfile events.  */
@@ -3746,31 +3709,32 @@ symfile_free_objfile (struct objfile *objfile)
 {
   /* Remove the target sections owned by this objfile.  */
   if (objfile != NULL)
-    remove_target_sections ((void *) objfile);
+    current_program_space->remove_target_sections ((void *) objfile);
 }
 
 /* Wrapper around the quick_symbol_functions expand_symtabs_matching "method".
    Expand all symtabs that match the specified criteria.
    See quick_symbol_functions.expand_symtabs_matching for details.  */
 
-void
+bool
 expand_symtabs_matching
   (gdb::function_view<expand_symtabs_file_matcher_ftype> file_matcher,
    const lookup_name_info &lookup_name,
    gdb::function_view<expand_symtabs_symbol_matcher_ftype> symbol_matcher,
    gdb::function_view<expand_symtabs_exp_notify_ftype> expansion_notify,
+   block_search_flags search_flags,
    enum search_domain kind)
 {
-  struct objfile *objfile;
-
-  ALL_OBJFILES (objfile)
-  {
-    if (objfile->sf)
-      objfile->sf->qf->expand_symtabs_matching (objfile, file_matcher,
-						lookup_name,
-						symbol_matcher,
-						expansion_notify, kind);
-  }
+  for (objfile *objfile : current_program_space->objfiles ())
+    if (!objfile->expand_symtabs_matching (file_matcher,
+					   &lookup_name,
+					   symbol_matcher,
+					   expansion_notify,
+					   search_flags,
+					   UNDEF_DOMAIN,
+					   kind))
+      return false;
+  return true;
 }
 
 /* Wrapper around the quick_symbol_functions map_symbol_filenames "method".
@@ -3778,17 +3742,11 @@ expand_symtabs_matching
    See quick_symbol_functions.map_symbol_filenames for details.  */
 
 void
-map_symbol_filenames (symbol_filename_ftype *fun, void *data,
-		      int need_fullname)
+map_symbol_filenames (gdb::function_view<symbol_filename_ftype> fun,
+		      bool need_fullname)
 {
-  struct objfile *objfile;
-
-  ALL_OBJFILES (objfile)
-  {
-    if (objfile->sf)
-      objfile->sf->qf->map_symbol_filenames (objfile, fun, data,
-					     need_fullname);
-  }
+  for (objfile *objfile : current_program_space->objfiles ())
+    objfile->map_symbol_filenames (fun, need_fullname);
 }
 
 #if GDB_SELF_TEST
@@ -3826,7 +3784,7 @@ test_set_ext_lang_command ()
   SELF_CHECK (lang == language_unknown);
 
   /* Test adding a new extension using the CLI command.  */
-  gdb::unique_xmalloc_ptr<char> args_holder (xstrdup (".hello rust"));
+  auto args_holder = make_unique_xstrdup (".hello rust");
   ext_args = args_holder.get ();
   set_ext_lang_command (NULL, 1, NULL);
 
@@ -3850,12 +3808,13 @@ test_set_ext_lang_command ()
 
 #endif /* GDB_SELF_TEST */
 
+void _initialize_symfile ();
 void
-_initialize_symfile (void)
+_initialize_symfile ()
 {
   struct cmd_list_element *c;
 
-  gdb::observers::free_objfile.attach (symfile_free_objfile);
+  gdb::observers::free_objfile.attach (symfile_free_objfile, "symfile");
 
 #define READNOW_READNEVER_HELP \
   "The '-readnow' option will cause GDB to read the entire symbol file\n\
@@ -3896,20 +3855,21 @@ that lies within the boundaries of this symbol file in memory."),
 	       &cmdlist);
 
   c = add_cmd ("load", class_files, load_command, _("\
-Dynamically load FILE into the running program, and record its symbols\n\
-for access from GDB.\n\
+Dynamically load FILE into the running program.\n\
+FILE symbols are recorded for access from GDB.\n\
 Usage: load [FILE] [OFFSET]\n\
 An optional load OFFSET may also be given as a literal address.\n\
 When OFFSET is provided, FILE must also be provided.  FILE can be provided\n\
 on its own."), &cmdlist);
   set_cmd_completer (c, filename_completer);
 
-  add_prefix_cmd ("overlay", class_support, overlay_command,
-		  _("Commands for debugging overlays."), &overlaylist,
-		  "overlay ", 0, &cmdlist);
+  cmd_list_element *overlay_cmd
+    = add_basic_prefix_cmd ("overlay", class_support,
+			    _("Commands for debugging overlays."), &overlaylist,
+			    0, &cmdlist);
 
-  add_com_alias ("ovly", "overlay", class_alias, 1);
-  add_com_alias ("ov", "overlay", class_alias, 1);
+  add_com_alias ("ovly", overlay_cmd, class_support, 1);
+  add_com_alias ("ov", overlay_cmd, class_support, 1);
 
   add_cmd ("map-overlay", class_support, map_overlay_command,
 	   _("Assert that an overlay section is mapped."), &overlaylist);
@@ -3961,9 +3921,9 @@ Set printing of symbol loading messages."), _("\
 Show printing of symbol loading messages."), _("\
 off   == turn all messages off\n\
 brief == print messages for the executable,\n\
-         and brief messages for shared libraries\n\
+	 and brief messages for shared libraries\n\
 full  == print messages for the executable,\n\
-         and messages for each shared library."),
+	 and messages for each shared library."),
 			NULL,
 			NULL,
 			&setprintlist, &showprintlist);

@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2018 Free Software Foundation, Inc.
+/* Copyright (C) 2017-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -15,9 +15,9 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "common/tdesc.h"
+#include "gdbsupport/tdesc.h"
 #include "tic6x.h"
-#include "common/common-defs.h"
+#include "gdbsupport/common-defs.h"
 
 #include "../features/tic6x-core.c"
 #include "../features/tic6x-gp.c"
@@ -28,20 +28,20 @@
 target_desc *
 tic6x_create_target_description (enum c6x_feature feature)
 {
-  target_desc *tdesc = allocate_target_description ();
+  target_desc_up tdesc = allocate_target_description ();
 
-  set_tdesc_architecture (tdesc, "tic6x");
-  set_tdesc_osabi (tdesc, "GNU/Linux");
+  set_tdesc_architecture (tdesc.get (), "tic6x");
+  set_tdesc_osabi (tdesc.get (), "GNU/Linux");
 
   long regnum = 0;
 
-  regnum = create_feature_tic6x_core (tdesc, regnum);
+  regnum = create_feature_tic6x_core (tdesc.get (), regnum);
 
   if (feature == C6X_GP || feature == C6X_C6XP)
-    regnum = create_feature_tic6x_gp (tdesc, regnum);
+    regnum = create_feature_tic6x_gp (tdesc.get (), regnum);
 
   if (feature == C6X_C6XP)
-    regnum = create_feature_tic6x_c6xp (tdesc, regnum);
+    regnum = create_feature_tic6x_c6xp (tdesc.get (), regnum);
 
-  return tdesc;
+  return tdesc.release ();
 }

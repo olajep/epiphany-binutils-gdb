@@ -1,5 +1,5 @@
 /* Handling of inferior events for the event loop for GDB, the GNU debugger.
-   Copyright (C) 1999-2018 Free Software Foundation, Inc.
+   Copyright (C) 1999-2022 Free Software Foundation, Inc.
    Written by Elena Zannoni <ezannoni@cygnus.com> of Cygnus Solutions.
 
    This file is part of GDB.
@@ -20,13 +20,12 @@
 #include "defs.h"
 #include "inferior.h"
 #include "infrun.h"
-#include "event-loop.h"
+#include "gdbsupport/event-loop.h"
 #include "event-top.h"
 #include "inf-loop.h"
 #include "remote.h"
 #include "language.h"
 #include "gdbthread.h"
-#include "continuations.h"
 #include "interps.h"
 #include "top.h"
 #include "observable.h"
@@ -34,13 +33,12 @@
 /* General function to handle events in the inferior.  */
 
 void
-inferior_event_handler (enum inferior_event_type event_type, 
-			gdb_client_data client_data)
+inferior_event_handler (enum inferior_event_type event_type)
 {
   switch (event_type)
     {
     case INF_REG_EVENT:
-      fetch_inferior_event (client_data);
+      fetch_inferior_event ();
       break;
 
     case INF_EXEC_COMPLETE:
@@ -49,14 +47,14 @@ inferior_event_handler (enum inferior_event_type event_type,
 	  /* Unregister the inferior from the event loop.  This is done
 	     so that when the inferior is not running we don't get
 	     distracted by spurious inferior output.  */
-	  if (target_has_execution && target_can_async_p ())
+	  if (target_has_execution () && target_can_async_p ())
 	    target_async (0);
 	}
 
       /* Do all continuations associated with the whole inferior (not
 	 a particular thread).  */
       if (inferior_ptid != null_ptid)
-	do_all_inferior_continuations (0);
+	current_inferior ()->do_all_continuations ();
 
       /* When running a command list (from a user command, say), these
 	 are only run when the command list is all done.  */
@@ -67,11 +65,11 @@ inferior_event_handler (enum inferior_event_type event_type,
 	  /* Don't propagate breakpoint commands errors.  Either we're
 	     stopping or some command resumes the inferior.  The user will
 	     be informed.  */
-	  TRY
+	  try
 	    {
 	      bpstat_do_actions ();
 	    }
-	  CATCH (e, RETURN_MASK_ALL)
+	  catch (const gdb_exception &e)
 	    {
 	      /* If the user was running a foreground execution
 		 command, then propagate the error so that the prompt
@@ -79,11 +77,10 @@ inferior_event_handler (enum inferior_event_type event_type,
 		 the prompt and is typing some unrelated command, so
 		 just inform the user and swallow the exception.  */
 	      if (current_ui->prompt_state == PROMPT_BLOCKED)
-		throw_exception (e);
+		throw;
 	      else
 		exception_print (gdb_stderr, e);
 	    }
-	  END_CATCH
 	}
       break;
 

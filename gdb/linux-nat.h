@@ -1,6 +1,6 @@
 /* Native debugging support for GNU/Linux (LWP layer).
 
-   Copyright (C) 2000-2018 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -16,6 +16,9 @@
 
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
+
+#ifndef LINUX_NAT_H
+#define LINUX_NAT_H
 
 #include "nat/linux-nat.h"
 #include "inf-ptrace.h"
@@ -43,9 +46,9 @@ public:
 
   void resume (ptid_t, int, enum gdb_signal) override;
 
-  ptid_t wait (ptid_t, struct target_waitstatus *, int) override;
+  ptid_t wait (ptid_t, struct target_waitstatus *, target_wait_flags) override;
 
-  void pass_signals (int, unsigned char *) override;
+  void pass_signals (gdb::array_view<const unsigned char>) override;
 
   enum target_xfer_status xfer_partial (enum target_object object,
 					const char *annex,
@@ -61,7 +64,7 @@ public:
 
   void update_thread_list () override;
 
-  const char *pid_to_str (ptid_t) override;
+  std::string pid_to_str (ptid_t) override;
 
   const char *thread_name (struct thread_info *) override;
 
@@ -85,6 +88,7 @@ public:
   bool supports_non_stop () override;
   bool always_non_stop_p () override;
 
+  int async_wait_fd () override;
   void async (int) override;
 
   void close () override;
@@ -129,7 +133,7 @@ public:
 
   void post_attach (int) override;
 
-  int follow_fork (int, int) override;
+  void follow_fork (bool, bool) override;
 
   std::vector<static_tracepoint_marker>
     static_tracepoint_markers_by_strid (const char *id) override;
@@ -158,6 +162,10 @@ public:
 
   /* The method to call, if any, when a new fork is attached.  */
   virtual void low_new_fork (struct lwp_info *parent, pid_t child_pid)
+  {}
+
+  /* The method to call, if any, when a new clone event is detected.  */
+  virtual void low_new_clone (struct lwp_info *parent, pid_t child_lwp)
   {}
 
   /* The method to call, if any, when a process is no longer
@@ -225,7 +233,7 @@ struct lwp_info
 
   /* When 'stopped' is set, this is where the lwp last stopped, with
      decr_pc_after_break already accounted for.  If the LWP is
-     running, and stepping, this is the address at which the lwp was
+     running and stepping, this is the address at which the lwp was
      resumed (that is, it's the previous stop PC).  If the LWP is
      running and not stepping, this is 0.  */
   CORE_ADDR stop_pc;
@@ -234,7 +242,7 @@ struct lwp_info
   int step;
 
   /* The reason the LWP last stopped, if we need to track it
-     (breakpoint, watchpoint, etc.)  */
+     (breakpoint, watchpoint, etc.).  */
   enum target_stop_reason stop_reason;
 
   /* On architectures where it is possible to know the data address of
@@ -296,8 +304,11 @@ void check_for_thread_db (void);
    true on success, false if the process isn't using libpthread.  */
 extern int thread_db_notice_clone (ptid_t parent, ptid_t child);
 
-/* Return the set of signals used by the threads library.  */
-extern void lin_thread_get_thread_signals (sigset_t *mask);
+/* Return the number of signals used by the threads library.  */
+extern unsigned int lin_thread_get_thread_signal_num (void);
+
+/* Return the i-th signal used by the threads library.  */
+extern int lin_thread_get_thread_signal (unsigned int i);
 
 /* Find process PID's pending signal set from /proc/pid/status.  */
 void linux_proc_pending_signals (int pid, sigset_t *pending,
@@ -322,3 +333,5 @@ void linux_nat_switch_fork (ptid_t new_ptid);
    Return 1 if it was retrieved successfully, 0 otherwise (*SIGINFO is
    uninitialized in such case).  */
 int linux_nat_get_siginfo (ptid_t ptid, siginfo_t *siginfo);
+
+#endif /* LINUX_NAT_H */

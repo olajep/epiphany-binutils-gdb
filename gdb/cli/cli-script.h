@@ -1,5 +1,5 @@
 /* Header file for GDB CLI command implementation library.
-   Copyright (C) 2000-2018 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,8 +14,10 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#if !defined (CLI_SCRIPT_H)
-#define CLI_SCRIPT_H 1
+#ifndef CLI_CLI_SCRIPT_H
+#define CLI_CLI_SCRIPT_H
+
+#include "gdbsupport/function-view.h"
 
 struct ui_file;
 struct cmd_list_element;
@@ -43,6 +45,7 @@ enum command_control_type
   guile_control,
   while_stepping_control,
   define_control,
+  document_control,
   invalid_control
 };
 
@@ -62,6 +65,9 @@ struct command_lines_deleter
 
 /* A reference-counted struct command_line.  */
 typedef std::shared_ptr<command_line> counted_command_line;
+
+/* A unique_ptr specialization for command_line.  */
+typedef std::unique_ptr<command_line, command_lines_deleter> command_line_up;
 
 /* * Structure for saved commands lines (for breakpoints, defined
    commands, etc).  */
@@ -168,4 +174,4 @@ extern void print_command_trace (const char *cmd, ...)
 
 extern void reset_command_nest_depth (void);
 
-#endif /* !defined (CLI_SCRIPT_H) */
+#endif /* CLI_CLI_SCRIPT_H */

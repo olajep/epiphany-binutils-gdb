@@ -1,6 +1,6 @@
 /* Ada language support definitions for GDB, the GNU debugger.
 
-   Copyright (C) 1992-2018 Free Software Foundation, Inc.
+   Copyright (C) 1992-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -28,7 +28,6 @@ struct parser_state;
 #include "value.h"
 #include "gdbtypes.h"
 #include "breakpoint.h"
-#include "vec.h"
 
 /* Names of specific files known to be part of the runtime
    system and that might consider (confusing) debugging information.
@@ -86,17 +85,17 @@ enum ada_renaming_category
     ADA_NOT_RENAMING,
 
     /* For symbols declared
-         Foo : TYPE renamed OBJECT;  */
+	 Foo : TYPE renamed OBJECT;  */
     ADA_OBJECT_RENAMING,
 
     /* For symbols declared
-         Foo : exception renames EXCEPTION;  */
+	 Foo : exception renames EXCEPTION;  */
     ADA_EXCEPTION_RENAMING,
     /* For packages declared
-          package Foo renames PACKAGE; */
+	  package Foo renames PACKAGE; */
     ADA_PACKAGE_RENAMING,
     /* For subprograms declared
-          SUBPROGRAM_SPEC renames SUBPROGRAM;
+	  SUBPROGRAM_SPEC renames SUBPROGRAM;
        (Currently not used).  */
     ADA_SUBPROGRAM_RENAMING
   };
@@ -150,38 +149,30 @@ struct ada_task_info
   int base_cpu;
 };
 
-/* Assuming V points to an array of S objects,  make sure that it contains at
-   least M objects, updating V and S as necessary.  */
-
-#define GROW_VECT(v, s, m)                                    \
-   if ((s) < (m)) (v) = (char *) grow_vect (v, &(s), m, sizeof *(v));
-
-extern void *grow_vect (void *, size_t *, size_t, int);
-
 extern void ada_ensure_varsize_limit (const struct type *type);
 
 extern int ada_get_field_index (const struct type *type,
-                                const char *field_name,
-                                int maybe_missing);
+				const char *field_name,
+				int maybe_missing);
 
 extern int ada_parse (struct parser_state *);    /* Defined in ada-exp.y */
 
-                        /* Defined in ada-typeprint.c */
+			/* Defined in ada-typeprint.c */
 extern void ada_print_type (struct type *, const char *, struct ui_file *, int,
-                            int, const struct type_print_options *);
+			    int, const struct type_print_options *);
 
 extern void ada_print_typedef (struct type *type, struct symbol *new_symbol,
 			       struct ui_file *stream);
 
-extern void ada_val_print (struct type *, int, CORE_ADDR,
-			   struct ui_file *, int,
-			   struct value *,
-			   const struct value_print_options *);
+/* Implement la_value_print_inner for Ada.  */
+
+extern void ada_value_print_inner (struct value *, struct ui_file *, int,
+				   const struct value_print_options *);
 
 extern void ada_value_print (struct value *, struct ui_file *,
 			     const struct value_print_options *);
 
-                                /* Defined in ada-lang.c */
+				/* Defined in ada-lang.c */
 
 extern void ada_emit_char (int, struct type *, struct ui_file *, int, int);
 
@@ -192,18 +183,18 @@ extern void ada_printstr (struct ui_file *, struct type *, const gdb_byte *,
 			  const struct value_print_options *);
 
 struct value *ada_convert_actual (struct value *actual,
-                                  struct type *formal_type0);
+				  struct type *formal_type0);
+
+extern bool ada_is_access_to_unconstrained_array (struct type *type);
 
 extern struct value *ada_value_subscript (struct value *, int,
-                                          struct value **);
+					  struct value **);
 
 extern void ada_fixup_array_indexes_type (struct type *index_desc_type);
 
 extern struct type *ada_array_element_type (struct type *, int);
 
 extern int ada_array_arity (struct type *);
-
-struct type *ada_type_of_array (struct value *, int);
 
 extern struct value *ada_coerce_to_simple_array_ptr (struct value *);
 
@@ -225,19 +216,19 @@ extern struct type *ada_get_decoded_type (struct type *type);
 
 extern const char *ada_decode_symbol (const struct general_symbol_info *);
 
-extern const char *ada_decode (const char*);
+/* Decode the GNAT-encoded name NAME, returning the decoded name.  If
+   the name does not appear to be GNAT-encoded, then the result
+   depends on WRAP.  If WRAP is true (the default), then the result is
+   simply wrapped in <...>.  If WRAP is false, then the empty string
+   will be returned.  */
+extern std::string ada_decode (const char *name, bool wrap = true);
 
-extern enum language ada_update_initial_language (enum language);
-
-extern int ada_lookup_symbol_list (const char *, const struct block *,
-                                   domain_enum,
-				   std::vector<struct block_symbol> *);
-
-extern char *ada_fold_name (const char *);
+extern std::vector<struct block_symbol> ada_lookup_symbol_list
+     (const char *, const struct block *, domain_enum);
 
 extern struct block_symbol ada_lookup_symbol (const char *,
 					      const struct block *,
-					      domain_enum, int *);
+					      domain_enum);
 
 extern void ada_lookup_encoded_symbol
   (const char *name, const struct block *block, domain_enum domain,
@@ -245,13 +236,12 @@ extern void ada_lookup_encoded_symbol
 
 extern struct bound_minimal_symbol ada_lookup_simple_minsym (const char *);
 
-extern void ada_fill_in_ada_prototype (struct symbol *);
-
-extern int user_select_syms (struct block_symbol *, int, int);
-
-extern int get_selections (int *, int, int, int, const char *);
-
 extern int ada_scan_number (const char *, int, LONGEST *, int *);
+
+extern struct value *ada_value_primitive_field (struct value *arg1,
+						int offset,
+						int fieldno,
+						struct type *arg_type);
 
 extern struct type *ada_parent_type (struct type *);
 
@@ -261,24 +251,20 @@ extern int ada_is_constrained_packed_array_type (struct type *);
 
 extern struct value *ada_value_primitive_packed_val (struct value *,
 						     const gdb_byte *,
-                                                     long, int, int,
-                                                     struct type *);
+						     long, int, int,
+						     struct type *);
 
 extern struct type *ada_coerce_to_simple_array_type (struct type *);
 
-extern int ada_is_character_type (struct type *);
+extern bool ada_is_character_type (struct type *);
 
-extern int ada_is_string_type (struct type *);
+extern bool ada_is_string_type (struct type *);
 
 extern int ada_is_tagged_type (struct type *, int);
 
 extern int ada_is_tag_type (struct type *);
 
-extern struct type *ada_tag_type (struct value *);
-
-extern struct value *ada_value_tag (struct value *);
-
-extern const char *ada_tag_name (struct value *);
+extern gdb::unique_xmalloc_ptr<char> ada_tag_name (struct value *);
 
 extern struct value *ada_tag_value_at_base_address (struct value *obj);
 
@@ -290,13 +276,7 @@ extern int ada_is_variant_part (struct type *, int);
 
 extern struct type *ada_variant_discrim_type (struct type *, struct type *);
 
-extern int ada_is_others_clause (struct type *, int);
-
-extern int ada_in_variant (LONGEST, struct type *, int);
-
 extern const char *ada_variant_discrim_name (struct type *);
-
-extern struct value *ada_value_struct_elt (struct value *, const char *, int);
 
 extern int ada_is_aligner_type (struct type *);
 
@@ -305,24 +285,13 @@ extern struct type *ada_aligned_type (struct type *);
 extern const gdb_byte *ada_aligned_value_addr (struct type *,
 					       const gdb_byte *);
 
-extern const char *ada_attribute_name (enum exp_opcode);
-
-extern int ada_is_fixed_point_type (struct type *);
-
 extern int ada_is_system_address_type (struct type *);
 
-extern struct value *ada_delta (struct type *);
-
-extern struct value *ada_scaling_factor (struct type *);
-
-extern struct type *ada_system_address_type (void);
-
-extern int ada_which_variant_applies (struct type *, struct type *,
-				      const gdb_byte *);
+extern int ada_which_variant_applies (struct type *, struct value *);
 
 extern struct type *ada_to_fixed_type (struct type *, const gdb_byte *,
 				       CORE_ADDR, struct value *,
-                                       int check_tag);
+				       int check_tag);
 
 extern struct value *ada_to_fixed_value (struct value *val);
 
@@ -337,12 +306,9 @@ extern int ada_name_prefix_len (const char *);
 extern const char *ada_type_name (struct type *);
 
 extern struct type *ada_find_parallel_type (struct type *,
-                                            const char *suffix);
+					    const char *suffix);
 
 extern bool get_int_var_value (const char *, LONGEST &value);
-
-extern struct symbol *ada_find_renaming_symbol (struct symbol *name_sym,
-                                                const struct block *block);
 
 extern int ada_prefer_type (struct type *, struct type *);
 
@@ -350,7 +316,7 @@ extern struct type *ada_get_base_type (struct type *);
 
 extern struct type *ada_check_typedef (struct type *);
 
-extern char *ada_encode (const char *);
+extern std::string ada_encode (const char *);
 
 extern const char *ada_enum_name (const char *);
 
@@ -379,6 +345,10 @@ extern void create_ada_exception_catchpoint
    const std::string &excep_string, const std::string &cond_string, int tempflag,
    int disabled, int from_tty);
 
+/* Return true if BP is an Ada catchpoint.  */
+
+extern bool is_ada_exception_catchpoint (breakpoint *bp);
+
 /* Some information about a given Ada exception.  */
 
 struct ada_exc_info
@@ -403,16 +373,61 @@ extern struct ada_task_info *ada_get_task_info_from_ptid (ptid_t ptid);
 
 extern int ada_get_task_number (thread_info *thread);
 
-typedef void (ada_task_list_iterator_ftype) (struct ada_task_info *task);
+typedef gdb::function_view<void (struct ada_task_info *task)>
+  ada_task_list_iterator_ftype;
 extern void iterate_over_live_ada_tasks
-  (ada_task_list_iterator_ftype *iterator);
+  (ada_task_list_iterator_ftype iterator);
 
 extern const char *ada_get_tcb_types_info (void);
 
-extern int ada_build_task_list (void);
-
 extern void print_ada_task_info (struct ui_out *uiout,
-				 char *taskno_str,
+				 const char *taskno_str,
 				 struct inferior *inf);
+
+/* Look for a symbol for an overloaded operator for the operation OP.
+   PARSE_COMPLETION is true if currently parsing for completion.
+   NARGS and ARGVEC describe the arguments to the call.  Returns a
+   "null" block_symbol if no such operator is found.  */
+
+extern block_symbol ada_find_operator_symbol (enum exp_opcode op,
+					      bool parse_completion,
+					      int nargs, value *argvec[]);
+
+/* Resolve a function call, selecting among possible function symbols.
+   SYM and BLOCK are passed to ada_lookup_symbol_list.  CONTEXT_TYPE
+   describes the calling context.  PARSE_COMPLETION is true if
+   currently parsing for completion.  NARGS and ARGVEC describe the
+   arguments to the call.  This returns the chosen symbol and will
+   update TRACKER accordingly.  */
+
+extern block_symbol ada_resolve_funcall (struct symbol *sym,
+					 const struct block *block,
+					 struct type *context_type,
+					 bool parse_completion,
+					 int nargs, value *argvec[],
+					 innermost_block_tracker *tracker);
+
+/* Resolve a symbol reference, selecting among possible values.  SYM
+   and BLOCK are passed to ada_lookup_symbol_list.  CONTEXT_TYPE
+   describes the calling context.  PARSE_COMPLETION is true if
+   currently parsing for completion.  If DEPROCEDURE_P is nonzero,
+   then a symbol that names a zero-argument function will be passed
+   through ada_resolve_function.  This returns the chosen symbol and
+   will update TRACKER accordingly.  */
+
+extern block_symbol ada_resolve_variable (struct symbol *sym,
+					  const struct block *block,
+					  struct type *context_type,
+					  bool parse_completion,
+					  int deprocedure_p,
+					  innermost_block_tracker *tracker);
+
+/* The type of nth index in arrays of given type (n numbering from 1).
+   Does not examine memory.  Throws an error if N is invalid or TYPE
+   is not an array type.  NAME is the name of the Ada attribute being
+   evaluated ('range, 'first, 'last, or 'length); it is used in building
+   the error message.  */
+extern struct type *ada_index_type (struct type *type, int n,
+				    const char *name);
 
 #endif

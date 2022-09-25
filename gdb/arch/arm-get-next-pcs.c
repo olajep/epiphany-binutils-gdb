@@ -1,6 +1,6 @@
 /* Common code for ARM software single stepping support.
 
-   Copyright (C) 1988-2018 Free Software Foundation, Inc.
+   Copyright (C) 1988-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -17,11 +17,12 @@
    You should have received a copy of the GNU General Public License
    along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
-#include "common-defs.h"
-#include "gdb_vecs.h"
-#include "common-regcache.h"
+#include "gdbsupport/common-defs.h"
+#include "gdbsupport/gdb_vecs.h"
+#include "gdbsupport/common-regcache.h"
 #include "arm.h"
 #include "arm-get-next-pcs.h"
+#include "count-one-bits.h"
 
 /* See arm-get-next-pcs.h.  */
 
@@ -49,7 +50,7 @@ static std::vector<CORE_ADDR>
 thumb_deal_with_atomic_sequence_raw (struct arm_get_next_pcs *self)
 {
   int byte_order_for_code = self->byte_order_for_code;
-  CORE_ADDR breaks[2] = {-1, -1};
+  CORE_ADDR breaks[2] = {CORE_ADDR_MAX, CORE_ADDR_MAX};
   CORE_ADDR pc = regcache_read_pc (self->regcache);
   CORE_ADDR loc = pc;
   unsigned short insn1, insn2;
@@ -76,7 +77,7 @@ thumb_deal_with_atomic_sequence_raw (struct arm_get_next_pcs *self)
 
   loc += 2;
   if (!((insn1 & 0xfff0) == 0xe850
-        || ((insn1 & 0xfff0) == 0xe8d0 && (insn2 & 0x00c0) == 0x0040)))
+	|| ((insn1 & 0xfff0) == 0xe8d0 && (insn2 & 0x00c0) == 0x0040)))
     return {};
 
   /* Assume that no atomic sequence is longer than "atomic_sequence_length"
@@ -187,7 +188,7 @@ static std::vector<CORE_ADDR>
 arm_deal_with_atomic_sequence_raw (struct arm_get_next_pcs *self)
 {
   int byte_order_for_code = self->byte_order_for_code;
-  CORE_ADDR breaks[2] = {-1, -1};
+  CORE_ADDR breaks[2] = {CORE_ADDR_MAX, CORE_ADDR_MAX};
   CORE_ADDR pc = regcache_read_pc (self->regcache);
   CORE_ADDR loc = pc;
   unsigned int insn;
@@ -214,20 +215,20 @@ arm_deal_with_atomic_sequence_raw (struct arm_get_next_pcs *self)
       loc += 4;
 
       /* Assume that there is at most one conditional branch in the atomic
-         sequence.  If a conditional branch is found, put a breakpoint in
-         its destination address.  */
+	 sequence.  If a conditional branch is found, put a breakpoint in
+	 its destination address.  */
       if (bits (insn, 24, 27) == 0xa)
 	{
-          if (last_breakpoint > 0)
-            return {}; /* More than one conditional branch found, fallback
+	  if (last_breakpoint > 0)
+	    return {}; /* More than one conditional branch found, fallback
 			  to the standard single-step code.  */
 
 	  breaks[1] = BranchDest (loc - 4, insn);
 	  last_breakpoint++;
-        }
+	}
 
       /* We do not support atomic sequences that use any *other* instructions
-         but conditional branches to change the PC.  Fall back to standard
+	 but conditional branches to change the PC.  Fall back to standard
 	 code to avoid losing control of execution.  */
       else if (arm_instruction_changes_pc (insn))
 	return {};
@@ -271,7 +272,6 @@ thumb_get_next_pcs_raw (struct arm_get_next_pcs *self)
   unsigned long pc_val = ((unsigned long) pc) + 4;	/* PC after prefetch */
   unsigned short inst1;
   CORE_ADDR nextpc = pc + 2;		/* Default is next instruction.  */
-  unsigned long offset;
   ULONGEST status, itstate;
   struct regcache *regcache = self->regcache;
   std::vector<CORE_ADDR> next_pcs;
@@ -408,8 +408,9 @@ thumb_get_next_pcs_raw (struct arm_get_next_pcs *self)
       CORE_ADDR sp;
 
       /* Fetch the saved PC from the stack.  It's stored above
-         all of the other registers.  */
-      offset = bitcount (bits (inst1, 0, 7)) * INT_REGISTER_SIZE;
+	 all of the other registers.  */
+      unsigned long offset
+	= count_one_bits (bits (inst1, 0, 7)) * ARM_INT_REGISTER_SIZE;
       sp = regcache_raw_get_unsigned (regcache, ARM_SP_REGNUM);
       nextpc = self->ops->read_mem_uint (sp + offset, 4, byte_order);
     }
@@ -450,7 +451,7 @@ thumb_get_next_pcs_raw (struct arm_get_next_pcs *self)
 	      j1 = bit (inst2, 13);
 	      j2 = bit (inst2, 11);
 
-	      offset = ((imm1 << 12) + (imm2 << 1));
+	      unsigned long offset = ((imm1 << 12) + (imm2 << 1));
 	      offset ^= ((!j2) << 22) | ((!j1) << 23);
 
 	      nextpc = pc_val + offset;
@@ -477,7 +478,8 @@ thumb_get_next_pcs_raw (struct arm_get_next_pcs *self)
 		  j1 = bit (inst2, 13);
 		  j2 = bit (inst2, 11);
 
-		  offset = (sign << 20) + (j2 << 19) + (j1 << 18);
+		  unsigned long offset
+		    = (sign << 20) + (j2 << 19) + (j1 << 18);
 		  offset += (imm1 << 12) + (imm2 << 1);
 
 		  nextpc = pc_val + offset;
@@ -495,7 +497,7 @@ thumb_get_next_pcs_raw (struct arm_get_next_pcs *self)
 	      /* LDMIA or POP */
 	      if (!bit (inst2, 15))
 		load_pc = 0;
-	      offset = bitcount (inst2) * 4 - 4;
+	      offset = count_one_bits (inst2) * 4 - 4;
 	    }
 	  else if (!bit (inst1, 7) && bit (inst1, 8))
 	    {
@@ -677,7 +679,7 @@ arm_get_next_pcs_raw (struct arm_get_next_pcs *self)
       case 0xd:
       case 0xe:
 	/* Coprocessor register transfer.  */
-        if (bits (this_instr, 12, 15) == 15)
+	if (bits (this_instr, 12, 15) == 15)
 	  error (_("Invalid update to pc in instruction"));
 	break;
       }
@@ -863,7 +865,7 @@ arm_get_next_pcs_raw (struct arm_get_next_pcs *self)
 		    {
 		      /* up */
 		      unsigned long reglist = bits (this_instr, 0, 14);
-		      offset = bitcount (reglist) * 4;
+		      offset = count_one_bits_l (reglist) * 4;
 		      if (bit (this_instr, 24))		/* pre */
 			offset += 4;
 		    }

@@ -1,6 +1,6 @@
 /* Base/prototype target for default child (native) targets.
 
-   Copyright (C) 1988-2018 Free Software Foundation, Inc.
+   Copyright (C) 1988-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -30,10 +30,10 @@
 #include "inferior.h"
 #include <sys/stat.h>
 #include "inf-child.h"
-#include "fileio.h"
-#include "agent.h"
-#include "gdb_wait.h"
-#include "filestuff.h"
+#include "gdbsupport/fileio.h"
+#include "gdbsupport/agent.h"
+#include "gdbsupport/gdb_wait.h"
+#include "gdbsupport/filestuff.h"
 
 #include <sys/types.h>
 #include <fcntl.h>
@@ -114,6 +114,12 @@ inf_child_target::terminal_inferior ()
 }
 
 void
+inf_child_target::terminal_save_inferior ()
+{
+  child_terminal_save_inferior (this);
+}
+
+void
 inf_child_target::terminal_ours_for_output ()
 {
   child_terminal_ours_for_output (this);
@@ -160,7 +166,7 @@ inf_child_open_target (const char *arg, int from_tty)
   gdb_assert (dynamic_cast<inf_child_target *> (target) != NULL);
 
   target_preopen (from_tty);
-  push_target (target);
+  current_inferior ()->push_target (target);
   inf_child_explicitly_opened = 1;
   if (from_tty)
     printf_filtered ("Done.  Use the \"run\" command to start a process.\n");
@@ -200,8 +206,8 @@ inf_child_target::mourn_inferior ()
 void
 inf_child_target::maybe_unpush_target ()
 {
-  if (!inf_child_explicitly_opened && !have_inferiors ())
-    unpush_target (this);
+  if (!inf_child_explicitly_opened)
+    current_inferior ()->unpush_target (this);
 }
 
 void
@@ -235,36 +241,6 @@ inf_child_target::pid_to_exec_file (int pid)
   /* This target doesn't support translation of a process ID to the
      filename of the executable file.  */
   return NULL;
-}
-
-bool
-inf_child_target::has_all_memory ()
-{
-  return default_child_has_all_memory ();
-}
-
-bool
-inf_child_target::has_memory ()
-{
-  return default_child_has_memory ();
-}
-
-bool
-inf_child_target::has_stack ()
-{
-  return default_child_has_stack ();
-}
-
-bool
-inf_child_target::has_registers ()
-{
-  return default_child_has_registers ();
-}
-
-bool
-inf_child_target::has_execution (ptid_t ptid)
-{
-  return default_child_has_execution (ptid);
 }
 
 /* Implementation of to_fileio_open.  */
@@ -433,9 +409,22 @@ inf_child_target::can_use_agent ()
   return agent_loaded_p ();
 }
 
-inf_child_target::inf_child_target ()
+void
+inf_child_target::follow_exec (inferior *follow_inf, ptid_t ptid,
+			       const char *execd_pathname)
 {
-  this->to_stratum = process_stratum;
+  inferior *orig_inf = current_inferior ();
+
+  process_stratum_target::follow_exec (follow_inf, ptid, execd_pathname);
+
+  if (orig_inf != follow_inf)
+    {
+      /* If the target was implicitly push in the original inferior, unpush
+         it.  */
+      scoped_restore_current_thread restore_thread;
+      switch_to_inferior_no_thread (orig_inf);
+      maybe_unpush_target ();
+    }
 }
 
 /* See inf-child.h.  */

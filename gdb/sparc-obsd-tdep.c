@@ -1,6 +1,6 @@
 /* Target-dependent code for OpenBSD/sparc.
 
-   Copyright (C) 2004-2018 Free Software Foundation, Inc.
+   Copyright (C) 2004-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -25,11 +25,13 @@
 #include "regcache.h"
 #include "symtab.h"
 #include "trad-frame.h"
+#include "inferior.h"
 
 #include "obsd-tdep.h"
 #include "sparc-tdep.h"
 #include "solib-svr4.h"
 #include "bsd-uthread.h"
+#include "gdbarch.h"
 
 /* Signal trampolines.  */
 
@@ -86,7 +88,7 @@ sparc32obsd_sigtramp_frame_cache (struct frame_info *this_frame,
       cache->pc &= ~(sparc32obsd_page_size - 1);
 
       /* Since we couldn't find the frame's function, the cache was
-         initialized under the assumption that we're frameless.  */
+	 initialized under the assumption that we're frameless.  */
       sparc_record_save_insn (cache);
       addr = get_frame_register_unsigned (this_frame, SPARC_FP_REGNUM);
       cache->base = addr;
@@ -134,6 +136,7 @@ sparc32obsd_sigtramp_frame_sniffer (const struct frame_unwind *self,
 }
 static const struct frame_unwind sparc32obsd_sigtramp_frame_unwind =
 {
+  "sparc32 openbsd sigtramp",
   SIGTRAMP_FRAME,
   default_frame_unwind_stop_reason,
   sparc32obsd_sigtramp_frame_this_id,
@@ -156,6 +159,9 @@ sparc32obsd_supply_uthread (struct regcache *regcache,
   enum bfd_endian byte_order = gdbarch_byte_order (gdbarch);
   CORE_ADDR fp, fp_addr = addr + SPARC32OBSD_UTHREAD_FP_OFFSET;
   gdb_byte buf[4];
+
+  /* This function calls functions that depend on the global current thread.  */
+  gdb_assert (regcache->ptid () == inferior_ptid);
 
   gdb_assert (regnum >= -1);
 
@@ -202,6 +208,9 @@ sparc32obsd_collect_uthread(const struct regcache *regcache,
   CORE_ADDR sp;
   gdb_byte buf[4];
 
+  /* This function calls functions that depend on the global current thread.  */
+  gdb_assert (regcache->ptid () == inferior_ptid);
+
   gdb_assert (regnum >= -1);
 
   if (regnum == SPARC_SP_REGNUM || regnum == -1)
@@ -245,8 +254,9 @@ sparc32obsd_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
   bsd_uthread_set_collect_uthread (gdbarch, sparc32obsd_collect_uthread);
 }
 
+void _initialize_sparc32obsd_tdep ();
 void
-_initialize_sparc32obsd_tdep (void)
+_initialize_sparc32obsd_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_sparc, 0, GDB_OSABI_OPENBSD,
 			  sparc32obsd_init_abi);

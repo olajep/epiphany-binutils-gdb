@@ -1,6 +1,6 @@
 /* Target-dependent code for FreeBSD/i386.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -24,12 +24,13 @@
 #include "regcache.h"
 #include "regset.h"
 #include "i386-fbsd-tdep.h"
-#include "x86-xstate.h"
+#include "gdbsupport/x86-xstate.h"
 
 #include "i386-tdep.h"
 #include "i387-tdep.h"
 #include "fbsd-tdep.h"
 #include "solib-svr4.h"
+#include "inferior.h"
 
 /* Support for signal handlers.  */
 
@@ -134,8 +135,8 @@ i386fbsd_sigtramp_p (struct frame_info *this_frame)
   const gdb_byte *middle, *end;
 
   /* Look for a matching start.  */
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_start))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_start}))
     return 0;
   if (memcmp (buf, i386fbsd_sigtramp_start, sizeof i386fbsd_sigtramp_start)
       == 0)
@@ -161,23 +162,23 @@ i386fbsd_sigtramp_p (struct frame_info *this_frame)
   /* Since the end is shorter than the middle, check for a matching end
      next.  */
   pc += sizeof i386fbsd_sigtramp_start;
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_end))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_end}))
     return 0;
   if (memcmp (buf, end, sizeof i386fbsd_sigtramp_end) == 0)
     return 1;
 
   /* If the end didn't match, check for a matching middle.  */
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_middle))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_middle}))
     return 0;
   if (memcmp (buf, middle, sizeof i386fbsd_sigtramp_middle) != 0)
     return 0;
 
   /* The middle matched, check for a matching end.  */
   pc += sizeof i386fbsd_sigtramp_middle;
-  if (!safe_frame_unwind_memory (this_frame, pc, buf,
-				 sizeof i386fbsd_sigtramp_end))
+  if (!safe_frame_unwind_memory (this_frame, pc,
+				 {buf, sizeof i386fbsd_sigtramp_end}))
     return 0;
   if (memcmp (buf, end, sizeof i386fbsd_sigtramp_end) != 0)
     return 0;
@@ -233,7 +234,7 @@ i386fbsd_core_read_xcr0 (bfd *abfd)
 
   if (xstate)
     {
-      size_t size = bfd_section_size (abfd, xstate);
+      size_t size = bfd_section_size (xstate);
 
       /* Check extended state size.  */
       if (size < X86_XSTATE_AVX_SIZE)
@@ -267,7 +268,7 @@ i386fbsd_core_read_description (struct gdbarch *gdbarch,
 				struct target_ops *target,
 				bfd *abfd)
 {
-  return i386_target_description (i386fbsd_core_read_xcr0 (abfd));
+  return i386_target_description (i386fbsd_core_read_xcr0 (abfd), true);
 }
 
 /* Similar to i386_supply_fpregset, but use XSAVE extended state.  */
@@ -318,6 +319,31 @@ i386fbsd_iterate_over_regset_sections (struct gdbarch *gdbarch,
     cb (".reg-xstate", X86_XSTATE_SIZE (tdep->xcr0),
 	X86_XSTATE_SIZE (tdep->xcr0), &i386fbsd_xstateregset,
 	"XSAVE extended state", cb_data);
+}
+
+/* Implement the get_thread_local_address gdbarch method.  */
+
+static CORE_ADDR
+i386fbsd_get_thread_local_address (struct gdbarch *gdbarch, ptid_t ptid,
+				   CORE_ADDR lm_addr, CORE_ADDR offset)
+{
+  struct gdbarch_tdep *tdep = gdbarch_tdep (gdbarch);
+  struct regcache *regcache;
+
+  if (tdep->fsbase_regnum == -1)
+    error (_("Unable to fetch %%gsbase"));
+
+  regcache = get_thread_arch_regcache (current_inferior ()->process_target (),
+				       ptid, gdbarch);
+
+  target_fetch_registers (regcache, tdep->fsbase_regnum + 1);
+
+  ULONGEST gsbase;
+  if (regcache->cooked_read (tdep->fsbase_regnum + 1, &gsbase) != REG_VALID)
+    error (_("Unable to fetch %%gsbase"));
+
+  CORE_ADDR dtv_addr = gsbase + gdbarch_ptr_bit (gdbarch) / 8;
+  return fbsd_get_thread_local_address (gdbarch, dtv_addr, lm_addr, offset);
 }
 
 static void
@@ -418,10 +444,16 @@ i386fbsd4_init_abi (struct gdbarch_info info, struct gdbarch *gdbarch)
 
   set_gdbarch_core_read_description (gdbarch,
 				     i386fbsd_core_read_description);
+
+  set_gdbarch_fetch_tls_load_module_address (gdbarch,
+					     svr4_fetch_objfile_link_map);
+  set_gdbarch_get_thread_local_address (gdbarch,
+					i386fbsd_get_thread_local_address);
 }
 
+void _initialize_i386fbsd_tdep ();
 void
-_initialize_i386fbsd_tdep (void)
+_initialize_i386fbsd_tdep ()
 {
   gdbarch_register_osabi (bfd_arch_i386, 0, GDB_OSABI_FREEBSD,
 			  i386fbsd4_init_abi);

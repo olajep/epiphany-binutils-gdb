@@ -1,7 +1,7 @@
 /* Machine independent support for QNX Neutrino /proc (process file system)
    for GDB.  Written by Colin Burgess at QNX Software Systems Limited.
 
-   Copyright (C) 2003-2018 Free Software Foundation, Inc.
+   Copyright (C) 2003-2022 Free Software Foundation, Inc.
 
    Contributed by QNX Software Systems Ltd.
 
@@ -42,8 +42,8 @@
 #include "regcache.h"
 #include "solib.h"
 #include "inf-child.h"
-#include "common/filestuff.h"
-#include "common/scoped_fd.h"
+#include "gdbsupport/filestuff.h"
+#include "gdbsupport/scoped_fd.h"
 
 #define NULL_PID		0
 #define _DEBUG_FLAG_TRACE	(_DEBUG_FLAG_TRACE_EXEC|_DEBUG_FLAG_TRACE_RD|\
@@ -69,7 +69,7 @@ struct nto_procfs_target : public inf_child_target
 
   void resume (ptid_t, int, enum gdb_signal) override;
 
-  ptid_t wait (ptid_t, struct target_waitstatus *, int) override;
+  ptid_t wait (ptid_t, struct target_waitstatus *, target_wait_flags) override;
 
   void fetch_registers (struct regcache *, int) override;
   void store_registers (struct regcache *, int) override;
@@ -109,18 +109,15 @@ struct nto_procfs_target : public inf_child_target
 
   void mourn_inferior () override;
 
-  void pass_signals (int, unsigned char *) override;
+  void pass_signals (gdb::array_view<const unsigned char>) override;
 
   bool thread_alive (ptid_t ptid) override;
 
   void update_thread_list () override;
 
-  const char *pid_to_str (ptid_t) override;
+  std::string pid_to_str (ptid_t) override;
 
   void interrupt () override;
-
-  bool have_continuable_watchpoint ()
-  { return true; }
 
   const char *extra_thread_info (struct thread_info *) override;
 
@@ -146,7 +143,7 @@ class nto_procfs_target_native final : public nto_procfs_target
 static const target_info nto_procfs_target_info = {
   "procfs",
   N_("QNX Neutrino local or remote process"),
-  N_("QNX Neutrino process.  target procfs <node>")
+  N_("QNX Neutrino process.  target procfs NODE")
 };
 
 struct nto_procfs_target_procfs final : public nto_procfs_target
@@ -216,8 +213,6 @@ nto_procfs_target::open (const char *arg, int from_tty)
 
   nto_procfs_node = ND_LOCAL_NODE;
   nodestr = (arg != NULL) ? xstrdup (arg) : NULL;
-
-  init_thread_list ();
 
   if (nodestr)
     {
@@ -398,7 +393,7 @@ nto_procfs_target::update_thread_list ()
 
   prune_threads ();
 
-  pid = inferior_ptid.pid ();
+  pid = current_inferior ()->pid;
 
   status.tid = 1;
 
@@ -414,7 +409,7 @@ nto_procfs_target::update_thread_list ()
 	   (e.g. thread exited).  */
 	continue;
       ptid = ptid_t (pid, 0, tid);
-      new_thread = find_thread_ptid (ptid);
+      new_thread = find_thread_ptid (this, ptid);
       if (!new_thread)
 	new_thread = add_thread (ptid);
       update_thread_private_data (new_thread, tid, status.state, 0);
@@ -610,7 +605,7 @@ procfs_meminfo (const char *args, int from_tty)
 	      if (strcmp (map.info.path, printme.name))
 		continue;
 
-	      /* Lower debug_vaddr is always text, if nessessary, swap.  */
+	      /* Lower debug_vaddr is always text, if necessary, swap.  */
 	      if ((int) map.info.vaddr < (int) printme.text.debug_vaddr)
 		{
 		  memcpy (&(printme.data), &(printme.text),
@@ -663,7 +658,7 @@ nto_procfs_target::files_info ()
 
   printf_unfiltered ("\tUsing the running image of %s %s via %s.\n",
 		     inf->attach_flag ? "attached" : "child",
-		     target_pid_to_str (inferior_ptid),
+		     target_pid_to_str (inferior_ptid).c_str (),
 		     (nodestr != NULL) ? nodestr : "local node");
 }
 
@@ -698,7 +693,6 @@ nto_procfs_target::pid_to_exec_file (const int pid)
 void
 nto_procfs_target::attach (const char *args, int from_tty)
 {
-  char *exec_file;
   int pid;
   struct inferior *inf;
 
@@ -709,32 +703,32 @@ nto_procfs_target::attach (const char *args, int from_tty)
 
   if (from_tty)
     {
-      exec_file = (char *) get_exec_file (0);
+      const char *exec_file = get_exec_file (0);
 
       if (exec_file)
 	printf_unfiltered ("Attaching to program `%s', %s\n", exec_file,
-			   target_pid_to_str (ptid_t (pid)));
+			   target_pid_to_str (ptid_t (pid)).c_str ());
       else
 	printf_unfiltered ("Attaching to %s\n",
-			   target_pid_to_str (ptid_t (pid)));
-
-      gdb_flush (gdb_stdout);
+			   target_pid_to_str (ptid_t (pid)).c_str ());
     }
-  inferior_ptid = do_attach (ptid_t (pid));
+  ptid_t ptid = do_attach (ptid_t (pid));
   inf = current_inferior ();
   inferior_appeared (inf, pid);
   inf->attach_flag = 1;
 
-  if (!target_is_pushed (ops))
-    push_target (ops);
+  if (!inf->target_is_pushed (ops))
+    inf->push_target (ops);
 
-  procfs_update_thread_list (ops);
+  update_thread_list ();
+
+  switch_to_thread (find_thread_ptid (this, ptid));
 }
 
 void
 nto_procfs_target::post_attach (pid_t pid)
 {
-  if (exec_bfd)
+  if (current_program_space->exec_bfd ())
     solib_create_inferior_hook (0);
 }
 
@@ -801,7 +795,7 @@ nto_handle_sigint (int signo)
 
 sptid_t
 nto_procfs_target::wait (ptid_t ptid, struct target_waitstatus *ourstatus,
-			 int options)
+			 target_wait_flags options)
 {
   sigset_t set;
   siginfo_t info;
@@ -978,7 +972,7 @@ nto_procfs_target::xfer_partial (enum target_object object,
 	    return TARGET_XFER_E_IO;
 
 	  err = devctl (ctl_fd, DCMD_PROC_INFO, &procinfo,
-		        sizeof procinfo, 0);
+			sizeof procinfo, 0);
 	  if (err != EOK)
 	    return TARGET_XFER_E_IO;
 
@@ -1008,19 +1002,16 @@ nto_procfs_target::xfer_partial (enum target_object object,
 void
 nto_procfs_target::detach (inferior *inf, int from_tty)
 {
-  int pid;
-
   target_announce_detach ();
 
   if (siggnal)
-    SignalKill (nto_node (), inferior_ptid.pid (), 0, 0, 0, 0);
+    SignalKill (nto_node (), inf->pid, 0, 0, 0, 0);
 
   close (ctl_fd);
   ctl_fd = -1;
 
-  pid = inferior_ptid.pid ();
-  inferior_ptid = null_ptid;
-  detach_inferior (pid);
+  switch_to_no_thread ();
+  detach_inferior (inf->pid);
   init_thread_list ();
   inf_child_maybe_unpush_target (ops);
 }
@@ -1140,7 +1131,7 @@ nto_procfs_target::mourn_inferior ()
       SignalKill (nto_node (), inferior_ptid.pid (), 0, SIGKILL, 0, 0);
       close (ctl_fd);
     }
-  inferior_ptid = null_ptid;
+  switch_to_no_thread ();
   init_thread_list ();
   inf_child_mourn_inferior (ops);
 }
@@ -1151,7 +1142,7 @@ nto_procfs_target::mourn_inferior ()
    the string "a b c d", and as output it would fill in argv with
    the four arguments "a", "b", "c", "d".  The only additional
    functionality is simple quoting.  The gdb command:
-  	run a "b c d" f
+	run a "b c d" f
    will fill in argv with the three args "a", "b c d", "e".  */
 static void
 breakup_args (char *scratch, char **argv)
@@ -1217,12 +1208,11 @@ nto_procfs_target::create_inferior (const char *exec_file,
   const char *in = "", *out = "", *err = "";
   int fd, fds[3];
   sigset_t set;
-  const char *inferior_io_terminal = get_inferior_io_terminal ();
   struct inferior *inf;
 
   argv = xmalloc ((allargs.size () / (unsigned) 2 + 2) *
 		  sizeof (*argv));
-  argv[0] = get_exec_file (1);
+  argv[0] = const_cast<char *> (get_exec_file (1));
   if (!argv[0])
     {
       if (exec_file)
@@ -1242,14 +1232,15 @@ nto_procfs_target::create_inferior (const char *exec_file,
 
   /* If the user specified I/O via gdb's --tty= arg, use it, but only
      if the i/o is not also being specified via redirection.  */
-  if (inferior_io_terminal)
+  const char *inferior_tty = current_inferior ()->tty ();
+  if (inferior_tty != nullptr)
     {
       if (!in[0])
-	in = inferior_io_terminal;
+	in = inferior_tty;
       if (!out[0])
-	out = inferior_io_terminal;
+	out = inferior_tty;
       if (!err[0])
-	err = inferior_io_terminal;
+	err = inferior_tty;
     }
 
   if (in[0])
@@ -1311,8 +1302,9 @@ nto_procfs_target::create_inferior (const char *exec_file,
   if (fds[2] != STDERR_FILENO)
     close (fds[2]);
 
-  inferior_ptid = do_attach (ptid_t (pid));
-  procfs_update_thread_list (ops);
+  ptid_t ptid = do_attach (ptid_t (pid));
+  update_thread_list ();
+  switch_to_thread (find_thread_ptid (this, ptid));
 
   inf = current_inferior ();
   inferior_appeared (inf, pid);
@@ -1324,14 +1316,15 @@ nto_procfs_target::create_inferior (const char *exec_file,
     {
       /* FIXME: expected warning?  */
       /* warning( "Failed to set Kill-on-Last-Close flag: errno = %d(%s)\n",
-         errn, strerror(errn) ); */
+	 errn, safe_strerror(errn) ); */
     }
-  if (!target_is_pushed (ops))
-    push_target (ops);
+  if (!inf->target_is_pushed (ops))
+    inf->push_target (ops);
   target_terminal::init ();
 
-  if (exec_bfd != NULL
-      || (symfile_objfile != NULL && symfile_objfile->obfd != NULL))
+  if (current_program_space->exec_bfd () != NULL
+      || (current_program_space->symfile_object_file != NULL
+	  && current_program_space->symfile_object_file->obfd != NULL))
     solib_create_inferior_hook (0);
 }
 
@@ -1447,7 +1440,8 @@ nto_procfs_target::store_registers (struct regcache *regcache, int regno)
 /* Set list of signals to be handled in the target.  */
 
 void
-nto_procfs_target::pass_signals (int numsigs, unsigned char *pass_signals)
+nto_procfs_target::pass_signals
+  (gdb::array_view<const unsigned char> pass_signals)
 {
   int signo;
 
@@ -1456,22 +1450,19 @@ nto_procfs_target::pass_signals (int numsigs, unsigned char *pass_signals)
   for (signo = 1; signo < NSIG; signo++)
     {
       int target_signo = gdb_signal_from_host (signo);
-      if (target_signo < numsigs && pass_signals[target_signo])
-        sigdelset (&run.trace, signo);
+      if (target_signo < pass_signals.size () && pass_signals[target_signo])
+	sigdelset (&run.trace, signo);
     }
 }
 
-char *
+std::string
 nto_procfs_target::pid_to_str (ptid_t ptid)
 {
-  static char buf[1024];
-  int pid, tid, n;
+  int pid, tid;
   struct tidinfo *tip;
 
   pid = ptid.pid ();
   tid = ptid.tid ();
-
-  n = snprintf (buf, 1023, "process %d", pid);
 
 #if 0				/* NYI */
   tip = procfs_thread_info (pid, tid);
@@ -1479,7 +1470,7 @@ nto_procfs_target::pid_to_str (ptid_t ptid)
     snprintf (&buf[n], 1023, " (state = 0x%02x)", tip->state);
 #endif
 
-  return buf;
+  return string_printf ("process %d", pid);
 }
 
 /* to_can_run implementation for "target procfs".  Note this really
@@ -1515,8 +1506,9 @@ init_procfs_targets (void)
 
 #define OSTYPE_NTO 1
 
+void _initialize_procfs ();
 void
-_initialize_procfs (void)
+_initialize_procfs ()
 {
   sigset_t set;
 

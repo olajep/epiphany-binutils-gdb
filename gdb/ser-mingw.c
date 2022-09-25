@@ -1,6 +1,6 @@
 /* Serial interface for local (hardwired) serial ports on Windows systems
 
-   Copyright (C) 2006-2018 Free Software Foundation, Inc.
+   Copyright (C) 2006-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -321,9 +321,8 @@ ser_windows_read_prim (struct serial *scb, size_t count)
 {
   struct ser_windows_state *state;
   OVERLAPPED ov;
-  DWORD bytes_read, bytes_read_tmp;
+  DWORD bytes_read;
   HANDLE h;
-  gdb_byte *p;
 
   state = (struct ser_windows_state *) scb->state;
   if (state->in_progress)
@@ -351,7 +350,6 @@ ser_windows_read_prim (struct serial *scb, size_t count)
 static int
 ser_windows_write_prim (struct serial *scb, const void *buf, size_t len)
 {
-  struct ser_windows_state *state;
   OVERLAPPED ov;
   DWORD bytes_written;
   HANDLE h;
@@ -601,6 +599,11 @@ console_select_thread (void *arg)
 		  break;
 		}
 	    }
+	  else if (record.EventType == MOUSE_EVENT)
+	    {
+	      SetEvent (state->read_event);
+	      break;
+	    }
 
 	  /* Otherwise discard it and wait again.  */
 	  ReadConsoleInput (h, &record, 1, &n_records);
@@ -634,7 +637,6 @@ pipe_select_thread (void *arg)
 {
   struct serial *scb = (struct serial *) arg;
   struct ser_console_state *state;
-  int event_index;
   HANDLE h;
 
   state = (struct ser_console_state *) scb->state;
@@ -677,7 +679,6 @@ file_select_thread (void *arg)
 {
   struct serial *scb = (struct serial *) arg;
   struct ser_console_state *state;
-  int event_index;
   HANDLE h;
 
   state = (struct ser_console_state *) scb->state;
@@ -885,21 +886,21 @@ pipe_windows_open (struct serial *scb, const char *name)
     const char *err_msg
       = pex_run (ps->pex, PEX_SEARCH | PEX_BINARY_INPUT | PEX_BINARY_OUTPUT
 		 | PEX_STDERR_TO_PIPE,
-                 argv[0], argv.get (), NULL, NULL,
-                 &err);
+		 argv[0], argv.get (), NULL, NULL,
+		 &err);
 
     if (err_msg)
       {
-        /* Our caller expects us to return -1, but all they'll do with
-           it generally is print the message based on errno.  We have
-           all the same information here, plus err_msg provided by
-           pex_run, so we just raise the error here.  */
-        if (err)
-          error (_("error starting child process '%s': %s: %s"),
-                 name, err_msg, safe_strerror (err));
-        else
-          error (_("error starting child process '%s': %s"),
-                 name, err_msg);
+	/* Our caller expects us to return -1, but all they'll do with
+	   it generally is print the message based on errno.  We have
+	   all the same information here, plus err_msg provided by
+	   pex_run, so we just raise the error here.  */
+	if (err)
+	  error (_("error starting child process '%s': %s: %s"),
+		 name, err_msg, safe_strerror (err));
+	else
+	  error (_("error starting child process '%s': %s"),
+		 name, err_msg);
       }
   }
 
@@ -1188,7 +1189,6 @@ net_windows_open (struct serial *scb, const char *name)
 {
   struct net_windows_state *state;
   int ret;
-  DWORD threadId;
 
   ret = net_open (scb, name);
   if (ret != 0)
@@ -1343,11 +1343,11 @@ static const struct serial_ops tcp_ops =
   net_windows_done_wait_handle
 };
 
+void _initialize_ser_windows ();
 void
-_initialize_ser_windows (void)
+_initialize_ser_windows ()
 {
   WSADATA wsa_data;
-  struct serial_ops *ops;
 
   HMODULE hm = NULL;
 

@@ -1,5 +1,5 @@
 /* MI Command Set for GDB, the GNU debugger.
-   Copyright (C) 2000-2018 Free Software Foundation, Inc.
+   Copyright (C) 2000-2022 Free Software Foundation, Inc.
 
    Contributed by Cygnus Solutions (a Red Hat company).
 
@@ -45,8 +45,8 @@ static struct mi_cmd mi_cmds[] =
   DEF_MI_CMD_MI ("add-inferior", mi_cmd_add_inferior),
   DEF_MI_CMD_CLI_1 ("break-after", "ignore", 1,
 		    &mi_suppress_notification.breakpoint),
-  DEF_MI_CMD_CLI_1 ("break-condition","cond", 1,
-		  &mi_suppress_notification.breakpoint),
+  DEF_MI_CMD_MI_1 ("break-condition", mi_cmd_break_condition,
+		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("break-commands", mi_cmd_break_commands,
 		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_CLI_1 ("break-delete", "delete breakpoint", 1,
@@ -66,15 +66,22 @@ static struct mi_cmd mi_cmds[] =
   DEF_MI_CMD_MI_1 ("break-watch", mi_cmd_break_watch,
 		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("catch-assert", mi_cmd_catch_assert,
-                   &mi_suppress_notification.breakpoint),
+		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("catch-exception", mi_cmd_catch_exception,
-                   &mi_suppress_notification.breakpoint),
+		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("catch-handlers", mi_cmd_catch_handlers,
-                   &mi_suppress_notification.breakpoint),
+		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("catch-load", mi_cmd_catch_load,
-                   &mi_suppress_notification.breakpoint),
+		   &mi_suppress_notification.breakpoint),
   DEF_MI_CMD_MI_1 ("catch-unload", mi_cmd_catch_unload,
-                   &mi_suppress_notification.breakpoint),
+		   &mi_suppress_notification.breakpoint),
+  DEF_MI_CMD_MI_1 ("catch-throw", mi_cmd_catch_throw,
+		   &mi_suppress_notification.breakpoint),
+  DEF_MI_CMD_MI_1 ("catch-rethrow", mi_cmd_catch_rethrow,
+		   &mi_suppress_notification.breakpoint),
+  DEF_MI_CMD_MI_1 ("catch-catch", mi_cmd_catch_catch,
+		   &mi_suppress_notification.breakpoint),
+  DEF_MI_CMD_MI ("complete", mi_cmd_complete),
   DEF_MI_CMD_MI ("data-disassemble", mi_cmd_disassemble),
   DEF_MI_CMD_MI ("data-evaluate-expression", mi_cmd_data_evaluate_expression),
   DEF_MI_CMD_MI ("data-list-changed-registers",
@@ -118,6 +125,8 @@ static struct mi_cmd mi_cmds[] =
   DEF_MI_CMD_MI ("file-list-shared-libraries",
 		 mi_cmd_file_list_shared_libraries),
   DEF_MI_CMD_CLI ("file-symbol-file", "symbol-file", 1),
+  DEF_MI_CMD_MI ("fix-multi-location-breakpoint-output",
+		 mi_cmd_fix_multi_location_breakpoint_output),
   DEF_MI_CMD_MI ("gdb-exit", mi_cmd_gdb_exit),
   DEF_MI_CMD_CLI_1 ("gdb-set", "set", 1,
 		    &mi_suppress_notification.cmd_param_changed),
@@ -142,6 +151,14 @@ static struct mi_cmd mi_cmds[] =
   DEF_MI_CMD_MI_1 ("stack-select-frame", mi_cmd_stack_select_frame,
 		   &mi_suppress_notification.user_selected_context),
   DEF_MI_CMD_MI ("symbol-list-lines", mi_cmd_symbol_list_lines),
+  DEF_MI_CMD_MI ("symbol-info-functions", mi_cmd_symbol_info_functions),
+  DEF_MI_CMD_MI ("symbol-info-variables", mi_cmd_symbol_info_variables),
+  DEF_MI_CMD_MI ("symbol-info-types", mi_cmd_symbol_info_types),
+  DEF_MI_CMD_MI ("symbol-info-modules", mi_cmd_symbol_info_modules),
+  DEF_MI_CMD_MI ("symbol-info-module-functions",
+		 mi_cmd_symbol_info_module_functions),
+  DEF_MI_CMD_MI ("symbol-info-module-variables",
+		 mi_cmd_symbol_info_module_variables),
   DEF_MI_CMD_CLI ("target-attach", "attach", 1),
   DEF_MI_CMD_MI ("target-detach", mi_cmd_target_detach),
   DEF_MI_CMD_CLI ("target-disconnect", "disconnect", 0),
@@ -203,13 +220,12 @@ mi_lookup (const char *command)
 
 /* Used for collecting hash hit/miss statistics.  */
 
-struct mi_cmd_stats
+static struct
 {
   int hit;
   int miss;
   int rehash;
-};
-struct mi_cmd_stats stats;
+} stats;
 
 /* Look up a command.  */
 
@@ -278,8 +294,9 @@ build_table (struct mi_cmd *commands)
     }
 }
 
+void _initialize_mi_cmds ();
 void
-_initialize_mi_cmds (void)
+_initialize_mi_cmds ()
 {
   build_table (mi_cmds);
   memset (&stats, 0, sizeof (stats));

@@ -1,5 +1,5 @@
 # Expect script for ld-shared tests
-#   Copyright (C) 1994-2018 Free Software Foundation, Inc.
+#   Copyright (C) 1994-2021 Free Software Foundation, Inc.
 #
 # This file is part of the GNU Binutils.
 #
@@ -26,7 +26,7 @@
 # bootstrap test.
 
 # Check to see if the C compiler works
-if { [which $CC] == 0 } {
+if { ![check_compiler_available] } {
     return
 }
 
@@ -64,6 +64,10 @@ if { ![istarget hppa*64*-*-hpux*] \
 set tmpdir tmpdir
 set SHCFLAG ""
 set shared_needs_pic "no"
+
+# Disable all sanitizers.
+set old_CFLAGS "$CFLAGS"
+append CFLAGS " $NOSANITIZE_CFLAGS"
 
 if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
 
@@ -132,6 +136,9 @@ proc shared_test { progname testname main sh1 sh2 dat args } {
     set shared -shared
     if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
 	set shared "-bM:SRE -bE:$tmpdir/xcoff.exp"
+    }
+    if { [is_elf_format] && [check_shared_lib_support] } {
+	append shared " -Wl,-z,notext"
     }
     if {![ld_link $CC $tmpdir/$progname.so "$shared $shldflags $tmpdir/$sh1 $tmpdir/$sh2"]} {
         fail "$testname"
@@ -206,8 +213,8 @@ verbose "Using $picflag to compile PIC code"
 
 # Compile the main program.
 if ![ld_compile "$CC $CFLAGS $SHCFLAG" $srcdir/$subdir/main.c $tmpdir/mainnp.o] {
-    unresolved "shared (non PIC)"
-    unresolved "shared"
+    unsupported "shared (non PIC)"
+    unsupported "shared"
 } else {
     # The shared library is composed of two files.  First compile them
     # without using -fpic.  That should work on an ELF system,
@@ -218,12 +225,12 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG" $srcdir/$subdir/main.c $tmpdir/mainnp.o] 
     global PLT_CFLAGS NOPIE_CFLAGS
     if { ![ld_compile "$CC $PLT_CFLAGS $NOPIE_CFLAGS $CFLAGS $SHCFLAG" $srcdir/$subdir/sh1.c $tmpdir/sh1np.o]
 	 || ![ld_compile "$CC $PLT_CFLAGS $CFLAGS $SHCFLAG" $srcdir/$subdir/sh2.c $tmpdir/sh2np.o] } {
-	unresolved "shared (non PIC)"
+	unsupported "shared (non PIC)"
     } else { if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
 	shared_test shnp "shared (nonPIC)" mainnp.o sh1np.o sh2np.o xcoff
     } else {
-	# SunOS non PIC shared libraries don't permit some cases of
-	# overriding.
+	# Solaris defaults to -z text.
+	setup_xfail "*-*-solaris2*"
 	setup_xfail "ia64-*-linux*"
 	setup_xfail "alpha*-*-linux*"
 	setup_xfail "powerpc64*-*-*"
@@ -268,6 +275,8 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG" $srcdir/$subdir/main.c $tmpdir/mainnp.o] 
 	    setup_xfail "arm*-*-linux*"
 	}
 	setup_xfail "aarch64*-*-linux*"
+	# Solaris defaults to -z text.
+	setup_xfail "*-*-solaris2*"
 	shared_test shnp "shared (non PIC, load offset)" \
 		mainnp.o sh1np.o sh2np.o shared \
 		"-Wl,-T,$srcdir/$subdir/elf-offset.ld,--hash-style=sysv"
@@ -277,7 +286,7 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG" $srcdir/$subdir/main.c $tmpdir/mainnp.o] 
 
     if { ![ld_compile "$CC $CFLAGS $SHCFLAG $picflag" $srcdir/$subdir/sh1.c $tmpdir/sh1p.o]
 	 || ![ld_compile "$CC $CFLAGS $SHCFLAG $picflag" $srcdir/$subdir/sh2.c $tmpdir/sh2p.o] } {
-	unresolved "shared"
+	unsupported "shared"
     } else {
 	if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
 	    shared_test shp "shared" mainnp.o sh1p.o sh2p.o xcoff
@@ -294,15 +303,15 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG" $srcdir/$subdir/main.c $tmpdir/mainnp.o] 
 
 # Now do the same tests again, but this time compile main.c PIC.
 if ![ld_compile "$CC $CFLAGS $SHCFLAG $picflag" $srcdir/$subdir/main.c $tmpdir/mainp.o] {
-    unresolved "shared (PIC main, non PIC so)"
-    unresolved "shared (PIC main)"
+    unsupported "shared (PIC main, non PIC so)"
+    unsupported "shared (PIC main)"
 } else {
     if { [file exists $tmpdir/sh1np.o ] && [ file exists $tmpdir/sh2np.o ] } {
         if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
 	    shared_test shmpnp "shared (PIC main, non PIC so)" mainp.o sh1np.o sh2np.o xcoff
 	} else {
-	    # SunOS non PIC shared libraries don't permit some cases of
-	    # overriding.
+	    # Solaris defaults to -z text.
+	    setup_xfail "*-*-solaris2*"
 	    setup_xfail "ia64-*-linux*"
 	    setup_xfail "alpha*-*-linux*"
 	    setup_xfail "powerpc64*-*-*"
@@ -324,7 +333,7 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG $picflag" $srcdir/$subdir/main.c $tmpdir/m
 	    shared_test shmpnp "shared (PIC main, non PIC so)" mainp.o sh1np.o sh2np.o shared
 	}
     } else {
-	unresolved "shared (PIC main, non PIC so)"
+	unsupported "shared (PIC main, non PIC so)"
     }
 
     if { [file exists $tmpdir/sh1p.o ] && [ file exists $tmpdir/sh2p.o ] } {
@@ -334,9 +343,11 @@ if ![ld_compile "$CC $CFLAGS $SHCFLAG $picflag" $srcdir/$subdir/main.c $tmpdir/m
 	    shared_test shmpp "shared (PIC main)" mainp.o sh1p.o sh2p.o shared
 	}
     } else {
-	unresolved "shared (PIC main)"
+	unsupported "shared (PIC main)"
     }
 }
+
+set CFLAGS "$old_CFLAGS"
 
 if { [istarget rs6000*-*-aix*] || [istarget powerpc*-*-aix*] } {
     # Remove the temporary directory.

@@ -1,6 +1,6 @@
 /* Cache and manage the values of registers for GDB, the GNU debugger.
 
-   Copyright (C) 1986-2018 Free Software Foundation, Inc.
+   Copyright (C) 1986-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -20,24 +20,28 @@
 #ifndef REGCACHE_H
 #define REGCACHE_H
 
-#include "common-regcache.h"
-#include <forward_list>
+#include "gdbsupport/common-regcache.h"
+#include "gdbsupport/function-view.h"
 
 struct regcache;
 struct regset;
 struct gdbarch;
 struct address_space;
+class thread_info;
+struct process_stratum_target;
 
 extern struct regcache *get_current_regcache (void);
-extern struct regcache *get_thread_regcache (ptid_t ptid);
+extern struct regcache *get_thread_regcache (process_stratum_target *target,
+					     ptid_t ptid);
 
 /* Get the regcache of THREAD.  */
 extern struct regcache *get_thread_regcache (thread_info *thread);
 
-extern struct regcache *get_thread_arch_regcache (ptid_t, struct gdbarch *);
-extern struct regcache *get_thread_arch_aspace_regcache (ptid_t,
-							 struct gdbarch *,
-							 struct address_space *);
+extern struct regcache *get_thread_arch_regcache
+  (process_stratum_target *targ, ptid_t, struct gdbarch *);
+extern struct regcache *get_thread_arch_aspace_regcache
+  (process_stratum_target *target, ptid_t,
+   struct gdbarch *, struct address_space *);
 
 extern enum register_status
   regcache_raw_read_signed (struct regcache *regcache,
@@ -68,17 +72,34 @@ extern void regcache_cooked_write_unsigned (struct regcache *regcache,
 
 /* Special routines to read/write the PC.  */
 
-/* For regcache_read_pc see common/common-regcache.h.  */
+/* For regcache_read_pc see gdbsupport/common-regcache.h.  */
 extern void regcache_write_pc (struct regcache *regcache, CORE_ADDR pc);
 
 /* Mapping between register numbers and offsets in a buffer, for use
-   in the '*regset' functions below.  In an array of
-   'regcache_map_entry' each element is interpreted like follows:
+   in the '*regset' functions below and with traditional frame caches.
+   In an array of 'regcache_map_entry' each element is interpreted
+   like follows:
 
    - If 'regno' is a register number: Map register 'regno' to the
      current offset (starting with 0) and increase the current offset
      by 'size' (or the register's size, if 'size' is zero).  Repeat
      this with consecutive register numbers up to 'regno+count-1'.
+
+     For each described register, if 'size' is larger than the
+     register's size, the register's value is assumed to be stored in
+     the first N (where N is the register size) bytes at the current
+     offset.  The remaining 'size' - N bytes are filled with zeroes by
+     'regcache_collect_regset' and ignored by other consumers.
+
+     If 'size' is smaller than the register's size, only the first
+     'size' bytes of a register's value are assumed to be stored at
+     the current offset.  'regcache_collect_regset' copies the first
+     'size' bytes of a register's value to the output buffer.
+     'regcache_supply_regset' copies the bytes from the input buffer
+     into the first 'size' bytes of the register's value leaving the
+     remaining bytes of the register's value unchanged.  Frame caches
+     read the 'size' bytes from the stack frame and zero extend them
+     to generate the register's value.
 
    - If 'regno' is REGCACHE_MAP_SKIP: Add 'count*size' to the current
      offset.
@@ -146,11 +167,11 @@ typedef gdb::function_view<register_status (int regnum, gdb_byte *buf)>
 
 /* A (register_number, register_value) pair.  */
 
-typedef struct cached_reg
+struct cached_reg_t
 {
   int num;
   gdb_byte *data;
-} cached_reg_t;
+};
 
 /* Buffer of registers.  */
 
@@ -164,10 +185,10 @@ public:
   /* Return regcache's architecture.  */
   gdbarch *arch () const;
 
-  /* See common/common-regcache.h.  */
+  /* See gdbsupport/common-regcache.h.  */
   enum register_status get_register_status (int regnum) const override;
 
-  /* See common/common-regcache.h.  */
+  /* See gdbsupport/common-regcache.h.  */
   void raw_collect (int regnum, void *buf) const override;
 
   /* Collect register REGNUM from REGCACHE.  Store collected value as an integer
@@ -182,7 +203,7 @@ public:
      reading only LEN.  */
   void raw_collect_part (int regnum, int offset, int len, gdb_byte *out) const;
 
-  /* See common/common-regcache.h.  */
+  /* See gdbsupport/common-regcache.h.  */
   void raw_supply (int regnum, const void *buf) override;
 
   void raw_supply (int regnum, const reg_buffer &src)
@@ -211,7 +232,7 @@ public:
 
   virtual ~reg_buffer () = default;
 
-  /* See common/common-regcache.h.  */
+  /* See gdbsupport/common-regcache.h.  */
   bool raw_compare (int regnum, const void *buf, int offset) const override;
 
 protected:
@@ -366,15 +387,18 @@ public:
     this->m_ptid = ptid;
   }
 
+  process_stratum_target *target () const
+  {
+    return m_target;
+  }
+
 /* Dump the contents of a register from the register cache to the target
    debug.  */
   void debug_print_register (const char *func, int regno);
 
-  static void regcache_thread_ptid_changed (ptid_t old_ptid, ptid_t new_ptid);
 protected:
-  regcache (gdbarch *gdbarch, const address_space *aspace_);
-
-  static std::forward_list<regcache *> current_regcache;
+  regcache (process_stratum_target *target, gdbarch *gdbarch,
+	    const address_space *aspace);
 
 private:
 
@@ -402,15 +426,16 @@ private:
 
   /* If this is a read-write cache, which thread's registers is
      it connected to?  */
+  process_stratum_target *m_target;
   ptid_t m_ptid;
 
   friend struct regcache *
-  get_thread_arch_aspace_regcache (ptid_t ptid, struct gdbarch *gdbarch,
+  get_thread_arch_aspace_regcache (process_stratum_target *target, ptid_t ptid,
+				   struct gdbarch *gdbarch,
 				   struct address_space *aspace);
-
-  friend void
-  registers_changed_ptid (ptid_t ptid);
 };
+
+using regcache_up = std::unique_ptr<regcache>;
 
 class readonly_detached_regcache : public readable_regcache
 {
@@ -432,7 +457,8 @@ public:
 };
 
 extern void registers_changed (void);
-extern void registers_changed_ptid (ptid_t);
+extern void registers_changed_ptid (process_stratum_target *target,
+				    ptid_t ptid);
 
 /* Indicate that registers of THREAD may have changed, so invalidate
    the cache.  */

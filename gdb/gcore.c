@@ -1,6 +1,6 @@
 /* Generate a core file for the inferior process.
 
-   Copyright (C) 2001-2018 Free Software Foundation, Inc.
+   Copyright (C) 2001-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -35,8 +35,9 @@
 #include "gdb_bfd.h"
 #include "readline/tilde.h"
 #include <algorithm>
-#include "common/gdb_unlinker.h"
-#include "byte-vector.h"
+#include "gdbsupport/gdb_unlinker.h"
+#include "gdbsupport/byte-vector.h"
+#include "gdbsupport/scope-exit.h"
 
 /* The largest amount of memory to read from the target at once.  We
    must throttle it to limit the amount of memory used by GDB during
@@ -45,7 +46,6 @@
 
 static const char *default_gcore_target (void);
 static enum bfd_architecture default_gcore_arch (void);
-static unsigned long default_gcore_mach (void);
 static int gcore_memory_sections (bfd *);
 
 /* create_gcore_bfd -- helper for gcore_command (exported).
@@ -59,7 +59,7 @@ create_gcore_bfd (const char *filename)
   if (obfd == NULL)
     error (_("Failed to open '%s' for output."), filename);
   bfd_set_format (obfd.get (), bfd_core);
-  bfd_set_arch_mach (obfd.get (), default_gcore_arch (), default_gcore_mach ());
+  bfd_set_arch_mach (obfd.get (), default_gcore_arch (), 0);
   return obfd;
 }
 
@@ -77,10 +77,10 @@ write_gcore_file_1 (bfd *obfd)
      generation should be converted to gdbarch_make_corefile_notes; at that
      point, the target vector method can be removed.  */
   if (!gdbarch_make_corefile_notes_p (target_gdbarch ()))
-    note_data.reset (target_make_corefile_notes (obfd, &note_size));
+    note_data = target_make_corefile_notes (obfd, &note_size);
   else
-    note_data.reset (gdbarch_make_corefile_notes (target_gdbarch (), obfd,
-						  &note_size));
+    note_data = gdbarch_make_corefile_notes (target_gdbarch (), obfd,
+					     &note_size);
 
   if (note_data == NULL || note_size == 0)
     error (_("Target does not support core file generation."));
@@ -94,9 +94,9 @@ write_gcore_file_1 (bfd *obfd)
     error (_("Failed to create 'note' section for corefile: %s"),
 	   bfd_errmsg (bfd_get_error ()));
 
-  bfd_set_section_vma (obfd, note_sec, 0);
-  bfd_set_section_alignment (obfd, note_sec, 0);
-  bfd_set_section_size (obfd, note_sec, note_size);
+  bfd_set_section_vma (note_sec, 0);
+  bfd_set_section_alignment (note_sec, 0);
+  bfd_set_section_size (note_sec, note_size);
 
   /* Now create the memory/load sections.  */
   if (gcore_memory_sections (obfd) == 0)
@@ -114,24 +114,9 @@ write_gcore_file_1 (bfd *obfd)
 void
 write_gcore_file (bfd *obfd)
 {
-  struct gdb_exception except = exception_none;
-
   target_prepare_to_generate_core ();
-
-  TRY
-    {
-      write_gcore_file_1 (obfd);
-    }
-  CATCH (e, RETURN_MASK_ALL)
-    {
-      except = e;
-    }
-  END_CATCH
-
-  target_done_generating_core ();
-
-  if (except.reason < 0)
-    throw_exception (except);
+  SCOPE_EXIT { target_done_generating_core (); };
+  write_gcore_file_1 (obfd);
 }
 
 /* gcore_command -- implements the 'gcore' command.
@@ -143,7 +128,7 @@ gcore_command (const char *args, int from_tty)
   gdb::unique_xmalloc_ptr<char> corefilename;
 
   /* No use generating a corefile without a target process.  */
-  if (!target_has_execution)
+  if (!target_has_execution ())
     noprocess ();
 
   if (args && *args)
@@ -159,37 +144,24 @@ gcore_command (const char *args, int from_tty)
 		      "Opening corefile '%s' for output.\n",
 		      corefilename.get ());
 
-  /* Open the output file.  */
-  gdb_bfd_ref_ptr obfd (create_gcore_bfd (corefilename.get ()));
+  if (target_supports_dumpcore ())
+    target_dumpcore (corefilename.get ());
+  else
+    {
+      /* Open the output file.  */
+      gdb_bfd_ref_ptr obfd (create_gcore_bfd (corefilename.get ()));
 
-  /* Arrange to unlink the file on failure.  */
-  gdb::unlinker unlink_file (corefilename.get ());
+      /* Arrange to unlink the file on failure.  */
+      gdb::unlinker unlink_file (corefilename.get ());
 
-  /* Call worker function.  */
-  write_gcore_file (obfd.get ());
+      /* Call worker function.  */
+      write_gcore_file (obfd.get ());
 
-  /* Succeeded.  */
-  unlink_file.keep ();
+      /* Succeeded.  */
+      unlink_file.keep ();
+    }
 
   fprintf_filtered (gdb_stdout, "Saved corefile %s\n", corefilename.get ());
-}
-
-static unsigned long
-default_gcore_mach (void)
-{
-#if 1	/* See if this even matters...  */
-  return 0;
-#else
-
-  const struct bfd_arch_info *bfdarch = gdbarch_bfd_arch_info (target_gdbarch ());
-
-  if (bfdarch != NULL)
-    return bfdarch->mach;
-  if (exec_bfd == NULL)
-    error (_("Can't find default bfd machine type (need execfile)."));
-
-  return bfd_get_mach (exec_bfd);
-#endif /* 1 */
 }
 
 static enum bfd_architecture
@@ -199,10 +171,10 @@ default_gcore_arch (void)
 
   if (bfdarch != NULL)
     return bfdarch->arch;
-  if (exec_bfd == NULL)
+  if (current_program_space->exec_bfd () == NULL)
     error (_("Can't find bfd architecture for corefile (need execfile)."));
 
-  return bfd_get_arch (exec_bfd);
+  return bfd_get_arch (current_program_space->exec_bfd ());
 }
 
 static const char *
@@ -212,12 +184,12 @@ default_gcore_target (void)
   if (gdbarch_gcore_bfd_target_p (target_gdbarch ()))
     return gdbarch_gcore_bfd_target (target_gdbarch ());
 
-  /* Otherwise, try to fall back to the exec_bfd target.  This will probably
+  /* Otherwise, try to fall back to the exec target.  This will probably
      not work for non-ELF targets.  */
-  if (exec_bfd == NULL)
+  if (current_program_space->exec_bfd () == NULL)
     return NULL;
   else
-    return bfd_get_target (exec_bfd);
+    return bfd_get_target (current_program_space->exec_bfd ());
 }
 
 /* Derive a reasonable stack segment by unwinding the target stack,
@@ -233,7 +205,7 @@ derive_stack_segment (bfd_vma *bottom, bfd_vma *top)
   gdb_assert (top);
 
   /* Can't succeed without stack and registers.  */
-  if (!target_has_stack || !target_has_registers)
+  if (!target_has_stack () || !target_has_registers ())
     return 0;
 
   /* Can't succeed without current frame.  */
@@ -296,11 +268,11 @@ call_target_sbrk (int sbrk_arg)
   else
     return (bfd_vma) 0;
 
-  gdbarch = get_objfile_arch (sbrk_objf);
+  gdbarch = sbrk_objf->arch ();
   target_sbrk_arg = value_from_longest (builtin_type (gdbarch)->builtin_int, 
 					sbrk_arg);
   gdb_assert (target_sbrk_arg);
-  ret = call_function_by_hand (sbrk_fn, NULL, 1, &target_sbrk_arg);
+  ret = call_function_by_hand (sbrk_fn, NULL, target_sbrk_arg);
   if (ret == NULL)
     return (bfd_vma) 0;
 
@@ -330,7 +302,7 @@ derive_heap_segment (bfd *abfd, bfd_vma *bottom, bfd_vma *top)
 
   /* This function depends on being able to call a function in the
      inferior.  */
-  if (!target_has_execution)
+  if (!target_has_execution ())
     return 0;
 
   /* The following code assumes that the link map is arranged as
@@ -346,11 +318,11 @@ derive_heap_segment (bfd *abfd, bfd_vma *bottom, bfd_vma *top)
 
   for (sec = abfd->sections; sec; sec = sec->next)
     {
-      if (bfd_get_section_flags (abfd, sec) & SEC_DATA
-	  || strcmp (".bss", bfd_section_name (abfd, sec)) == 0)
+      if (bfd_section_flags (sec) & SEC_DATA
+	  || strcmp (".bss", bfd_section_name (sec)) == 0)
 	{
-	  sec_vaddr = bfd_get_section_vma (abfd, sec);
-	  sec_size = bfd_get_section_size (sec);
+	  sec_vaddr = bfd_section_vma (sec);
+	  sec_size = bfd_section_size (sec);
 	  if (sec_vaddr + sec_size > top_of_data_memory)
 	    top_of_data_memory = sec_vaddr + sec_size;
 	}
@@ -373,23 +345,23 @@ derive_heap_segment (bfd *abfd, bfd_vma *bottom, bfd_vma *top)
 }
 
 static void
-make_output_phdrs (bfd *obfd, asection *osec, void *ignored)
+make_output_phdrs (bfd *obfd, asection *osec)
 {
   int p_flags = 0;
   int p_type = 0;
 
   /* FIXME: these constants may only be applicable for ELF.  */
-  if (startswith (bfd_section_name (obfd, osec), "load"))
+  if (startswith (bfd_section_name (osec), "load"))
     p_type = PT_LOAD;
-  else if (startswith (bfd_section_name (obfd, osec), "note"))
+  else if (startswith (bfd_section_name (osec), "note"))
     p_type = PT_NOTE;
   else
     p_type = PT_NULL;
 
   p_flags |= PF_R;	/* Segment is readable.  */
-  if (!(bfd_get_section_flags (obfd, osec) & SEC_READONLY))
+  if (!(bfd_section_flags (osec) & SEC_READONLY))
     p_flags |= PF_W;	/* Segment is writable.  */
-  if (bfd_get_section_flags (obfd, osec) & SEC_CODE)
+  if (bfd_section_flags (osec) & SEC_CODE)
     p_flags |= PF_X;	/* Segment is executable.  */
 
   bfd_record_phdr (obfd, p_type, 1, p_flags, 0, 0, 0, 0, 1, &osec);
@@ -412,10 +384,10 @@ gcore_create_callback (CORE_ADDR vaddr, unsigned long size, int read,
   if (read == 0 && write == 0 && exec == 0 && modified == 0)
     {
       if (info_verbose)
-        {
-          fprintf_filtered (gdb_stdout, "Ignore segment, %s bytes at %s\n",
-                            plongest (size), paddress (target_gdbarch (), vaddr));
-        }
+	{
+	  fprintf_filtered (gdb_stdout, "Ignore segment, %s bytes at %s\n",
+			    plongest (size), paddress (target_gdbarch (), vaddr));
+	}
 
       return 0;
     }
@@ -424,34 +396,33 @@ gcore_create_callback (CORE_ADDR vaddr, unsigned long size, int read,
     {
       /* See if this region of memory lies inside a known file on disk.
 	 If so, we can avoid copying its contents by clearing SEC_LOAD.  */
-      struct objfile *objfile;
       struct obj_section *objsec;
 
-      ALL_OBJSECTIONS (objfile, objsec)
-	{
-	  bfd *abfd = objfile->obfd;
-	  asection *asec = objsec->the_bfd_section;
-	  bfd_vma align = (bfd_vma) 1 << bfd_get_section_alignment (abfd,
-								    asec);
-	  bfd_vma start = obj_section_addr (objsec) & -align;
-	  bfd_vma end = (obj_section_endaddr (objsec) + align - 1) & -align;
+      for (objfile *objfile : current_program_space->objfiles ())
+	ALL_OBJFILE_OSECTIONS (objfile, objsec)
+	  {
+	    bfd *abfd = objfile->obfd;
+	    asection *asec = objsec->the_bfd_section;
+	    bfd_vma align = (bfd_vma) 1 << bfd_section_alignment (asec);
+	    bfd_vma start = objsec->addr () & -align;
+	    bfd_vma end = (objsec->endaddr () + align - 1) & -align;
 
-	  /* Match if either the entire memory region lies inside the
-	     section (i.e. a mapping covering some pages of a large
-	     segment) or the entire section lies inside the memory region
-	     (i.e. a mapping covering multiple small sections).
+	    /* Match if either the entire memory region lies inside the
+	       section (i.e. a mapping covering some pages of a large
+	       segment) or the entire section lies inside the memory region
+	       (i.e. a mapping covering multiple small sections).
 
-	     This BFD was synthesized from reading target memory,
-	     we don't want to omit that.  */
-	  if (objfile->separate_debug_objfile_backlink == NULL
-	      && ((vaddr >= start && vaddr + size <= end)
-	          || (start >= vaddr && end <= vaddr + size))
-	      && !(bfd_get_file_flags (abfd) & BFD_IN_MEMORY))
-	    {
-	      flags &= ~(SEC_LOAD | SEC_HAS_CONTENTS);
-	      goto keep;	/* Break out of two nested for loops.  */
-	    }
-	}
+	       This BFD was synthesized from reading target memory,
+	       we don't want to omit that.  */
+	    if (objfile->separate_debug_objfile_backlink == NULL
+		&& ((vaddr >= start && vaddr + size <= end)
+		    || (start >= vaddr && end <= vaddr + size))
+		&& !(bfd_get_file_flags (abfd) & BFD_IN_MEMORY))
+	      {
+		flags &= ~(SEC_LOAD | SEC_HAS_CONTENTS);
+		goto keep;	/* Break out of two nested for loops.  */
+	      }
+	  }
 
     keep:;
     }
@@ -478,9 +449,9 @@ gcore_create_callback (CORE_ADDR vaddr, unsigned long size, int read,
 			plongest (size), paddress (target_gdbarch (), vaddr));
     }
 
-  bfd_set_section_size (obfd, osec, size);
-  bfd_set_section_vma (obfd, osec, vaddr);
-  bfd_section_lma (obfd, osec) = 0; /* ??? bfd_set_section_lma?  */
+  bfd_set_section_size (osec, size);
+  bfd_set_section_vma (osec, vaddr);
+  bfd_set_section_lma (osec, 0);
   return 0;
 }
 
@@ -489,36 +460,35 @@ objfile_find_memory_regions (struct target_ops *self,
 			     find_memory_region_ftype func, void *obfd)
 {
   /* Use objfile data to create memory sections.  */
-  struct objfile *objfile;
   struct obj_section *objsec;
   bfd_vma temp_bottom, temp_top;
 
   /* Call callback function for each objfile section.  */
-  ALL_OBJSECTIONS (objfile, objsec)
-    {
-      bfd *ibfd = objfile->obfd;
-      asection *isec = objsec->the_bfd_section;
-      flagword flags = bfd_get_section_flags (ibfd, isec);
+  for (objfile *objfile : current_program_space->objfiles ())
+    ALL_OBJFILE_OSECTIONS (objfile, objsec)
+      {
+	asection *isec = objsec->the_bfd_section;
+	flagword flags = bfd_section_flags (isec);
 
-      /* Separate debug info files are irrelevant for gcore.  */
-      if (objfile->separate_debug_objfile_backlink != NULL)
-	continue;
+	/* Separate debug info files are irrelevant for gcore.  */
+	if (objfile->separate_debug_objfile_backlink != NULL)
+	  continue;
 
-      if ((flags & SEC_ALLOC) || (flags & SEC_LOAD))
-	{
-	  int size = bfd_section_size (ibfd, isec);
-	  int ret;
+	if ((flags & SEC_ALLOC) || (flags & SEC_LOAD))
+	  {
+	    int size = bfd_section_size (isec);
+	    int ret;
 
-	  ret = (*func) (obj_section_addr (objsec), size, 
-			 1, /* All sections will be readable.  */
-			 (flags & SEC_READONLY) == 0, /* Writable.  */
-			 (flags & SEC_CODE) != 0, /* Executable.  */
-			 1, /* MODIFIED is unknown, pass it as true.  */
-			 obfd);
-	  if (ret != 0)
-	    return ret;
-	}
-    }
+	    ret = (*func) (objsec->addr (), size,
+			   1, /* All sections will be readable.  */
+			   (flags & SEC_READONLY) == 0, /* Writable.  */
+			   (flags & SEC_CODE) != 0, /* Executable.  */
+			   1, /* MODIFIED is unknown, pass it as true.  */
+			   obfd);
+	    if (ret != 0)
+	      return ret;
+	  }
+      }
 
   /* Make a stack segment.  */
   if (derive_stack_segment (&temp_bottom, &temp_top))
@@ -530,7 +500,8 @@ objfile_find_memory_regions (struct target_ops *self,
 	     obfd);
 
   /* Make a heap segment.  */
-  if (derive_heap_segment (exec_bfd, &temp_bottom, &temp_top))
+  if (derive_heap_segment (current_program_space->exec_bfd (), &temp_bottom,
+			   &temp_top))
     (*func) (temp_bottom, temp_top - temp_bottom,
 	     1, /* Heap section will be readable.  */
 	     1, /* Heap section will be writable.  */
@@ -542,17 +513,17 @@ objfile_find_memory_regions (struct target_ops *self,
 }
 
 static void
-gcore_copy_callback (bfd *obfd, asection *osec, void *ignored)
+gcore_copy_callback (bfd *obfd, asection *osec)
 {
-  bfd_size_type size, total_size = bfd_section_size (obfd, osec);
+  bfd_size_type size, total_size = bfd_section_size (osec);
   file_ptr offset = 0;
 
   /* Read-only sections are marked; we don't have to copy their contents.  */
-  if ((bfd_get_section_flags (obfd, osec) & SEC_LOAD) == 0)
+  if ((bfd_section_flags (osec) & SEC_LOAD) == 0)
     return;
 
   /* Only interested in "load" sections.  */
-  if (!startswith (bfd_section_name (obfd, osec), "load"))
+  if (!startswith (bfd_section_name (osec), "load"))
     return;
 
   size = std::min (total_size, (bfd_size_type) MAX_COPY_BYTES);
@@ -563,13 +534,13 @@ gcore_copy_callback (bfd *obfd, asection *osec, void *ignored)
       if (size > total_size)
 	size = total_size;
 
-      if (target_read_memory (bfd_section_vma (obfd, osec) + offset,
+      if (target_read_memory (bfd_section_vma (osec) + offset,
 			      memhunk.data (), size) != 0)
 	{
 	  warning (_("Memory read failed for corefile "
 		     "section, %s bytes at %s."),
 		   plongest (size),
-		   paddress (target_gdbarch (), bfd_section_vma (obfd, osec)));
+		   paddress (target_gdbarch (), bfd_section_vma (osec)));
 	  break;
 	}
       if (!bfd_set_section_contents (obfd, osec, memhunk.data (),
@@ -598,21 +569,46 @@ gcore_memory_sections (bfd *obfd)
     }
 
   /* Record phdrs for section-to-segment mapping.  */
-  bfd_map_over_sections (obfd, make_output_phdrs, NULL);
+  for (asection *sect : gdb_bfd_sections (obfd))
+    make_output_phdrs (obfd, sect);
 
   /* Copy memory region contents.  */
-  bfd_map_over_sections (obfd, gcore_copy_callback, NULL);
+  for (asection *sect : gdb_bfd_sections (obfd))
+    gcore_copy_callback (obfd, sect);
 
   return 1;
 }
 
-void
-_initialize_gcore (void)
+/* See gcore.h.  */
+
+thread_info *
+gcore_find_signalled_thread ()
 {
-  add_com ("generate-core-file", class_files, gcore_command, _("\
+  thread_info *curr_thr = inferior_thread ();
+  if (curr_thr->state != THREAD_EXITED
+      && curr_thr->suspend.stop_signal != GDB_SIGNAL_0)
+    return curr_thr;
+
+  for (thread_info *thr : current_inferior ()->non_exited_threads ())
+    if (thr->suspend.stop_signal != GDB_SIGNAL_0)
+      return thr;
+
+  /* Default to the current thread, unless it has exited.  */
+  if (curr_thr->state != THREAD_EXITED)
+    return curr_thr;
+
+  return nullptr;
+}
+
+void _initialize_gcore ();
+void
+_initialize_gcore ()
+{
+  cmd_list_element *generate_core_file_cmd
+    = add_com ("generate-core-file", class_files, gcore_command, _("\
 Save a core file with the current state of the debugged process.\n\
 Usage: generate-core-file [FILENAME]\n\
 Argument is optional filename.  Default filename is 'core.PROCESS_ID'."));
 
-  add_com_alias ("gcore", "generate-core-file", class_files, 1);
+  add_com_alias ("gcore", generate_core_file_cmd, class_files, 1);
 }

@@ -1,6 +1,6 @@
 /* Python interface to inferior stop events.
 
-   Copyright (C) 2009-2018 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -23,8 +23,8 @@
 gdbpy_ref<>
 create_stop_event_object (PyTypeObject *py_type)
 {
-  return create_thread_event_object (py_type,
-				     py_get_event_thread (inferior_ptid));
+  gdbpy_ref<> thread = py_get_event_thread (inferior_ptid);
+  return create_thread_event_object (py_type, thread.get ());
 }
 
 /* Callback observers when a stop event occurs.  This function will create a
@@ -49,24 +49,24 @@ emit_stop_event (struct bpstats *bs, enum gdb_signal stop_signal)
   for (current_bs = bs; current_bs != NULL; current_bs = current_bs->next)
     {
       if (current_bs->breakpoint_at
-          && current_bs->breakpoint_at->py_bp_object)
-        {
-          PyObject *current_py_bp =
-              (PyObject *) current_bs->breakpoint_at->py_bp_object;
+	  && current_bs->breakpoint_at->py_bp_object)
+	{
+	  PyObject *current_py_bp =
+	      (PyObject *) current_bs->breakpoint_at->py_bp_object;
 
-          if (list == NULL)
-            {
-              list.reset (PyList_New (0));
-              if (list == NULL)
+	  if (list == NULL)
+	    {
+	      list.reset (PyList_New (0));
+	      if (list == NULL)
 		return -1;
-            }
+	    }
 
-          if (PyList_Append (list.get (), current_py_bp))
+	  if (PyList_Append (list.get (), current_py_bp))
 	    return -1;
 
-          if (first_bp == NULL)
-            first_bp = current_py_bp;
-        }
+	  if (first_bp == NULL)
+	    first_bp = current_py_bp;
+	}
     }
 
   if (list != NULL)

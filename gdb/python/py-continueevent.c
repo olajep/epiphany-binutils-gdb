@@ -1,6 +1,6 @@
 /* Python interface to inferior continue events.
 
-   Copyright (C) 2009-2018 Free Software Foundation, Inc.
+   Copyright (C) 2009-2022 Free Software Foundation, Inc.
 
    This file is part of GDB.
 
@@ -19,7 +19,6 @@
 
 #include "defs.h"
 #include "py-event.h"
-#include "py-ref.h"
 #include "gdbthread.h"
 
 /* Create a gdb.ContinueEvent event.  gdb.ContinueEvent is-a
@@ -32,12 +31,13 @@
 static gdbpy_ref<>
 create_continue_event_object (ptid_t ptid)
 {
-  PyObject *py_thr = py_get_event_thread (ptid);
+  gdbpy_ref<> py_thr = py_get_event_thread (ptid);
 
   if (py_thr == nullptr)
     return nullptr;
 
-  return create_thread_event_object (&continue_event_object_type, py_thr);
+  return create_thread_event_object (&continue_event_object_type,
+				     py_thr.get ());
 }
 
 /* Callback function which notifies observers when a continue event occurs.
@@ -50,7 +50,7 @@ emit_continue_event (ptid_t ptid)
   if (evregpy_no_listeners_p (gdb_py_events.cont))
     return 0;
 
-  gdbpy_ref<> event (create_continue_event_object (ptid));
+  gdbpy_ref<> event = create_continue_event_object (ptid);
   if (event != NULL)
     return evpy_emit_event (event.get (), gdb_py_events.cont);
   return -1;
