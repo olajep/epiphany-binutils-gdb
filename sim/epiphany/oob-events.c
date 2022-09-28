@@ -1,8 +1,8 @@
 #define WANT_CPU epiphanybf
 #define WANT_CPU_EPIPHANYBF
 
-/* For ffs */
 #include <strings.h>
+#include <stdlib.h>
 
 #include "sim-main.h"
 #include "cgen-ops.h"

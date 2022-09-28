@@ -7,15 +7,12 @@
 #define WITH_TARGET_FLOATING_POINT_BITSIZE 32
 #endif
 
-/* sim-basics.h includes config.h but cgen-types.h must be included before
-   sim-basics.h and cgen-types.h needs config.h.  */
-#include "config.h"
-
 #include <stdint.h>
 #include <stdbool.h>
 
 #include "symcat.h"
 #include "sim-basics.h"
+#include "sim-signal.h"
 #include "cgen-types.h"
 #include "epiphany-desc.h"
 #include "epiphany-opc.h"
@@ -141,19 +138,13 @@ struct _sim_cpu {
 
 /* The sim_state struct.  */
 
-struct sim_state {
-  sim_cpu *cpu[MAX_NR_PROCESSORS];
-
-  CGEN_STATE cgen_state;
-
-  sim_state_base base;
-
+struct epiphany_sim_state {
+#define STATE_EPIPHANY(sd) ((struct epiphany_sim_state *) STATE_ARCH_DATA (sd))
 #if WITH_EMESH_SIM
   bool external_fetch; /* True if external instruction fetch is supported */
   es_state *esim;
   sim_cpu *orig_cpu[MAX_NR_PROCESSORS];
-
-#define STATE_ESIM(sd) (sd->esim)
+#define STATE_ESIM(sd) (STATE_EPIPHANY(sd))->esim
 #endif
 };
 

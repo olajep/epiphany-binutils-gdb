@@ -185,9 +185,18 @@ extern void epiphanybf_h_all_registers_set_raw (SIM_CPU *current_cpu,
 extern void epiphanybf_h_all_registers_set (SIM_CPU *current_cpu, UINT regno,
 					    USI newval);
 
+extern void epiphanybf_h_caibit_set (SIM_CPU *current_cpu, BI newval);
+
 extern UDI epiphany_atomic_load (SIM_CPU *, INSN_ATOMIC_CTRLMODE, address_word,
 				 INSN_WORDSIZE, UDI);
 extern void epiphany_atomic_store (SIM_CPU *, INSN_ATOMIC_CTRLMODE,
 				   address_word, INSN_WORDSIZE, UDI);
+
+/* model functions */
+/* fix error: no previous prototype for ‘epiphanybf_record_trace_results’  */
+extern int epiphanybf_model_epiphany32_d_u_exec (SIM_CPU * cpu, const IDESC * idesc,
+				      int unit_num, int referenced,
+				      int sr, int sr2, int dr);
+
 
 #endif /* EPIPHANY_SIM_H */

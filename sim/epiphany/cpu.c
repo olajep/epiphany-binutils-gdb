@@ -843,11 +843,3 @@ epiphanybf_h_coremesh_registers_set (SIM_CPU *current_cpu, UINT regno, USI newva
 {
   SET_H_COREMESH_REGISTERS (regno, newval);
 }
-
-/* Record trace results for INSN.  */
-
-void
-epiphanybf_record_trace_results (SIM_CPU *current_cpu, CGEN_INSN *insn,
-			    int *indices, TRACE_RECORD *tr)
-{
-}

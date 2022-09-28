@@ -28,6 +28,8 @@
 
 /** Internal ESIM structures and helper macros */
 
+#undef max
+#undef min
 #define max(A,B) \
    ({ __typeof__ (A) _A = (A); \
        __typeof__ (B) _B = (B); \

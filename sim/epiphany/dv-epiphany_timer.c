@@ -210,7 +210,7 @@ epiphany_timer_hw_event_callback (struct hw *me, void *data)
       if (chained_p (timer))
 	{
 	  regs->chained -= (regs->chained || timer->timerwrap) ? 1 : 0;
-	  HW_TRACE ((me, "ctimer01=%#llx (chained)", regs->chainedul));
+	  HW_TRACE ((me, "ctimer01=%016"PRIx64" (chained)", regs->chained));
 	  if (regs->chained == 0)
 	    emit_interrupt(me, 0);
 	}

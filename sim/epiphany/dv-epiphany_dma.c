@@ -166,13 +166,14 @@ static const char * const epiphany_dma_regnames[] =
   "dma1dstaddr", "dma1auto0",  "dma1auto1", "dma1status",
 };
 
+#if 0
 static const char *reg_name(struct hw *me, int regno)
 {
   struct epiphany_dma *dma = hw_data (me);
 
   return epiphany_dma_regnames[regno + 8 * dma->channel];
 }
-
+#endif
 
 static void epiphany_dma_hw_event_callback (struct hw *me, void *data);
 

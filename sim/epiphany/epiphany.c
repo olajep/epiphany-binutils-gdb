@@ -24,6 +24,8 @@
 
 #include "libiberty.h"
 #include "sim-main.h"
+#include "sim-syscall.h"
+#include "sim/callback.h"
 #include "cgen-mem.h"
 #include "cgen-ops.h"
 #include "epiphany-desc.h"
@@ -331,7 +333,7 @@ epiphanybf_external_fetch_allowed_p (SIM_CPU *current_cpu)
 {
   SIM_DESC sd = CPU_STATE (current_cpu);
 
-  return sd->external_fetch;
+  return STATE_EPIPHANY (sd)->external_fetch;
 }
 
 bool

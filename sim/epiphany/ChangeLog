@@ -1,5 +1,44 @@
 2022-09-25  Ola Jeppsson  <ola.jeppsson@gmail.com>
 
+	Adjust for sim framework changes between GDB 8.2 to GDB 11.2.
+
+	* arch.c (sim_machs): Rename to ...
+	(epiphany_sim_machs): ... this.
+	* cpu.c (epiphanybf_record_trace_results): Remove function.
+	* decode.c: Use CGEN_TRACE_EXTRACT instead of TRACE_EXTRACT.
+	* dv-epiphany_dma.c (reg_name): Comment out unused function.
+	* dv-epiphany_timer.c (epiphany_timer_hw_event_callback): Fix
+	format string.
+	* epiphany-sim.h (epiphanybf_h_caibit_set): New decl.
+	(epiphanybf_model_epiphany32_d_u_exec): New decl.
+	* epiphany.c: Include sim-syscall.h and sim/callback.h.
+	(epiphanybf_external_fetch_allowed_p): Use STATE_EPIPHANY.
+	* esim/esim-int.h (min): Fix macro redfinition error.
+	(max): ditto.
+	* esim/esim.c (es_open_shm_file): Fix potential missing string
+	null termination.
+	* oob-events.c: Include stdlib.h.
+	* sim-if.c: Add missing stdlib.h include.
+	(free_state): Use STATE_EPIPHANY for mach state.
+	(epiphany_option_handler): ditto.
+	(sim_esim_cpu_relocate): ditto.
+	(sim_esim_init): Adjust call to cgen_cpu_max_extra_bytes().
+	(epiphany_sim_machs): New decl.
+	(sim_open): Set STATE_MACH, STATE_MODEL_NAME, current_alignment,
+	current_target_byte_order. Adjust call to sim_cpu_alloc_all().
+	Use STATE_EPIPHANY for mach state. Remove call to cgen_init().
+	(epiphany_sim_close): Use STATE_EPIPHANY for mach state.
+	Remove call to cgen_init().
+	(setup_workgroup_cfg): Use bfd_section_name(). Use
+	bfd_section_vma().
+	* sim-main.h: Don't include config.h. Include sim-signal.h
+	(sim_state): Remove struct.
+	(epiphany_sim_state): Add struct for mach sim state.
+	(STATE_EPIPHANY): Add define function for mach sim state.
+	(STATE_ESIM): Adjust to use STATE_EPIPHANY.
+
+2022-09-25  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
 	* configure.ac: Adjust for build system changes between GDB 8.2
 	to GDB 11.2.
 	* Makefile.in: ditto.

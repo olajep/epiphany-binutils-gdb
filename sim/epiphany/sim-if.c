@@ -177,7 +177,7 @@ free_state (SIM_DESC sd)
   if (STATE_ESIM (sd) != NULL)
     {
       es_fini (STATE_ESIM (sd));
-      STATE_CPU(sd, 0) = sd->orig_cpu[0];
+      STATE_CPU(sd, 0) = STATE_EPIPHANY (sd)->orig_cpu[0];
     }
 #endif
   if (STATE_MODULES (sd) != NULL)
@@ -304,7 +304,7 @@ epiphany_option_handler (SIM_DESC sd, sim_cpu *cpu, int opt, char *arg,
       emesh_params.session_name = arg;
       break;
     case E_OPTION_EXTERNAL_FETCH:
-      sd->external_fetch = true;
+      STATE_EPIPHANY (sd)->external_fetch = true;
       break;
 #endif
     default:
@@ -333,7 +333,7 @@ sim_esim_cpu_relocate (SIM_DESC sd, int extra_bytes)
 
   /* Save pointer to originally allocated cpu struct for generic
    * sim_close (). We restore it in epiphany_sim_close ()  */
-  sd->orig_cpu[0] = STATE_CPU(sd, 0);
+  STATE_EPIPHANY (sd)->orig_cpu[0] = STATE_CPU(sd, 0);
 
   if (! (new_cpu = es_set_cpu_state(STATE_ESIM(sd), STATE_CPU(sd, 0),
 			sizeof(sim_cpu) + extra_bytes)))
@@ -544,7 +544,7 @@ sim_esim_init(SIM_DESC sd)
       return SIM_RC_FAIL;
     }
 
-  if (sim_esim_cpu_relocate (sd, cgen_cpu_max_extra_bytes ()) != SIM_RC_OK)
+  if (sim_esim_cpu_relocate (sd, cgen_cpu_max_extra_bytes (sd)) != SIM_RC_OK)
     {
       return SIM_RC_FAIL;
     }
@@ -585,6 +585,8 @@ sim_esim_init(SIM_DESC sd)
 }
 #endif /* WITH_EMESH_SIM */
 
+extern const SIM_MACH * const epiphany_sim_machs[];
+
 /* Create an instance of the simulator.  */
 
 SIM_DESC
@@ -593,12 +595,21 @@ sim_open (SIM_OPEN_KIND kind,
 	  struct bfd *abfd,
 	  char * const *argv)
 {
-  SIM_DESC sd = sim_state_alloc (kind, callback);
   char c;
   int i;
 
+  SIM_DESC sd = sim_state_alloc_extra (kind, callback,
+				       sizeof (struct epiphany_sim_state));
+
+  /* Set default options before parsing user options.  */
+  STATE_MACHS (sd) = epiphany_sim_machs;
+  STATE_MODEL_NAME (sd) = "epiphany32";
+  current_alignment = STRICT_ALIGNMENT;
+  current_target_byte_order = BFD_ENDIAN_LITTLE;
+
+
   /* The cpu data is kept in a separately allocated chunk of memory.  */
-  if (sim_cpu_alloc_all (sd, 1, cgen_cpu_max_extra_bytes ()) != SIM_RC_OK)
+  if (sim_cpu_alloc_all (sd, 1) != SIM_RC_OK)
     {
       free_state (sd);
       return 0;
@@ -641,7 +652,7 @@ sim_open (SIM_OPEN_KIND kind,
 
 #if WITH_EMESH_SIM
   for (i = 0; i < MAX_NR_PROCESSORS; i++)
-    sd->orig_cpu[i] = NULL;
+    STATE_EPIPHANY (sd)->orig_cpu[i] = NULL;
 
   if (STATE_OPEN_KIND (sd) == SIM_OPEN_STANDALONE)
     {
@@ -716,10 +727,6 @@ sim_open (SIM_OPEN_KIND kind,
     epiphany_cgen_init_dis (cd);
   }
 
-  /* Initialize various cgen things not done by common framework.
-     Must be done after epiphany_cgen_cpu_open.  */
-  cgen_init (sd);
-
   for (c = 0; c < MAX_NR_PROCESSORS; ++c)
     {
       /* Only needed for profiling, but the structure member is small.  */
@@ -749,7 +756,7 @@ void
 epiphany_sim_close (SIM_DESC sd, int quitting)
 {
 
-  if (! sd->orig_cpu[0])
+  if (! STATE_EPIPHANY (sd)->orig_cpu[0])
     return;
 
 #if WITH_EMESH_SIM
@@ -767,7 +774,7 @@ epiphany_sim_close (SIM_DESC sd, int quitting)
     }
 
   /* Restore pointer to originally allocated cpu struct */
-  STATE_CPU (sd, 0) = sd->orig_cpu[0];
+  STATE_CPU (sd, 0) = STATE_EPIPHANY (sd)->orig_cpu[0];
 
   /* Fake it for generic sim_close () */
   {
@@ -777,7 +784,6 @@ epiphany_sim_close (SIM_DESC sd, int quitting)
     CPU_CPU_DESC (cpu) = cd;
     CPU_DISASSEMBLER (cpu) = sim_cgen_disassemble_insn;
     epiphany_cgen_init_dis (cd);
-    cgen_init (sd);
   }
 #endif
 }
@@ -799,7 +805,7 @@ setup_workgroup_cfg (SIM_DESC sd)
     return SIM_RC_OK;
 
   for (s = prog_bfd->sections; s; s = s->next)
-    if (strcmp (bfd_get_section_name (prog_bfd, s), "workgroup_cfg") == 0)
+    if (strcmp (bfd_section_name (s), "workgroup_cfg") == 0)
       {
 	found = true;
 	break;
@@ -811,7 +817,7 @@ setup_workgroup_cfg (SIM_DESC sd)
   if (STATE_VERBOSE_P (sd))
     sim_io_eprintf(sd, "setting workgroup configuration\n");
 
-  addr = bfd_get_section_vma (prog_bfd, s);
+  addr = bfd_section_vma (s);
 
   es_get_cluster_cfg(esim, &cluster);
   coreid = es_get_coreid(esim);
@@ -916,7 +922,7 @@ epiphany_user_init (SIM_DESC sd, SIM_CPU *cpu, struct bfd *abfd,
     return;
 
   for (s = prog_bfd->sections; s; s = s->next)
-    if (strcmp (bfd_get_section_name (prog_bfd, s), "loader_cfg") == 0)
+    if (strcmp (bfd_section_name (s), "loader_cfg") == 0)
       {
 	found = true;
 	break;
@@ -928,7 +934,7 @@ epiphany_user_init (SIM_DESC sd, SIM_CPU *cpu, struct bfd *abfd,
   if (STATE_VERBOSE_P (sd))
     sim_io_eprintf(sd, "setting loader flags\n");
 
-  addr = bfd_get_section_vma (prog_bfd, s);
+  addr = bfd_section_vma (s);
 
   sim_core_write_buffer (sd, current_cpu, write_map, &flags, addr,
 			 sizeof(flags));
