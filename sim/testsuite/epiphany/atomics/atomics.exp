@@ -6,10 +6,6 @@ if ![istarget epiphany*-*-*] {
 
 global global_ld_options
 
-# load support procs (none yet)
-# load_lib cgen.exp
-
-
 if ![info exists global_sim_options] {
     set global_sim_options ""
 }

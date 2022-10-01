@@ -5,7 +5,7 @@ if ![istarget epiphany*-*-*] {
 }
 
 global objdir
-global arch
+global subdir
 global sim
 global global_cc_options
 global global_sim_options
@@ -39,7 +39,7 @@ set global_cc_options "-fno-diagnostics-color $srcdir/$subdir/lib.S"
 set global_sim_options "--ext-ram-size 0 --ext-ram-base 0 --core-mem 1024kB"
 
 # Use simulator frontend for these tests.
-set sim "$objdir/../$arch/epiphany-elf-sim.py"
+set sim "$objdir/../$subdir/epiphany-elf-sim.py"
 set board_info([target_info name],sim) $sim
 set board_info([target_info name],sim,options) ""
 

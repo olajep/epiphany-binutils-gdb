@@ -1,5 +1,12 @@
 2022-10-01  Ola Jeppsson  <ola.jeppsson@gmail.com>
 
+	* atomics/atomics.exp: Remove commented out cgen.exp.
+	* 64bmode/64bmode.exp: Override target ldscript to none.
+	* allinsn.exp: ditto.
+	* multicore/multicore.exp: Replace arch with subdir.
+
+2022-10-01  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
 	Merge sim/epiphany-elf and sim/testsuite/sim/epiphany-elf into
 	sim/testsuite/epiphany.
 	Directory moved from sim/testsuite/sim/epiphany-elf to
