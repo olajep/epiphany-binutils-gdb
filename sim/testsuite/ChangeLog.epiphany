@@ -1,3 +1,11 @@
+2022-10-01  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	Merge test directories.
+
+	* sim/epiphany-elf: Merge into epiphany
+	* epiphany-elf: Merge into epiphany
+	* epiphany: All Epiphany tests moved here.
+
 2012-01-27  Joern Rennecke  <joern.rennecke@embecosm.com>
 
 	* configure: Regenerate.

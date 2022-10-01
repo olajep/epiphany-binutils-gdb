@@ -1,3 +1,7 @@
+# mach: all
+# status: 47
+# output:
+
 	;; Return with exit code 47.
 
 	.globl _start

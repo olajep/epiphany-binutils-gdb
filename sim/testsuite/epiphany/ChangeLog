@@ -1,3 +1,15 @@
+2022-10-01  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	Merge sim/epiphany-elf and sim/testsuite/sim/epiphany-elf into
+	sim/testsuite/epiphany.
+	Directory moved from sim/testsuite/sim/epiphany-elf to
+	sim/testsuite/epiphany.
+
+	* epiphany-elf/exit47.s: Test 'moved' here from
+	sim/testsuite/epiphany-elf.
+	* epiphany-elf/hello.s: Remove. Code covered in other tests.
+	* epiphany-elf/loop.s: Remove. This was never used.
+
 2019-03-24  Ola Jeppsson  <ola@adapteva.com>
 
 	* multicore/e-lib-inl.h: Remove global __loader_flags ABI
