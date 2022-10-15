@@ -1,3 +1,13 @@
+2022-10-15  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* multicore/multicore.exp: Remove unnecessary checks for
+	undefined variables. Remove unnecessary board_info overrides.
+	(sim): was renamed ...
+	(sim_path) ... to this.
+	(global_ld_options): Use instead of calling board_info. Adjust
+	for how options are passed to GCC changed.  Set __text_start to
+	fix load addr for .note.gnu.build-id.
+
 2022-10-01  Ola Jeppsson  <ola.jeppsson@gmail.com>
 
 	* atomics/atomics.exp: Remove commented out cgen.exp.
