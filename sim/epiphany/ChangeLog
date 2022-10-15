@@ -1,3 +1,13 @@
+2022-10-15  Ola Jeppsson  <ola.jeppsson@gmail.com>
+
+	* Makefile.in (SIM_EXTRA_ALL): This was removed from sim
+	framework. Move targets to ...
+	(all): ... here.
+	* epiphany-elf-sim.py.in: Adjust for Python-3 changes. os.errno
+	was moved to separate errno module. Fix integer division
+	converted to float. Lambdas don't support unpacking tuples.
+	Iteraing over maps requires converting to a list.
+
 2022-09-25  Ola Jeppsson  <ola.jeppsson@gmail.com>
 
 	Adjust for sim framework changes between GDB 8.2 to GDB 11.2.

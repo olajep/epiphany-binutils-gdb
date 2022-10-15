@@ -27,6 +27,7 @@ from __future__ import print_function
 import signal
 import sys
 import os
+import errno
 import time
 import traceback
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
@@ -77,7 +78,7 @@ def breakwhen(pred, seq):
     return fst, snd
 
 def not_number_part(x):
-    return not x in (map(str, range(0,10)) + ['x', 'X'])
+    return not x in (list(map(str, range(0,10))) + ['x', 'X'])
 
 def parse_size(x):
     """ Support size argument w/ "K,M,G" suffix. """
@@ -308,12 +309,12 @@ def check_wait_attach_or_die(parser, args):
     if not args.wait_attach:
         return
 
-    fst_r, fst_c = args.first_core / 64, args.first_core % 64
+    fst_r, fst_c = args.first_core // 64, args.first_core % 64
     last_r, last_c = fst_r + args.rows - 1 , fst_c + args.cols - 1
 
     invalid = []
     for coreid in args.wait_attach:
-        r, c = coreid / 64, coreid % 64
+        r, c = coreid // 64, coreid % 64
         if r < fst_r or last_r < r or c < fst_c or last_c < c:
             invalid.append(coreid)
     if invalid:
@@ -328,7 +329,7 @@ def mkdir_p(dirname):
     try:
         os.makedirs(dirname)
     except OSError as e:
-        if e.errno == os.errno.EEXIST and os.path.isdir(dirname):
+        if e.errno == errno.EEXIST and os.path.isdir(dirname):
             pass
         else:
             raise
@@ -419,7 +420,7 @@ def spawn(args, i, j):
 
     coreid = args.first_core + i*64+j
 
-    if coreid is 0:
+    if coreid == 0:
         """ Don't spawn coreid 0 """
         return (), ()
     if coreid in args.wait_attach:
@@ -547,7 +548,8 @@ def run_inferior(args, pid_core_map):
         print_stderr('[INFO] Host program exited with status %d' % retval)
 
     grace_start = time.time()
-    while any((lambda (_, alive) : alive) for p in pid_core_map):
+    # p[1] = alive
+    while any((lambda : p[1]) for p in pid_core_map):
 
         """ Wait for children """
         try:
@@ -568,19 +570,19 @@ def run_inferior(args, pid_core_map):
             pid_core_map[pid] = coreid, False
 
             # Lowest byte signal, second byte return code
-            sim_rc     = status / 256
+            sim_rc     = status // 256
             sim_signal = status % 256
 
             if sim_signal:
                 print_stderr('[INFO] core simulator 0x%0.3x (%2d,%2d) terminated by signal %s' %
-                          (coreid, coreid/64, coreid%64, signal_name(sim_signal)))
+                          (coreid, coreid//64, coreid%64, signal_name(sim_signal)))
             else:
                 if args.verbose or sim_rc != 0:
                     print_stderr('[INFO] core simulator 0x%0.3x (%2d,%2d) exited with status %d' %
-                                 (coreid, coreid/64, coreid%64, sim_rc))
+                                 (coreid, coreid//64, coreid%64, sim_rc))
 
         except OSError as e:
-            if e.errno == os.errno.ECHILD:
+            if e.errno == errno.ECHILD:
                 """ All children done """
                 break
             else:
@@ -597,18 +599,18 @@ def run_standalone(args, pid_core_map):
             pid, status = os.wait()
 
             # Lowest byte signal, second byte return code
-            sim_rc     = status / 256
+            sim_rc     = status // 256
             sim_signal = status % 256
 
             coreid, _ = pid_core_map[pid]
             pid_core_map[pid] = (coreid, False)
             if sim_signal:
                 print_stderr('[INFO] core simulator 0x%0.3x (%2d,%2d) terminated by signal %s' %
-                          (coreid, coreid/64, coreid%64, signal_name(sim_signal)))
+                          (coreid, coreid//64, coreid%64, signal_name(sim_signal)))
             else:
                 if args.verbose or sim_rc != 0:
                     print_stderr('[INFO] core simulator 0x%0.3x (%2d,%2d) exited with status %d' %
-                                 (coreid, coreid/64, coreid%64, sim_rc))
+                                 (coreid, coreid//64, coreid%64, sim_rc))
 
             # Set exit status to first non-zero core simulator exit status.
             # Unfortunately, it doesn't seem possible to return an exit code
@@ -621,7 +623,7 @@ def run_standalone(args, pid_core_map):
                 my_exit_status = status
 
         except OSError as e:
-            if e.errno == os.errno.ECHILD:
+            if e.errno == errno.ECHILD:
                 """ All children done """
                 break
             else:
@@ -632,7 +634,7 @@ def run_standalone(args, pid_core_map):
         return my_exit_status % 256
     else:
         # We're returning a return code
-        return my_exit_status / 256
+        return my_exit_status // 256
 
 
 def main():
@@ -670,11 +672,11 @@ def main():
             if args.verbose:
                 print_stderr('[INFO] Created output directory')
         except OSError as e:
-            if e.errno == os.errno.EEXIST:
+            if e.errno == errno.EEXIST:
                 print_stderr('[ERR ] Specified redirect directory `%s\' already '
                 'exists but is not a directory' % args.redirect_dir)
                 sys.exit(8)
-            if e.errno == os.errno.EACCES:
+            if e.errno == errno.EACCES:
                 print_stderr('[ERR ] Permission denied to access specified '
                 'redirect directory `%s\'' % args.redirect_dir)
                 sys.exit(9)

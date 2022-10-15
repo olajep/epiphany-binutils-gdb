@@ -34,9 +34,8 @@ ifeq (@esim@, yes)
 	SIM_EXTRA_INSTALL += install-esim
 endif
 
-SIM_EXTRA_ALL =
 ifeq (@esim@, yes)
-	SIM_EXTRA_ALL += epiphany-elf-sim.py libesim.so
+all: epiphany-elf-sim.py libesim.so
 endif
 
 
